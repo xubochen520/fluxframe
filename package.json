@@ -1,0 +1,19 @@
+{
+  "name": "intranet-image-manager",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:client": "npm --prefix client run dev",
+    "dev:server": "npm --prefix server run dev",
+    "build": "npm --prefix client run build && npm --prefix server run build",
+    "typecheck": "npm --prefix client run typecheck && npm --prefix server run typecheck",
+    "db:generate": "prisma generate --schema prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema prisma/schema.prisma"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "@prisma/client": "^6.14.0",
+    "prisma": "^6.14.0"
+  }
+}

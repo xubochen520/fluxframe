@@ -1,0 +1,176 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { gsap } from 'gsap'
+import { Check, ChevronDown, CircleHelp, Clock3, Eye, Filter, FolderOpen, Images, LayoutDashboard, Menu, MoreHorizontal, Plus, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Tags, Trash2, Upload, UserRound, X, Zap } from 'lucide-vue-next'
+import LoginView from './components/LoginView.vue'
+import SettingsPanel from './components/SettingsPanel.vue'
+import UploadReviewModal from './components/UploadReviewModal.vue'
+import { api, type CurrentUser } from './api'
+import type { AuditLog, ImageItem, TagItem, View } from './types'
+
+const authenticated = ref(false)
+const booting = ref(true)
+const authLoading = ref(false)
+const authError = ref('')
+const currentUser = ref<CurrentUser | null>(null)
+const activeView = ref<View>('overview')
+const sidebarOpen = ref(false)
+const query = ref('')
+const sortBy = ref('views')
+const selectedTag = ref('全部标签')
+const selectedImage = ref<ImageItem | null>(null)
+const previewImageElement = ref<HTMLElement | null>(null)
+const previewScale = ref(1)
+const previewOffset = ref({ x: 0, y: 0 })
+const contextImage = ref<ImageItem | null>(null)
+const contextPosition = ref({ x: 0, y: 0 })
+const contextTag = ref<TagItem | null>(null)
+const tagContextPosition = ref({ x: 0, y: 0 })
+const showUpload = ref(false)
+const showTagDialog = ref(false)
+const showAddTag = ref(false)
+const showBatchTag = ref(false)
+const batchTag = ref<TagItem | null>(null)
+const batchImageQuery = ref('')
+const selectedBatchImageIds = ref<string[]>([])
+const toast = ref('')
+const images = ref<ImageItem[]>([])
+const tags = ref<TagItem[]>([])
+const logs = ref<AuditLog[]>([])
+const newTag = ref('')
+const isDark = ref(true)
+const selectedTheme = ref('Aurora')
+const settings = ref<Record<string, any>>({ siteName: 'fluxframe', theme: 'Aurora', webglEnabled: true, animationEnabled: true, uploadLimitMb: 50, port: 4310, storageDir: './storage', recycleRetentionDays: 30 })
+const fluidColors = ref(['#4f46e5', '#06b6d4', '#f472b6'])
+const fluidSpeed = ref(3)
+const webglEnabled = ref(true)
+const animationEnabled = ref(true)
+const stats = ref({ imageCount: 0, tagCount: 0, userCount: 0, totalViews: 0, storage: '0 B', storageCapacity: '未知', storagePercent: 0, databaseImageBytes: '0 B' })
+let searchTimer: number | undefined
+const currentHour = ref(new Date().getHours())
+let greetingTimer: number | undefined
+
+const navItems: { id: View; label: string; icon: typeof LayoutDashboard; badge?: string }[] = [
+  { id: 'overview', label: '总览', icon: LayoutDashboard },
+  { id: 'library', label: '图片库', icon: Images },
+  { id: 'tags', label: '智能标签', icon: Tags },
+  { id: 'logs', label: '访问日志', icon: ShieldCheck },
+  { id: 'trash', label: '回收站', icon: Trash2 },
+]
+const pageTitle = computed(() => ({ overview: '总览', library: '图片库', tags: '智能标签', logs: '访问日志', trash: '回收站', settings: '系统设置' }[activeView.value]))
+const timeGreeting = computed(() => {
+  if (currentHour.value < 5) return '夜深了'
+  if (currentHour.value < 12) return '早上好'
+  if (currentHour.value < 14) return '中午好'
+  if (currentHour.value < 19) return '下午好'
+  return '晚上好'
+})
+const liveImages = computed(() => images.value.filter((image) => !image.deletedAt))
+const filteredImages = computed(() => {
+  let result = activeView.value === 'trash' ? images.value.filter((image) => image.deletedAt) : liveImages.value
+  const search = query.value.trim().toLowerCase()
+  if (search) result = result.filter((image) => image.name.toLowerCase().includes(search) || image.tags.some((tag) => tag.toLowerCase().includes(search)))
+  if (selectedTag.value !== '全部标签') result = result.filter((image) => image.tags.includes(selectedTag.value))
+  if (sortBy.value === 'views') result = [...result].sort((a, b) => b.views - a.views)
+  if (sortBy.value === 'newest') result = [...result].sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
+  if (sortBy.value === 'name') result = [...result].sort((a, b) => a.name.localeCompare(b.name))
+  return result
+})
+const topImages = computed(() => [...liveImages.value].sort((a, b) => b.views - a.views).slice(0, 4))
+async function handleUploadCompleted(count: number) { showUpload.value = false; await Promise.all([refreshImages(), refreshTags(), refreshDashboard()]); notify(`已完成上传 ${count} 张图片`) }
+const batchCandidates = computed(() => {
+  const queryText = batchImageQuery.value.trim().toLowerCase()
+  return images.value.filter((image) => !image.deletedAt && !image.tagIds.includes(batchTag.value?.id || '') && (!queryText || image.name.toLowerCase().includes(queryText) || image.tags.some((tag) => tag.toLowerCase().includes(queryText))))
+})
+function tagRatio(count: number) { return stats.value.imageCount ? `${Math.min(100, (count / stats.value.imageCount) * 100).toFixed(1)}%` : '0%' }
+
+function formatTime(value: string) { const date = new Date(value); if (Number.isNaN(date.valueOf())) return value; const diff = Math.max(0, Date.now() - date.valueOf()); const minutes = Math.floor(diff / 60000); if (minutes < 1) return '刚刚'; if (minutes < 60) return `${minutes} 分钟前`; const hours = Math.floor(minutes / 60); if (hours < 24) return `${hours} 小时前`; return date.toLocaleDateString('zh-CN') }
+function notify(message: string) { toast.value = message; window.setTimeout(() => { toast.value = '' }, 2600) }
+function errorMessage(error: unknown) { return error instanceof Error ? error.message : '操作失败，请稍后重试' }
+async function refreshImages() { const response = await api.images({ search: query.value.trim() || undefined, sort: sortBy.value, tag: selectedTag.value === '全部标签' ? undefined : selectedTag.value, trash: activeView.value === 'trash' }); images.value = Array.isArray(response?.items) ? response.items : [] }
+async function refreshTags() { const response = await api.tags(); tags.value = Array.isArray(response?.items) ? response.items : [] }
+async function refreshLogs() { if (currentUser.value?.role === 'ADMIN') { const response = await api.logs(); logs.value = Array.isArray(response?.items) ? response.items : [] } }
+async function refreshDashboard() { const response = await api.dashboard(); if (response?.stats) stats.value = { ...stats.value, ...response.stats }; if (currentUser.value?.role !== 'ADMIN') logs.value = Array.isArray(response?.logs) ? response.logs : [] }
+function applyPreferences() { document.documentElement.dataset.theme = isDark.value ? 'dark' : 'light'; document.documentElement.dataset.themeName = selectedTheme.value.toLowerCase(); document.documentElement.dataset.motion = animationEnabled.value ? 'full' : 'reduced'; document.title = `${settings.value.siteName || 'fluxframe'} · Intranet Image Manager` }
+async function refreshSettings() { if (currentUser.value?.role !== 'ADMIN') return; const data = await api.settings(); settings.value = { ...settings.value, ...data }; selectedTheme.value = String(data.theme || 'Aurora'); isDark.value = true; webglEnabled.value = data.webglEnabled !== false; animationEnabled.value = data.animationEnabled !== false; fluidSpeed.value = 3; if (Array.isArray(data.fluidColors) && data.fluidColors.length >= 3) fluidColors.value = data.fluidColors.slice(0, 3).map(String); applyPreferences() }
+async function loadData() { await Promise.all([refreshTags(), refreshDashboard(), refreshImages(), refreshLogs(), refreshSettings()]) }
+async function checkSession() { try { currentUser.value = await api.me(); authenticated.value = true; await loadData() } catch { authenticated.value = false } finally { booting.value = false } }
+async function handleLogin(username: string, password: string) { authLoading.value = true; authError.value = ''; try { const response = await api.login(username, password); currentUser.value = response.user; authenticated.value = true; await loadData() } catch (error) { authError.value = errorMessage(error) } finally { authLoading.value = false } }
+async function handleRegister(username: string, password: string) { authLoading.value = true; authError.value = ''; try { await api.register(username, password); const response = await api.login(username, password); currentUser.value = response.user; authenticated.value = true; await loadData() } catch (error) { authError.value = errorMessage(error) } finally { authLoading.value = false } }
+async function logout() { await api.logout().catch(() => undefined); authenticated.value = false; currentUser.value = null; images.value = []; tags.value = []; logs.value = [] }
+async function go(view: View) { activeView.value = view; sidebarOpen.value = false; selectedTag.value = '全部标签'; if (view === 'library' || view === 'trash' || view === 'tags') await refreshImages(); if (view === 'logs') await refreshLogs(); if (view === 'settings') await refreshSettings(); nextTick(() => gsap.fromTo('.page-content', { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: .4, ease: 'power2.out' })) }
+function handleSearchInput() { if (searchTimer) window.clearTimeout(searchTimer); if (activeView.value !== 'library' && activeView.value !== 'trash') return; searchTimer = window.setTimeout(() => { void refreshImages() }, 280) }
+async function submitGlobalSearch() { if (searchTimer) window.clearTimeout(searchTimer); activeView.value = 'library'; selectedTag.value = '全部标签'; sidebarOpen.value = false; await refreshImages(); nextTick(() => gsap.fromTo('.page-content', { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: .4, ease: 'power2.out' })) }
+function clearGlobalSearch() { query.value = ''; if (activeView.value === 'library' || activeView.value === 'trash') void refreshImages() }
+async function viewTag(tagName: string) { activeView.value = 'library'; selectedTag.value = tagName; sidebarOpen.value = false; await refreshImages(); nextTick(() => gsap.fromTo('.page-content', { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: .4, ease: 'power2.out' })) }
+function openContext(image: ImageItem, event: MouseEvent) { contextImage.value = image; contextPosition.value = { x: Math.min(event.clientX, window.innerWidth - 220), y: Math.min(event.clientY, window.innerHeight - 245) } }
+function resetPreview() { previewScale.value = 1; previewOffset.value = { x: 0, y: 0 } }
+function closePreview() { selectedImage.value = null; resetPreview() }
+function handlePreviewWheel(event: WheelEvent) {
+  const element = previewImageElement.value
+  if (!element) return
+  const rect = element.getBoundingClientRect()
+  const oldScale = previewScale.value
+  const nextScale = Math.min(6, Math.max(1, oldScale * (event.deltaY < 0 ? 1.16 : 1 / 1.16)))
+  if (nextScale === oldScale) return
+  const baseLeft = rect.left - previewOffset.value.x
+  const baseTop = rect.top - previewOffset.value.y
+  const localX = (event.clientX - baseLeft - previewOffset.value.x) / oldScale
+  const localY = (event.clientY - baseTop - previewOffset.value.y) / oldScale
+  previewOffset.value = { x: event.clientX - baseLeft - localX * nextScale, y: event.clientY - baseTop - localY * nextScale }
+  previewScale.value = nextScale
+}
+async function openImage(image: ImageItem) { try { resetPreview(); selectedImage.value = image; const result = await api.viewImage(image.id); image.views = result.views; if (selectedImage.value) selectedImage.value.views = result.views; stats.value.totalViews += 1; if (currentUser.value?.role === 'ADMIN') await refreshLogs() } catch (error) { notify(errorMessage(error)) } }
+async function softDelete(image: ImageItem) { try { await api.deleteImage(image.id); contextImage.value = null; selectedImage.value = null; await refreshImages(); await refreshDashboard(); notify('图片已移入回收站') } catch (error) { notify(errorMessage(error)) } }
+async function restore(image: ImageItem) { try { await api.restoreImage(image.id); contextImage.value = null; await refreshImages(); notify('图片已恢复') } catch (error) { notify(errorMessage(error)) } }
+async function permanentDelete(image: ImageItem) { try { await api.permanentDelete(image.id); contextImage.value = null; await refreshImages(); notify('图片已永久删除') } catch (error) { notify(errorMessage(error)) } }
+async function addTag(tagName: string, image = contextImage.value) { if (!image || image.tags.includes(tagName)) return; try { await api.addTag(image.id, tagName); showAddTag.value = false; contextImage.value = null; await refreshTags(); await refreshImages(); notify('标签已添加') } catch (error) { notify(errorMessage(error)) } }
+function openTagContext(tag: TagItem, event: MouseEvent) { contextTag.value = tag; tagContextPosition.value = { x: Math.min(event.clientX, window.innerWidth - 250), y: Math.min(event.clientY, window.innerHeight - 90) }; contextImage.value = null }
+async function openBatchTag(tag: TagItem) { contextTag.value = null; batchTag.value = tag; batchImageQuery.value = ''; selectedBatchImageIds.value = []; showBatchTag.value = true; if (activeView.value !== 'tags') await refreshImages() }
+function selectAllBatchImages() { selectedBatchImageIds.value = batchCandidates.value.map((image) => image.id) }
+function sizeBatchCard(event: Event) { const image = event.currentTarget as HTMLImageElement; const card = image.closest('.batch-image-option') as HTMLElement | null; const list = card?.parentElement; if (!card || !list) return; card.style.gridRowEnd = 'auto'; requestAnimationFrame(() => { const rowHeight = 8; const rowGap = Number.parseFloat(getComputedStyle(list).rowGap) || 8; card.style.gridRowEnd = `span ${Math.max(1, Math.ceil((card.scrollHeight + rowGap) / (rowHeight + rowGap)))}` }) }
+function sizeImageCard(event: Event) { const image = event.target as HTMLImageElement; if (!image || image.tagName !== 'IMG') return; const card = image.closest('.image-card') as HTMLElement | null; const grid = card?.parentElement; if (!card || !grid) return; card.style.gridRowEnd = 'auto'; requestAnimationFrame(() => { const rowHeight = 8; const rowGap = Number.parseFloat(getComputedStyle(grid).rowGap) || 13; card.style.gridRowEnd = `span ${Math.max(1, Math.ceil((card.scrollHeight + rowGap) / (rowHeight + rowGap)))}` }) }
+async function submitBatchTag() { if (!batchTag.value || !selectedBatchImageIds.value.length) return; try { const result = await api.addImagesToTag(batchTag.value.id, selectedBatchImageIds.value); showBatchTag.value = false; await refreshTags(); await refreshImages(); notify(`已将 ${result.added} 张图片添加到「${batchTag.value.name}」`) } catch (error) { notify(errorMessage(error)) } }
+async function createTag() { const name = newTag.value.trim(); if (!name) return; try { await api.createTag(name); newTag.value = ''; showTagDialog.value = false; await refreshTags(); notify('新标签已创建') } catch (error) { notify(errorMessage(error)) } }
+async function removeTag(tag: TagItem) { try { await api.deleteTag(tag.id); await refreshTags(); await refreshImages(); notify(`已删除标签「${tag.name}」`) } catch (error) { notify(errorMessage(error)) } }
+async function uploadFiles(event: Event) { const input = event.target as HTMLInputElement; if (!input.files?.length) return; try { await api.upload(input.files); showUpload.value = false; await refreshImages(); await refreshDashboard(); notify(`已上传 ${input.files.length} 张图片`) } catch (error) { notify(errorMessage(error)) } finally { input.value = '' } }
+async function saveSettings(payload?: Record<string, any>) { try { const next = { ...(payload || settings.value), theme: payload?.theme || selectedTheme.value, darkMode: payload?.darkMode ?? isDark.value, webglEnabled: payload?.webglEnabled ?? webglEnabled.value, animationEnabled: payload?.animationEnabled ?? animationEnabled.value, fluidColors: payload?.fluidColors || fluidColors.value, fluidSpeed: 3 }; settings.value = await api.saveSettings(next); selectedTheme.value = String(settings.value.theme || selectedTheme.value); isDark.value = settings.value.darkMode !== false; webglEnabled.value = settings.value.webglEnabled !== false; animationEnabled.value = settings.value.animationEnabled !== false; if (Array.isArray(settings.value.fluidColors)) fluidColors.value = settings.value.fluidColors.slice(0, 3).map(String); fluidSpeed.value = 3; applyPreferences(); notify('设置已保存') } catch (error) { notify(errorMessage(error)) } }
+async function changePassword() { const currentPassword = window.prompt('请输入当前密码'); const newPassword = window.prompt('请输入新密码（至少 8 位）'); if (!currentPassword || !newPassword) return; try { await api.changePassword(currentPassword, newPassword); notify('密码已修改') } catch (error) { notify(errorMessage(error)) } }
+function closeContext() { contextImage.value = null; contextTag.value = null }
+function toggleTheme() { isDark.value = !isDark.value; applyPreferences() }
+
+watch([isDark, animationEnabled, selectedTheme, () => settings.value.siteName], applyPreferences)
+onMounted(() => { applyPreferences(); greetingTimer = window.setInterval(() => { currentHour.value = new Date().getHours() }, 60_000); checkSession() })
+onBeforeUnmount(() => { if (greetingTimer) window.clearInterval(greetingTimer) })
+</script>
+
+<template>
+  <SettingsPanel v-if="authenticated && activeView === 'settings'" :settings="settings" :fluid-colors="fluidColors" :fluid-speed="fluidSpeed" :selected-theme="selectedTheme" :is-dark="isDark" :webgl-enabled="webglEnabled" :animation-enabled="animationEnabled" @close="go('overview')" @save="saveSettings" @change-password="changePassword" />
+  <LoginView v-if="!booting && !authenticated" :loading="authLoading" :error="authError" @login="handleLogin" @register="handleRegister" />
+  <div v-else-if="authenticated" class="app-shell" @click="closeContext">
+    <aside class="sidebar" :class="{ 'is-open': sidebarOpen }" @click.stop>
+      <div class="brand"><div class="brand-mark"><span></span><span></span><span></span></div><div><strong>fluxframe</strong><small>INTRANET LIBRARY</small></div></div>
+      <div class="workspace-switch"><div class="avatar avatar-purple">{{ currentUser?.username?.[0]?.toUpperCase() }}</div><div><strong>创作空间</strong><small>个人媒体库</small></div><ChevronDown :size="15" /></div>
+      <nav class="main-nav"><p class="nav-label">工作区</p><button v-for="item in navItems" :key="item.id" :class="['nav-item', { active: activeView === item.id }]" @click="go(item.id)"><component :is="item.icon" :size="18" /><span>{{ item.label }}</span><em v-if="item.id === 'library'">{{ stats.imageCount }}</em><em v-if="item.id === 'trash'">{{ images.filter((image) => image.deletedAt).length }}</em></button><p class="nav-label nav-label-spaced">管理</p><button :class="['nav-item', { active: activeView === 'settings' }]" @click="go('settings')"><Settings2 :size="18" /><span>系统设置</span></button></nav>
+      <div class="sidebar-bottom"><div class="storage-card"><div class="storage-head"><span>存储空间</span><strong>{{ stats.storage }}</strong></div><div class="progress"><i :style="{ width: `${Number(stats.storagePercent || 0)}%` }"></i></div><small>磁盘容量 {{ stats.storageCapacity || '未知' }} · 已占 {{ Number(stats.storagePercent || 0).toFixed(2) }}%</small></div><div class="profile"><div class="avatar avatar-blue">{{ currentUser?.username?.[0]?.toUpperCase() }}</div><div><strong>{{ currentUser?.username }}</strong><small>{{ currentUser?.role === 'ADMIN' ? '超级管理员' : '普通用户' }}</small></div><button class="icon-button" @click="logout"><MoreHorizontal :size="18" /></button></div></div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar"><button class="mobile-menu" @click.stop="sidebarOpen = !sidebarOpen"><Menu :size="21" /></button><div class="breadcrumb"><span>创作空间</span><b>/</b><strong>{{ pageTitle }}</strong></div><div class="top-actions"><div class="global-search"><Search :size="17" /><input v-model="query" placeholder="搜索图片、标签..." @input="handleSearchInput" @keydown.enter.prevent="submitGlobalSearch" @keydown.esc="clearGlobalSearch" /><button v-if="query" class="global-search-clear" aria-label="清空搜索" @click="clearGlobalSearch"><X :size="13" /></button><kbd>⌘ K</kbd></div><button class="icon-button"><CircleHelp :size="18" /></button><button class="icon-button"><Clock3 :size="18" /></button><button class="user-chip" @click="logout"><span class="avatar avatar-blue">{{ currentUser?.username?.[0]?.toUpperCase() }}</span><span>{{ currentUser?.username }}</span><ChevronDown :size="14" /></button></div></header>
+      <section class="page-content">
+        <template v-if="activeView === 'overview'"><div class="page-heading"><div><p class="eyebrow"><span class="status-dot"></span> 系统运行正常 · 数据来自 PostgreSQL</p><h1>{{ timeGreeting }}，{{ currentUser?.username }} <span>✦</span></h1><p class="subheading">这是你的媒体库今天的概览。</p></div><button class="primary-button" @click.stop="showUpload = true"><Upload :size="17" />上传图片</button></div><div class="stats-grid"><div class="stat-card"><div class="stat-top"><span class="stat-icon purple"><Images :size="18" /></span><span class="trend positive">真实数据</span></div><strong>{{ stats.imageCount.toLocaleString() }}</strong><span>图片总数</span></div><div class="stat-card"><div class="stat-top"><span class="stat-icon cyan"><Eye :size="18" /></span><span class="trend positive">实时累计</span></div><strong>{{ stats.totalViews.toLocaleString() }}</strong><span>总观看次数</span></div><div class="stat-card"><div class="stat-top"><span class="stat-icon orange"><Tags :size="18" /></span><span class="trend neutral">可管理</span></div><strong>{{ stats.tagCount }}</strong><span>活跃标签</span></div><div class="stat-card"><div class="stat-top"><span class="stat-icon green"><Zap :size="18" /></span><span class="trend neutral">已连接</span></div><strong>{{ stats.storage }}</strong><span>已使用空间</span></div></div><div class="dashboard-grid"><div class="panel popular-panel"><div class="panel-heading"><div><h2>热门图片</h2><p>按观看次数排序</p></div><button class="text-button" @click="go('library')">查看全部 <span>→</span></button></div><div v-if="topImages.length" class="popular-list"><button v-for="(image, index) in topImages" :key="image.id" class="popular-item" @click="openImage(image)"><span class="rank">0{{ index + 1 }}</span><img :src="image.thumb" :alt="image.name" /><span class="popular-name"><strong>{{ image.name }}</strong><small>{{ image.tags.join(' · ') || '未分类' }}</small></span><span class="view-count"><Eye :size="15" />{{ image.views.toLocaleString() }}</span></button></div><div v-else class="empty-state">还没有图片，先上传一张吧。</div></div><div class="panel activity-panel"><div class="panel-heading"><div><h2>最近动态</h2><p>系统操作实时记录</p></div></div><div class="activity-list"><div v-for="log in logs.slice(0, 4)" :key="log.id" class="activity-item"><span :class="['activity-dot', log.tone]"></span><div><strong>{{ log.user }} <span>{{ log.action }}</span></strong><small>{{ log.target }}</small></div><time>{{ formatTime(log.time) }}</time></div></div><button class="activity-footer" @click="go('logs')">查看完整日志 <span>→</span></button></div></div><div class="section-heading"><div><h2>最近上传</h2><p>共 {{ liveImages.length }} 张图片</p></div><div class="heading-actions"><button class="filter-button" @click="go('library')"><Filter :size="15" />筛选</button></div></div><div v-if="liveImages.length" class="image-grid compact-grid" @load.capture="sizeImageCard"><button v-for="image in liveImages.slice(0, 4)" :key="image.id" class="image-card" @click="openImage(image)" @contextmenu.prevent.stop="openContext(image, $event)"><div class="image-wrap"><img :src="image.thumb" :alt="image.name" /><span class="image-badge"><Eye :size="13" />{{ image.views }}</span><span class="image-more" @click.stop="openContext(image, $event)"><MoreHorizontal :size="17" /></span></div><div class="image-meta"><strong>{{ image.name }}</strong><span>{{ formatTime(image.uploadedAt) }}</span></div></button></div><div v-else class="empty-state"><Images :size="30" /><strong>还没有图片</strong><span>点击右上角上传第一张图片。</span></div></template>
+        <template v-else-if="activeView === 'library' || activeView === 'trash'"><div class="page-heading library-heading"><div><p class="eyebrow"><FolderOpen :size="14" /> MEDIA LIBRARY</p><h1>{{ activeView === 'trash' ? '回收站' : '图片库' }}</h1><p class="subheading">{{ activeView === 'trash' ? '已删除的图片会在这里等待处理。' : '浏览、筛选并管理你的全部图片。' }}</p></div><button v-if="activeView === 'library'" class="primary-button" @click.stop="showUpload = true"><Upload :size="17" />上传图片</button></div><div class="library-toolbar"><div class="filter-pills"><button v-for="tag in ['全部标签', ...tags.map((tag) => tag.name)]" :key="tag" :class="['pill', { active: selectedTag === tag }]" @click="selectedTag = tag">{{ tag }}</button></div><div class="sort-select"><SlidersHorizontal :size="15" /><select v-model="sortBy" @change="refreshImages"><option value="views">观看次数</option><option value="newest">最近上传</option><option value="name">名称</option></select><ChevronDown :size="14" /></div></div><div v-if="filteredImages.length" class="image-grid" @load.capture="sizeImageCard"><button v-for="image in filteredImages" :key="image.id" class="image-card" @click="activeView === 'trash' ? undefined : openImage(image)" @contextmenu.prevent.stop="openContext(image, $event)"><div class="image-wrap"><img :src="image.thumb" :alt="image.name" /><span class="image-badge"><Eye :size="13" />{{ image.views }}</span><span class="image-more" @click.stop="openContext(image, $event)"><MoreHorizontal :size="17" /></span></div><div class="image-meta"><strong>{{ image.name }}</strong><span class="image-time">{{ image.size }} · {{ formatTime(image.uploadedAt) }}</span><div v-if="image.tags.length" class="image-tags"><span v-for="tag in image.tags" :key="tag">#{{ tag }}</span></div><small v-else class="image-tags image-tags-empty">未分类</small></div></button></div><div v-else class="empty-state"><Trash2 :size="30" /><strong>这里还没有图片</strong><span>试试调整标签或搜索条件。</span></div></template>
+        <template v-else-if="activeView === 'tags'"><div class="page-heading"><div><p class="eyebrow"><Sparkles :size="14" /> ORGANIZE SMARTER</p><h1>智能标签</h1><p class="subheading">点击标签查看图片，右键标签可批量添加图片。</p></div><button class="primary-button" @click="showTagDialog = true"><Plus :size="17" />新建标签</button></div><div class="tag-summary"><div><span class="stat-icon purple"><Tags :size="18" /></span><strong>{{ tags.length }}</strong><small>自定义标签</small></div><div><span class="stat-icon cyan"><Images :size="18" /></span><strong>{{ tags.reduce((sum, tag) => sum + tag.count, 0) }}</strong><small>标签关联</small></div><div><span class="stat-icon orange"><Zap :size="18" /></span><strong>{{ stats.imageCount ? '已连接' : '等待图片' }}</strong><small>数据状态</small></div></div><div class="tag-list panel"><div class="panel-heading"><div><h2>全部标签</h2><p>左键筛选图片，右键批量关联多张图片。</p></div><button class="filter-button"><Filter :size="15" />排序</button></div><div class="tag-rows"><div v-for="tag in tags" :key="tag.id" class="tag-row clickable" @click="viewTag(tag.name)" @contextmenu.prevent.stop="openTagContext(tag, $event)"><span class="tag-color" :style="{ background: tag.color }"></span><strong>{{ tag.name }}</strong><span class="tag-count">{{ tag.count }} 张图片 · {{ tagRatio(tag.count) }}</span><div class="tag-bar"><i :style="{ width: tagRatio(tag.count), background: tag.color }"></i></div><button v-if="currentUser?.role === 'ADMIN'" class="icon-button small" @click.stop="removeTag(tag)"><Trash2 :size="15" /></button></div></div></div></template>
+        <template v-else-if="activeView === 'logs'"><div class="page-heading"><div><p class="eyebrow"><ShieldCheck :size="14" /> AUDIT TRAIL</p><h1>访问日志</h1><p class="subheading">记录每一次访问和内容变更。</p></div><button class="filter-button" @click="refreshLogs"><Clock3 :size="15" />刷新日志</button></div><div class="log-stats"><div><strong>{{ logs.length }}</strong><span>当前记录</span></div><div><strong>{{ stats.userCount }}</strong><span>用户数量</span></div><div><strong>审计中</strong><span>日志状态</span></div></div><div class="panel log-panel"><div class="log-head"><span>操作</span><span>目标</span><span>用户</span><span>来源 IP</span><span>时间</span></div><div v-for="log in logs" :key="log.id" class="log-row"><span><i :class="['log-icon', log.tone]"><Eye v-if="log.action === '查看图片'" :size="14" /><Tags v-else-if="log.action.includes('标签')" :size="14" /><Trash2 v-else-if="log.action.includes('删除')" :size="14" /><UserRound v-else :size="14" /></i><strong>{{ log.action }}</strong></span><span>{{ log.target }}</span><span class="log-user"><span class="avatar avatar-blue">{{ log.user?.[0]?.toUpperCase() }}</span>{{ log.user }}</span><span><code>{{ log.ip }}</code><em :class="log.scope === '内网' ? 'internal' : 'external'">{{ log.scope }}</em></span><time>{{ formatTime(log.time) }}</time></div></div></template>
+        <template v-else-if="activeView === 'settings'"><div class="page-heading"><div><p class="eyebrow"><Settings2 :size="14" /> CONTROL CENTER</p><h1>系统设置</h1><p class="subheading">调整工作区、视觉风格和服务配置。</p></div><button class="primary-button" @click="saveSettings"><Check :size="17" />保存设置</button></div><div class="settings-layout"><div class="settings-nav panel"><button class="active"><SlidersHorizontal :size="16" />常规设置</button><button><Sparkles :size="16" />视觉主题</button><button @click="changePassword"><ShieldCheck :size="16" />修改密码</button><button><Zap :size="16" />服务与存储</button></div><div class="settings-content"><div class="settings-card panel"><div class="setting-title"><div><h2>外观偏好</h2><p>定义你的媒体库视觉语言。</p></div><Sparkles :size="20" /></div><div class="setting-row"><div><strong>主题模式</strong><small>选择适合当前环境的显示模式。</small></div><div class="segmented"><button :class="{ active: isDark }" @click="isDark = true">深色</button><button :class="{ active: !isDark }" @click="isDark = false">浅色</button></div></div><div class="setting-row"><div><strong>流体背景</strong><small>使用 WebGL 渲染多色混合流体效果。</small></div><button class="switch on"><i></i></button></div><div class="setting-row"><div><strong>主题色彩</strong><small>选择工作区的流体色彩组合。</small></div><div class="theme-swatches"><button v-for="theme in ['Aurora', 'Ember', 'Mono']" :key="theme" :class="['theme-swatch', theme.toLowerCase(), { active: selectedTheme === theme }]" @click="selectedTheme = theme"><i></i><span>{{ theme }}</span></button></div></div></div><div class="settings-card panel"><div class="setting-title"><div><h2>服务配置</h2><p>管理员配置会写入 PostgreSQL。</p></div><Zap :size="20" /></div><label class="field-label">服务端口<input v-model="settings.port" type="number" /><small>修改端口后需要重启 Node 服务。</small></label><label class="field-label">图片存储目录<input v-model="settings.storageDir" /><small>建议使用本机磁盘或 NAS 映射目录。</small></label></div></div></div></template>
+      </section>
+    </main>
+    <div v-if="contextTag" class="context-menu tag-context-menu" @click.stop :style="{ left: `${tagContextPosition.x}px`, top: `${tagContextPosition.y}px` }"><div class="context-title">标签：{{ contextTag.name }}</div><button @click="openBatchTag(contextTag!)"><Tags :size="16" />批量添加图片</button></div>
+    <div v-if="showBatchTag" class="modal-backdrop" @click.self="showBatchTag = false"><div class="modal batch-tag-modal"><button class="modal-close" @click="showBatchTag = false"><X :size="18" /></button><div class="upload-icon"><Tags :size="24" /></div><h2>批量添加图片</h2><p>选择要添加到「{{ batchTag?.name }}」的图片，可多选。</p><input v-model="batchImageQuery" class="modal-input" placeholder="搜索图片名称或标签..." /><div class="batch-toolbar"><button class="text-button" @click="selectAllBatchImages">全选当前结果</button><button class="text-button" @click="selectedBatchImageIds = []">清空</button><span>已选 {{ selectedBatchImageIds.length }} 张</span></div><div class="batch-image-list"><label v-for="image in batchCandidates" :key="image.id" class="batch-image-option"><input v-model="selectedBatchImageIds" :value="image.id" type="checkbox" /><img :src="image.thumb" :alt="image.name" @load="sizeBatchCard" /><span><strong>{{ image.name }}</strong><small>{{ image.tags.join(' · ') || '未分类' }}</small></span></label><div v-if="!batchCandidates.length" class="batch-empty">没有可添加的图片</div></div><button class="primary-button full" :disabled="!selectedBatchImageIds.length" @click="submitBatchTag">添加到标签</button></div></div>
+    <div v-if="contextImage" class="context-menu" @click.stop :style="{ left: `${contextPosition.x}px`, top: `${contextPosition.y}px` }"><div class="context-title">{{ contextImage.name }}</div><button @click="openImage(contextImage); contextImage = null"><Eye :size="16" />查看图片</button><button @click="showAddTag = true"><Tags :size="16" />添加标签</button><button class="danger" @click="activeView === 'trash' ? permanentDelete(contextImage!) : softDelete(contextImage!)"><Trash2 :size="16" />{{ activeView === 'trash' ? '永久删除' : '移入回收站' }}</button><button v-if="activeView === 'trash'" @click="restore(contextImage!)"><Check :size="16" />恢复图片</button></div>
+    <UploadReviewModal :show="showUpload" @close="showUpload = false" @completed="handleUploadCompleted" />
+    <div v-if="showTagDialog" class="modal-backdrop" @click.self="showTagDialog = false"><div class="modal"><button class="modal-close" @click="showTagDialog = false"><X :size="18" /></button><div class="upload-icon"><Tags :size="24" /></div><h2>新建标签</h2><p>创建一个新的视觉索引。</p><input v-model="newTag" class="modal-input" placeholder="例如：灵感、人物、项目" @keyup.enter="createTag" /><button class="primary-button full" @click="createTag">创建标签</button></div></div>
+    <div v-if="showAddTag" class="modal-backdrop" @click.self="showAddTag = false"><div class="modal"><button class="modal-close" @click="showAddTag = false"><X :size="18" /></button><h2>添加标签</h2><p>选择一个标签添加到「{{ contextImage?.name }}」。</p><div class="tag-picker"><button v-for="tag in tags" :key="tag.id" @click="addTag(tag.name)"><i :style="{ background: tag.color }"></i>{{ tag.name }}<Plus :size="15" /></button></div></div></div>
+    <div v-if="selectedImage" class="preview-backdrop" @click.self="closePreview" @wheel.prevent="handlePreviewWheel"><button class="preview-close" @click="closePreview"><X :size="22" /></button><div ref="previewImageElement" class="preview-image" :style="{ transform: `translate(${previewOffset.x}px, ${previewOffset.y}px) scale(${previewScale})` }"><img :src="selectedImage.url" :alt="selectedImage.name" /><div class="preview-caption"><strong>{{ selectedImage.name }}</strong><span>{{ selectedImage.width }} × {{ selectedImage.height }} · {{ selectedImage.views.toLocaleString() }} 次查看</span></div></div></div>
+    <transition name="toast"><div v-if="toast" class="toast-message"><Check :size="16" />{{ toast }}</div></transition>
+  </div>
+</template>
