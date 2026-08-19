@@ -215,3 +215,23 @@
   .tag-browser-grid { grid-template-columns: 1fr; }
   .tag-browser-search { width: 100%; }
 }
+
+/* Expanded theme palette previews and the shared star-fluid background. */
+.theme-swatches { flex-wrap: wrap; row-gap: 12px; }
+.theme-swatch i { transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease; }
+.theme-swatch:hover i { transform: translateY(-2px) scale(1.04); }
+.theme-swatch.active i { box-shadow: 0 0 18px var(--theme-soft, rgba(167,139,250,.45)); }
+.theme-swatch.nebula i { background: linear-gradient(135deg, #7c3aed, #ec4899, #22d3ee); }
+.theme-swatch.forest i { background: linear-gradient(135deg, #166534, #22c55e, #a3e635); }
+.theme-swatch.rose i { background: linear-gradient(135deg, #be123c, #fb7185, #fda4af); }
+.theme-swatch.ocean i { background: linear-gradient(135deg, #075985, #0ea5e9, #67e8f9); }
+.theme-swatch.solar i { background: linear-gradient(135deg, #b45309, #f59e0b, #fde047); }
+
+.app-fluid-background {
+  opacity: .78;
+  filter: saturate(1.35) contrast(1.08);
+  mix-blend-mode: screen;
+  mask-image: none;
+}
+
+:root[data-motion='reduced'] .app-fluid-background { opacity: .42; }

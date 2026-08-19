@@ -93,6 +93,66 @@
   --theme-panel: rgba(37, 43, 53, .78);
   --theme-danger: #fb7185;
 }
+:root[data-theme-name='nebula'] {
+  --theme-primary: #8b5cf6;
+  --theme-secondary: #ec4899;
+  --theme-soft: rgba(139, 92, 246, .19);
+  --theme-glow: rgba(236, 72, 153, .16);
+  --theme-start: #160d2b;
+  --theme-end: #271237;
+  --theme-sidebar: rgba(22, 12, 43, .91);
+  --theme-topbar: rgba(25, 12, 39, .54);
+  --theme-panel: rgba(42, 20, 55, .78);
+  --theme-danger: #fb7185;
+}
+:root[data-theme-name='forest'] {
+  --theme-primary: #22c55e;
+  --theme-secondary: #a3e635;
+  --theme-soft: rgba(34, 197, 94, .17);
+  --theme-glow: rgba(163, 230, 53, .15);
+  --theme-start: #071b18;
+  --theme-end: #102d26;
+  --theme-sidebar: rgba(5, 25, 21, .92);
+  --theme-topbar: rgba(7, 28, 23, .54);
+  --theme-panel: rgba(15, 48, 38, .76);
+  --theme-danger: #fb7185;
+}
+:root[data-theme-name='rose'] {
+  --theme-primary: #fb7185;
+  --theme-secondary: #fda4af;
+  --theme-soft: rgba(251, 113, 133, .18);
+  --theme-glow: rgba(190, 18, 60, .17);
+  --theme-start: #2b0c19;
+  --theme-end: #3b1725;
+  --theme-sidebar: rgba(38, 8, 21, .92);
+  --theme-topbar: rgba(43, 10, 25, .54);
+  --theme-panel: rgba(62, 23, 39, .77);
+  --theme-danger: #ef4444;
+}
+:root[data-theme-name='ocean'] {
+  --theme-primary: #0ea5e9;
+  --theme-secondary: #67e8f9;
+  --theme-soft: rgba(14, 165, 233, .18);
+  --theme-glow: rgba(103, 232, 249, .16);
+  --theme-start: #061727;
+  --theme-end: #0b2b40;
+  --theme-sidebar: rgba(4, 22, 36, .92);
+  --theme-topbar: rgba(6, 26, 43, .54);
+  --theme-panel: rgba(10, 47, 67, .77);
+  --theme-danger: #fb7185;
+}
+:root[data-theme-name='solar'] {
+  --theme-primary: #f59e0b;
+  --theme-secondary: #fde047;
+  --theme-soft: rgba(245, 158, 11, .18);
+  --theme-glow: rgba(253, 224, 71, .15);
+  --theme-start: #241506;
+  --theme-end: #3b2410;
+  --theme-sidebar: rgba(34, 18, 5, .92);
+  --theme-topbar: rgba(39, 20, 6, .54);
+  --theme-panel: rgba(61, 35, 13, .77);
+  --theme-danger: #f43f5e;
+}
 :root[data-theme-name] .app-shell { background: radial-gradient(circle at 76% 0%, var(--theme-soft), transparent 30%), linear-gradient(140deg, var(--theme-start) 0%, var(--theme-end) 55%, var(--theme-start) 100%); }
 :root[data-theme-name] .brand-mark,
 :root[data-theme-name] .primary-button { background: linear-gradient(135deg, var(--theme-primary), var(--theme-secondary)); }
