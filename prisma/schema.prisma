@@ -23,6 +23,7 @@ model User {
   username     String      @unique
   passwordHash String
   role         UserRole    @default(USER)
+  r18Mode      Boolean     @default(false)
   createdAt    DateTime    @default(now())
   sessions     Session[]
   images       Image[]     @relation("Uploader")
@@ -75,6 +76,7 @@ model Tag {
   id        String     @id @default(cuid())
   name      String     @unique
   color     String     @default("#a78bfa")
+  r18       Boolean    @default(false)
   createdAt DateTime   @default(now())
   images    ImageTag[]
 }

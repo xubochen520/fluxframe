@@ -15,6 +15,7 @@ export interface ImageItem {
   tags: string[]
   tagIds: string[]
   color: string
+  r18?: boolean
   deletedAt?: string
 }
 
@@ -22,6 +23,7 @@ export interface TagItem {
   id: string
   name: string
   color: string
+  r18?: boolean
   count: number
 }
 

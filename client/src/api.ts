@@ -32,7 +32,7 @@ async function asset(path: string) {
   return URL.createObjectURL(await response.blob())
 }
 
-export interface CurrentUser { id: string; username: string; role: 'ADMIN' | 'USER' }
+export interface CurrentUser { id: string; username: string; role: 'ADMIN' | 'USER'; r18Mode: boolean }
 export interface DashboardPayload { stats: { imageCount: number; tagCount: number; userCount: number; totalViews: number; storage: string; storageCapacity: string; storagePercent: number; databaseImageBytes: string }; top: ImageItem[]; recent: ImageItem[]; logs: AuditLog[] }
 export interface UploadAnalysisItem { sourceIndex: number; tempId: string | null; fileName: string; name: string; mimeType: string; size: number; width: number; height: number; tags: string[]; duplicate: boolean; duplicateName?: string; aiError?: string }
 export interface UploadAnalysisPayload { items: UploadAnalysisItem[]; aiEnabled: boolean; aiModel: string }
@@ -43,6 +43,7 @@ export const api = {
   register: (username: string, password: string) => request<CurrentUser>('/api/auth/register', { method: 'POST', body: JSON.stringify({ username, password }) }),
   logout: () => request<void>('/api/auth/logout', { method: 'POST', body: '{}' }),
   changePassword: (currentPassword: string, newPassword: string) => request<{ ok: true }>('/api/auth/password', { method: 'PATCH', body: JSON.stringify({ currentPassword, newPassword }) }),
+  setR18Mode: (enabled: boolean) => request<{ r18Mode: boolean }>('/api/me/r18-mode', { method: 'PATCH', body: JSON.stringify({ enabled }) }),
   dashboard: () => request<DashboardPayload>('/api/dashboard'),
   asset,
   images: (params: { search?: string; tag?: string; sort?: string; trash?: boolean }) => request<{ items: ImageItem[] }>(`/api/images?${new URLSearchParams(Object.entries(params).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]))}`),
@@ -55,7 +56,8 @@ export const api = {
   restoreImage: (id: string) => request<{ ok: true }>(`/api/images/${id}/restore`, { method: 'POST', body: '{}' }),
   permanentDelete: (id: string) => request<{ ok: true }>(`/api/images/${id}/permanent`, { method: 'DELETE' }),
   tags: () => request<{ items: TagItem[] }>('/api/tags'),
-  createTag: (name: string, color = '#a78bfa') => request<TagItem>('/api/tags', { method: 'POST', body: JSON.stringify({ name, color }) }),
+  createTag: (name: string, color = '#a78bfa', r18 = false) => request<TagItem>('/api/tags', { method: 'POST', body: JSON.stringify({ name, color, r18 }) }),
+  updateTag: (id: string, patch: { r18?: boolean; color?: string }) => request<TagItem>(`/api/tags/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deleteTag: (id: string) => request<{ ok: true }>(`/api/tags/${id}`, { method: 'DELETE' }),
   addImagesToTag: (tagId: string, imageIds: string[]) => request<{ ok: true; added: number }>(`/api/tags/${tagId}/images`, { method: 'POST', body: JSON.stringify({ imageIds }) }),
   addTag: (imageId: string, name: string) => request<{ ok: true }>(`/api/images/${imageId}/tags`, { method: 'POST', body: JSON.stringify({ name }) }),

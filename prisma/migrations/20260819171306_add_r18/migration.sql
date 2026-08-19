@@ -1,0 +1,5 @@
+-- AlterTable
+ALTER TABLE "Tag" ADD COLUMN     "r18" BOOLEAN NOT NULL DEFAULT false;
+
+-- AlterTable
+ALTER TABLE "User" ADD COLUMN     "r18Mode" BOOLEAN NOT NULL DEFAULT false;
