@@ -1,6 +1,6 @@
 # 内网图片管理器
 
-Vue 3 + Fastify + Prisma + PostgreSQL 的真实持久化图片管理工具。前端不再使用演示数据，所有用户、图片、缩略图、标签、日志、回收站和系统设置都通过后端 API 保存。
+Vue 3 + Fastify + Prisma + PostgreSQL 的持久化图片管理工具。所有用户、图片、缩略图、标签、日志、回收站和系统设置都通过后端 API 保存。
 
 ## Windows 本机启动
 
@@ -38,6 +38,10 @@ Set-ExecutionPolicy -Scope Process Bypass
 启动脚本会检查 PostgreSQL 服务、5432 端口、依赖和数据库迁移，并自动打开前端页面。系统设置中保存的服务端口会在下次启动时被读取，前端代理也会同步切换。
 
 前端地址：`http://localhost:5173`，API 地址：`http://localhost:4311`。
+
+## AI 标签识别（llama.cpp）
+
+上传图片时自动调用本地视觉模型生成建议标签，完全离线、无需密钥。系统设置 → AI 图片标签 → 打开开关后**一键自动下载并启动**（llama.cpp 引擎 + Qwen2.5-VL 模型，自动识别 NVIDIA 显卡与系统代理），就绪后自动填入接口地址并显示「成功」。详见 [AI_SETUP.md](AI_SETUP.md)；识别提示词在 `server/prompts/tagging.txt`，可随时编辑热生效。
 
 首次启动会创建管理员账户：
 

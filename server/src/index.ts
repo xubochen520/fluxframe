@@ -8,13 +8,16 @@ import { PrismaClient, type Prisma } from '@prisma/client'
 import sharp from 'sharp'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { mkdir, readdir, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { z } from 'zod'
+import { downloadAiStack, getAiStatus, startAiServer, stopAiServer } from './ai-manager.js'
 
 const prisma = new PrismaClient()
 const app = Fastify({
-  logger: { transport: { target: 'pino-pretty' } },
+  // 开发模式默认只输出警告和错误，避免逐请求日志刷屏；
+  // 需要详细日志时设置环境变量 LOG_LEVEL=info（或 debug）。
+  logger: { level: process.env.LOG_LEVEL || 'warn', transport: { target: 'pino-pretty' } },
   trustProxy: process.env.TRUST_PROXY === 'true',
 })
 const defaultPort = Number(process.env.PORT || 4310)
@@ -40,8 +43,8 @@ const defaultSettings = {
   storageDir: process.env.STORAGE_DIR || './storage',
   recycleRetentionDays: 30,
   aiEnabled: process.env.AI_ENABLED === 'true' || Boolean(process.env.AI_API_KEY),
-  aiBaseUrl: process.env.AI_BASE_URL || 'http://127.0.0.1:11434',
-  aiModel: process.env.AI_MODEL || 'qwen2.5vl:7b',
+  aiBaseUrl: process.env.AI_BASE_URL || 'http://127.0.0.1:8080/v1',
+  aiModel: process.env.AI_MODEL || 'qwen2.5-vl-7b-instruct',
 }
 
 type AuthenticatedRequest = FastifyRequest & { user?: { id: string; username: string; role: 'ADMIN' | 'USER'; r18Mode: boolean } }
@@ -88,13 +91,18 @@ async function getAiConfig() {
   const rows = await prisma.systemSetting.findMany({ where: { key: { in: ['aiEnabled', 'aiBaseUrl', 'aiModel', 'aiApiKey'] } } })
   const saved = Object.fromEntries(rows.map((row) => [row.key, row.value]))
   const apiKey = String(saved.aiApiKey || process.env.AI_API_KEY || '').trim()
-  const baseUrl = String(saved.aiBaseUrl || process.env.AI_BASE_URL || 'http://127.0.0.1:11434').replace(/\/$/, '')
-  const model = String(saved.aiModel || process.env.AI_MODEL || 'qwen2.5vl:7b')
+  const baseUrl = String(saved.aiBaseUrl || process.env.AI_BASE_URL || 'http://127.0.0.1:8080/v1').replace(/\/$/, '')
+  const model = String(saved.aiModel || process.env.AI_MODEL || 'qwen2.5-vl-7b-instruct')
   const envEnabled = process.env.AI_ENABLED === 'true'
+  const savedEnabled = saved.aiEnabled === true
   const explicitlyDisabled = saved.aiEnabled === false || process.env.AI_ENABLED === 'false'
-  return { enabled: !explicitlyDisabled && (envEnabled || Boolean(apiKey)), apiKey, baseUrl, model }
+  // 设置页开关（savedEnabled）、环境变量、配置了 API 密钥，三者任一启用即生效；仅环境变量可强制关闭
+  return { enabled: !explicitlyDisabled && (envEnabled || savedEnabled || Boolean(apiKey)), apiKey, baseUrl, model }
 }
-function parseAiTags(value: unknown): string[] {
+// 解析 AI 输出为标签数组。
+// 支持新格式 {"matched":[...],"new":[...]}（matched 必须是已有标签中的原词，否则丢弃，
+// 防模型编造）；兼容旧格式 ["a","b"] / {"tags":[...]}。
+function parseAiTags(value: unknown, existingTags: string[] = []): string[] {
   const content = Array.isArray(value) ? value.map((part: any) => typeof part === 'string' ? part : part?.text || '').join('') : String(value || '')
   const cleaned = content.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim()
   let parsed: unknown = cleaned
@@ -102,36 +110,116 @@ function parseAiTags(value: unknown): string[] {
     const arrayText = cleaned.match(/\[[\s\S]*\]/)?.[0]
     if (arrayText) { try { parsed = JSON.parse(arrayText) } catch { parsed = cleaned } }
   }
-  const raw: unknown[] = Array.isArray(parsed) ? parsed : (parsed && typeof parsed === 'object' && Array.isArray((parsed as any).tags) ? (parsed as any).tags : String(parsed).split(/[,，、\n]/))
-  return [...new Set(raw.map((tag: unknown) => String(tag).trim().replace(/^#/, '')).filter((tag: string) => tag.length >= 1 && tag.length <= 40))].slice(0, 12) as string[]
+  const existing = new Set(existingTags)
+  const norm = (tag: unknown) => String(tag).trim().replace(/^#/, '')
+  const valid = (tag: string) => tag.length >= 1 && tag.length <= 40
+  let matched: string[] = []
+  let added: string[] = []
+  if (Array.isArray(parsed)) {
+    added = parsed.map(norm).filter(valid)
+  } else if (parsed && typeof parsed === 'object') {
+    const obj = parsed as Record<string, unknown>
+    if (Array.isArray(obj.matched)) matched = obj.matched.map(norm).filter((tag) => existing.has(tag))
+    const newList = Array.isArray(obj.new) ? obj.new : Array.isArray(obj.added) ? obj.added : Array.isArray(obj.tags) ? obj.tags : []
+    added = newList.map(norm).filter(valid)
+  } else {
+    added = String(parsed).split(/[,，、\n]/).map(norm).filter(valid)
+  }
+  // matched 优先，new 去掉与已有标签重复的部分，整体去重
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const tag of [...matched, ...added]) {
+    if (!tag || seen.has(tag)) continue
+    if (added.includes(tag) && existing.has(tag) && !matched.includes(tag)) continue // new 中重复已有标签
+    seen.add(tag)
+    result.push(tag)
+  }
+  return result.slice(0, 20)
 }
+// 识别提示词：优先读取可编辑的 prompts/tagging.txt（可用 AI_PROMPT_FILE 覆盖），找不到时用内置兜底。
+let promptCache: { file: string; mtimeMs: number; content: string } | null = null
+const FALLBACK_TAGGING_PROMPT = `你是图片管理系统的标签助手。请分析用户提供的图片，为它匹配和补充标签，用于归档与检索。
+# 分析步骤（不要输出分析过程）
+1. 先完整理解图片：主体、人物、场景、风格、动作、构图、色彩、情绪、作品类型，识别得越全越好。
+2. 从「已有标签」中选出所有与图片内容匹配的标签——尽量选全，这些是首选标签。
+3. 只有当已有标签确实无法覆盖的重要信息时，才提出新标签，最多 3 个。
+# 输出要求
+- 只输出一个 JSON 对象：{"matched": ["标签1"], "new": ["新标签1"]}，不要任何解释。
+- matched 只能使用「已有标签」中的原词，不能改写、拼接或编造；new 不能与 matched 重复，也不能出现在「已有标签」中。
+- 标签要具体、可检索：用「女仆装」「夕阳剪影」「俯拍」而不是「好看」「图片」这类泛词。
+- 中文为主，2～8 个字；人名、作品名等专有名词保留原文。
+- 如果图片包含裸露、性暗示等成人内容，必须额外加上 "R-18" 标签；普通内容绝对不能误加。
+# 已有标签（按使用频率从高到低排列）
+{{existing_tags}}
+# 请分析这张图片`
+async function loadTaggingPrompt(): Promise<string> {
+  const candidates = [
+    process.env.AI_PROMPT_FILE,
+    path.join(process.cwd(), 'prompts', 'tagging.txt'),
+    path.join(process.cwd(), '..', 'prompts', 'tagging.txt'),
+  ].filter((p): p is string => Boolean(p))
+  for (const file of candidates) {
+    try {
+      const st = await stat(file)
+      if (!st.isFile()) continue
+      if (promptCache?.file === file && promptCache.mtimeMs === st.mtimeMs) return promptCache.content
+      const content = await readFile(file, 'utf8')
+      promptCache = { file, mtimeMs: st.mtimeMs, content }
+      return content
+    } catch { /* 尝试下一个候选路径 */ }
+  }
+  return FALLBACK_TAGGING_PROMPT
+}
+
+// 发给本地视觉模型前统一处理图片：超大图缩到最长边 1280、非 JPEG/PNG 转 JPEG，
+// 既避免 llama.cpp 不认 WebP/GIF 等格式，也节省上下文与推理时间。
+async function prepareAiImage(buffer: Buffer): Promise<{ data: Buffer; mime: string }> {
+  try {
+    const meta = await sharp(buffer).metadata()
+    const longest = Math.max(meta.width || 0, meta.height || 0)
+    if (longest <= 1280 && (meta.format === 'jpeg' || meta.format === 'png')) return { data: buffer, mime: meta.format === 'jpeg' ? 'image/jpeg' : 'image/png' }
+    const data = await sharp(buffer).rotate().resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer()
+    return { data, mime: 'image/jpeg' }
+  } catch {
+    return { data: buffer, mime: 'image/jpeg' }
+  }
+}
+
 async function suggestTags(buffer: Buffer, mimeType: string, existingTags: string[]) {
   const config = await getAiConfig()
   if (!config.enabled) return { tags: [] as string[], enabled: false, model: config.model }
-  const imageBase64 = buffer.toString('base64')
-  const prompt = `已有标签：${existingTags.slice(0, 200).join('、') || '暂无'}\n请为这张图片生成最多12个中文标签，只输出 JSON 数组，不要解释。优先使用已有标签，确实需要时才提出新标签。`
+  const template = await loadTaggingPrompt()
+  const prompt = template.replaceAll('{{existing_tags}}', existingTags.slice(0, 200).join('、') || '暂无')
+  const { data: imageData, mime: imageMime } = await prepareAiImage(buffer)
+  const imageBase64 = imageData.toString('base64')
   const useNativeOllama = /:11434$/.test(config.baseUrl) || config.baseUrl.endsWith('/api')
   if (useNativeOllama) {
     const ollamaBase = config.baseUrl.endsWith('/api') ? config.baseUrl : `${config.baseUrl}/api`
-    const response = await fetch(`${ollamaBase}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: config.model, stream: false, format: 'json', messages: [{ role: 'system', content: '你是图片标签助手，只输出 JSON 数组，例如 ["人物","室内","插画"]。' }, { role: 'user', content: prompt, images: [imageBase64] }] }), signal: AbortSignal.timeout(120_000) })
+    const response = await fetch(`${ollamaBase}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: config.model, stream: false, format: 'json', messages: [{ role: 'system', content: '你是图片标签助手。只输出 JSON 对象 {"matched":["已有标签"],"new":["新标签"]}，不要解释。' }, { role: 'user', content: prompt, images: [imageBase64] }] }), signal: AbortSignal.timeout(120_000) })
     if (!response.ok) throw new Error(`本地 Ollama 返回 ${response.status}`)
     const payload: any = await response.json()
-    return { tags: parseAiTags(payload?.message?.content), enabled: true, model: config.model }
+    return { tags: parseAiTags(payload?.message?.content, existingTags), enabled: true, model: config.model }
   }
-  const response = await fetch(`${config.baseUrl}/chat/completions`, {
+  // OpenAI 兼容路径：llama.cpp / vLLM / LM Studio / Ollama 兼容层均可用。
+  // 先带 response_format 请求结构化 JSON；个别旧版 llama.cpp 不支持时按 400/422 重试一次去掉该字段。
+  const buildBody = (structured: boolean) => ({
+    model: config.model,
+    temperature: 0.2,
+    max_tokens: 512,
+    ...(structured ? { response_format: { type: 'json_object' as const } } : {}),
+    messages: [{ role: 'system', content: '你是图片标签助手。只输出 JSON 对象 {"matched":["已有标签"],"new":["新标签"]}，不要解释。' }, { role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: `data:${imageMime};base64,${imageBase64}` } }] }],
+  })
+  const request = (structured: boolean) => fetch(`${config.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: { ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}), 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: config.model,
-      temperature: 0.2,
-      max_tokens: 200,
-      messages: [{ role: 'system', content: '你是图片标签助手。只输出 JSON 数组，例如 ["人物","室内","插画"]，不要解释。优先从给定已有标签中选择，只有确实需要时才提出新标签。标签要简洁、具体、适合图片管理。' }, { role: 'user', content: [{ type: 'text', text: `已有标签：${existingTags.slice(0, 200).join('、') || '暂无'}\n请为这张图片生成最多12个中文标签。` }, { type: 'image_url', image_url: { url: `data:${mimeType};base64,${buffer.toString('base64')}` } }] }],
-    }),
-    signal: AbortSignal.timeout(60_000),
+    body: JSON.stringify(buildBody(structured)),
+    signal: AbortSignal.timeout(120_000),
   })
+  let response = await request(true)
+  if (response.status === 400 || response.status === 422) response = await request(false)
   if (!response.ok) throw new Error(`AI 标签服务返回 ${response.status}`)
   const payload: any = await response.json()
-  return { tags: parseAiTags(payload?.choices?.[0]?.message?.content), enabled: true, model: config.model }
+  return { tags: parseAiTags(payload?.choices?.[0]?.message?.content, existingTags), enabled: true, model: config.model }
 }
 async function currentUser(request: FastifyRequest) {
   const token = request.cookies[sessionCookie]
@@ -342,7 +430,8 @@ app.post('/api/images/upload/analyze', async (request, reply) => {
   if (!user) return
   const configuredLimit = await prisma.systemSetting.findUnique({ where: { key: 'uploadLimitMb' } })
   const uploadLimitMb = typeof configuredLimit?.value === 'number' ? configuredLimit.value : defaultSettings.uploadLimitMb
-  const existingTags = await prisma.tag.findMany({ where: user.r18Mode ? undefined : r18HiddenTagsFilter, orderBy: { name: 'asc' }, select: { name: true } })
+  // 已有标签按使用频率从高到低排列，帮助模型优先选择常用标签
+  const existingTags = await prisma.tag.findMany({ where: user.r18Mode ? undefined : r18HiddenTagsFilter, orderBy: { images: { _count: 'desc' } }, select: { name: true } })
   const aiConfig = await getAiConfig()
   const items: any[] = []
   let sourceIndex = 0
@@ -619,6 +708,36 @@ app.patch('/api/settings', async (request, reply) => {
   return { ...defaultSettings, ...safeBody, fluidSpeed: fixedFluidSpeed, aiEnabled: aiConfig.enabled, aiBaseUrl: aiConfig.baseUrl, aiModel: aiConfig.model, aiConfigured: Boolean(aiConfig.apiKey) }
 })
 
+// ---------- AI 引擎自动管理（llama.cpp 检测 / 下载 / 启动） ----------
+app.get('/api/ai/status', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  return await getAiStatus()
+})
+app.post('/api/ai/download', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const body = z.object({ variant: z.enum(['3b', '7b']).default('7b'), mirror: z.string().optional() }).parse(request.body)
+  // 后台执行下载，立即返回；进度通过 GET /api/ai/status 轮询
+  void downloadAiStack(body.variant, body.mirror).then((result) => { if (!result.ok) app.log.warn(`AI 引擎下载失败：${result.error}`) })
+  await recordAudit(request, 'AI 引擎下载', user.id, `${body.variant} 开始`)
+  return { ok: true }
+})
+app.post('/api/ai/start', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const result = await startAiServer()
+  if (result.ok) await recordAudit(request, 'AI 引擎启动', user.id, 'llama.cpp')
+  return result
+})
+app.post('/api/ai/stop', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const result = await stopAiServer()
+  await recordAudit(request, 'AI 引擎停止', user.id, 'llama.cpp')
+  return result
+})
+
 async function start() {
   await prisma.$connect()
   const savedPort = await prisma.systemSetting.findUnique({ where: { key: 'port' } })
@@ -641,5 +760,9 @@ async function start() {
     app.log.warn(`Created initial administrator. Username: ${process.env.ADMIN_USERNAME || 'admin'}`)
   }
   await app.listen({ port: runtimePort, host: process.env.HOST || '0.0.0.0' })
+  // AI 已启用且本机文件就绪时，自动拉起 llama.cpp 服务（幂等：已在运行则直接复用）
+  if ((await getAiConfig()).enabled) {
+    void startAiServer().then((result) => { if (!result.ok) app.log.warn(`AI 服务自动启动失败：${result.error}`) }).catch((error) => app.log.warn(`AI 服务自动启动异常：${error}`))
+  }
 }
 start().catch(async (error) => { app.log.error(error); await prisma.$disconnect(); process.exit(1) })

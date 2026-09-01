@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
-import { ChevronLeft, Palette, Save, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, X, Zap } from 'lucide-vue-next'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { CheckCircle2, ChevronLeft, Download, Loader2, Palette, Play, Save, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, X, Zap } from 'lucide-vue-next'
 import FluidCanvas from './FluidCanvas.vue'
+import { api, type AiStatusPayload } from '../api'
 
 const props = defineProps<{
   settings: Record<string, any>
@@ -25,8 +26,8 @@ const localDark = ref(props.isDark)
 const localWebgl = ref(props.webglEnabled)
 const localAnimation = ref(props.animationEnabled)
 const aiEnabled = ref(false)
-const aiBaseUrl = ref('http://127.0.0.1:11434')
-const aiModel = ref('qwen2.5vl:7b')
+const aiBaseUrl = ref('http://127.0.0.1:8080/v1')
+const aiModel = ref('qwen2.5-vl-7b-instruct')
 const aiApiKey = ref('')
 
 const themePalettes: Record<string, string[]> = {
@@ -45,7 +46,114 @@ watch(() => props.settings, (value) => { siteName.value = value.siteName || 'flu
 watch(() => props.fluidColors, (value) => { localColors.value = [...value] }, { deep: true })
 watch(() => props.fluidSpeed, () => { localSpeed.value = 3 })
 watch(() => props.selectedTheme, (value) => { localTheme.value = value })
-watch(() => [props.settings.aiEnabled, props.settings.aiBaseUrl, props.settings.aiModel], ([enabled, baseUrl, model]) => { aiEnabled.value = enabled === true; aiBaseUrl.value = String(baseUrl || 'http://127.0.0.1:11434'); aiModel.value = String(model || 'qwen2.5vl:7b') }, { immediate: true })
+watch(() => [props.settings.aiEnabled, props.settings.aiBaseUrl, props.settings.aiModel], ([enabled, baseUrl, model]) => { aiEnabled.value = enabled === true; aiBaseUrl.value = String(baseUrl || 'http://127.0.0.1:8080/v1'); aiModel.value = String(model || 'qwen2.5-vl-7b-instruct') }, { immediate: true })
+
+// ---------- AI 引擎状态：开关 → 检测 → 自动下载/启动 → 成功 ----------
+const aiConnState = ref<'idle' | 'checking' | 'ok' | 'error' | 'busy'>('idle')
+const aiConnText = ref('')
+const aiProgress = ref<AiStatusPayload['progress'] | null>(null)
+const aiVariant = ref('7b')
+const aiUseMirror = ref(false)
+const aiNeedDownload = ref(false)
+const aiNeedStart = ref(false)
+let aiPollTimer: number | null = null
+
+function fmtBytes(n: number) { if (!n) return '0 MB'; const mb = n / 1024 / 1024; return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB` }
+function barPct(done: number, total: number) { return total > 0 ? `${Math.min(100, Math.round((done / total) * 100))}%` : '0%' }
+function stopPollAi() { if (aiPollTimer !== null) { clearInterval(aiPollTimer); aiPollTimer = null } }
+
+function applyAiReady(st: AiStatusPayload) {
+  aiConnState.value = 'ok'
+  aiConnText.value = `已连接本地模型${st.detected?.modelId ? `（${st.detected.modelId}）` : ''} · ${st.baseUrl}`
+  if (st.baseUrl) aiBaseUrl.value = st.baseUrl
+  if (st.detected?.modelId) aiModel.value = st.detected.modelId
+  aiNeedStart.value = false
+  aiNeedDownload.value = false
+  aiProgress.value = null
+  stopPollAi()
+  save()
+}
+
+async function checkAiConnection() {
+  aiConnState.value = 'checking'
+  aiConnText.value = '正在检测本机 llama.cpp…'
+  try {
+    const st = await api.aiStatus()
+    if (st.running && st.baseUrl) { applyAiReady(st); return }
+    aiNeedDownload.value = !(st.files.server && st.files.model && st.files.mmproj)
+    aiNeedStart.value = !aiNeedDownload.value
+    aiConnState.value = 'error'
+    aiConnText.value = aiNeedDownload.value ? '未检测到本地模型，可一键自动下载安装' : '模型文件已就绪，服务未运行，点击启动'
+  } catch (error: any) {
+    aiConnState.value = 'error'
+    aiConnText.value = error?.message || '检测失败'
+  }
+}
+
+function pollAiStatus() {
+  stopPollAi()
+  aiPollTimer = window.setInterval(async () => {
+    try {
+      const st = await api.aiStatus()
+      aiProgress.value = st.progress
+      if (st.running && st.baseUrl) { applyAiReady(st); return }
+      if (st.progress.phase === 'error') {
+        stopPollAi()
+        aiConnState.value = 'error'
+        aiConnText.value = st.progress.error || '下载/启动失败，可重试'
+        aiNeedDownload.value = true
+      } else if (['idle', 'stopped'].includes(st.progress.phase) && st.files.server && st.files.model && st.files.mmproj) {
+        stopPollAi()
+        aiNeedStart.value = true
+        aiNeedDownload.value = false
+        aiConnState.value = 'error'
+        aiConnText.value = '模型文件已就绪，服务未运行，点击启动'
+      }
+    } catch { /* 轮询失败静默，等待下一次 */ }
+  }, 2000)
+}
+
+async function toggleAi() {
+  aiEnabled.value = !aiEnabled.value
+  if (aiEnabled.value) {
+    await checkAiConnection()
+  } else {
+    stopPollAi()
+    aiConnState.value = 'idle'
+    aiConnText.value = ''
+    aiProgress.value = null
+  }
+}
+
+async function startAiDownload() {
+  aiConnState.value = 'busy'
+  aiConnText.value = '正在下载（llama.cpp + 模型），请保持本页面打开…'
+  aiProgress.value = { phase: 'fetching-release', llamaDone: 0, llamaTotal: 0, modelDone: 0, modelTotal: 0, modelName: aiVariant.value === '3b' ? 'Qwen2.5-VL-3B' : 'Qwen2.5-VL-7B', variant: aiVariant.value }
+  try {
+    const result = await api.aiDownload(aiVariant.value, aiUseMirror.value ? 'https://hf-mirror.com' : undefined)
+    if (!result.ok) throw new Error(result.error || '下载启动失败')
+    pollAiStatus()
+  } catch (error: any) {
+    aiConnState.value = 'error'
+    aiConnText.value = error?.message || '下载启动失败'
+  }
+}
+
+async function startAiServer() {
+  aiConnState.value = 'busy'
+  aiConnText.value = '正在启动本地模型服务（首次加载模型可能需要 30 秒以上）…'
+  try {
+    const result = await api.aiStart()
+    if (!result.ok) throw new Error(result.error || '启动失败')
+    pollAiStatus()
+  } catch (error: any) {
+    aiConnState.value = 'error'
+    aiConnText.value = error?.message || '启动失败'
+  }
+}
+
+onMounted(() => { if (aiEnabled.value) void checkAiConnection() })
+onUnmounted(stopPollAi)
 
 function selectTheme(theme: string) {
   localTheme.value = theme
@@ -65,7 +173,7 @@ function save() { const payload: Record<string, any> = { siteName: siteName.valu
         <section class="settings-section panel"><div class="setting-title"><div><h2>服务、上传与存储</h2><p>修改端口后需要重启 Node 服务。</p></div><Zap :size="20" /></div><label class="field-label">服务端口<input v-model.number="port" type="number" min="1024" max="65535" /><small>当前服务地址端口。</small></label><label class="field-label">图片存储目录<input v-model="storageDir" /><small>支持本机目录或已映射的 NAS 盘符。</small></label><label class="field-label">单张上传限制（MB）<input v-model.number="uploadLimitMb" type="number" min="1" max="2048" /></label><label class="field-label">回收站保留天数<input v-model.number="recycleRetentionDays" type="number" min="0" max="3650" /></label></section>
         <section class="settings-section panel"><div class="setting-title"><div><h2>账户安全</h2><p>定期更新密码，保护内网媒体库。</p></div><ShieldCheck :size="20" /></div><button class="security-action" @click="emit('changePassword')"><ShieldCheck :size="16" /><span><strong>修改当前密码</strong><small>使用当前密码确认后设置新密码。</small></span><ChevronLeft :size="16" /></button></section>
       </div>
-      <section class="settings-section panel ai-settings-section"><div class="setting-title"><div><h2>AI 图片标签</h2><p>上传时调用支持视觉输入的 OpenAI 兼容模型生成建议标签。</p></div><Sparkles :size="20" /></div><div class="setting-row"><div><strong>启用 AI 标签分析</strong><small>关闭后仍可上传，但不会自动生成标签。</small></div><button :class="['switch', { on: aiEnabled }]" @click="aiEnabled = !aiEnabled"><i></i></button></div><label class="field-label">AI 接口地址<input v-model="aiBaseUrl" placeholder="https://api.openai.com/v1" /><small>也支持 Ollama、LM Studio 等 OpenAI 兼容服务。</small></label><label class="field-label">模型名称<input v-model="aiModel" placeholder="gpt-4o-mini" /></label><label class="field-label">API 密钥<input v-model="aiApiKey" type="password" placeholder="留空则保留当前密钥" /><small>密钥只保存到后端，设置接口不会回传。</small></label></section>
+      <section class="settings-section panel ai-settings-section"><div class="setting-title"><div><h2>AI 图片标签</h2><p>自动下载并运行 llama.cpp 本地视觉模型，上传时生成建议标签，图片不离开本机。</p></div><Sparkles :size="20" /></div><div class="setting-row"><div><strong>启用 AI 标签分析</strong><small>开启后自动检测本机 llama.cpp，未安装时可一键自动下载。</small></div><div class="ai-switch-row"><span v-if="aiConnState === 'ok'" class="ai-badge ok"><CheckCircle2 :size="14" />成功</span><span v-else-if="aiConnState === 'checking'" class="ai-badge checking"><Loader2 :size="14" class="spin" />检测中</span><span v-else-if="aiConnState === 'busy'" class="ai-badge busy"><Loader2 :size="14" class="spin" />运行中</span><span v-else-if="aiConnState === 'error'" class="ai-badge error"><X :size="14" />未连接</span><button :class="['switch', { on: aiEnabled }]" @click="toggleAi"><i></i></button></div></div><p v-if="aiConnText" class="ai-conn-text">{{ aiConnText }}</p><div v-if="aiEnabled && aiNeedDownload && aiConnState !== 'busy'" class="ai-setup-panel"><div class="ai-setup-options"><label>模型<select v-model="aiVariant"><option value="7b">Qwen2.5-VL-7B（推荐，约 5.7GB）</option><option value="3b">Qwen2.5-VL-3B（轻量，约 3.1GB）</option></select></label><label class="ai-mirror"><input v-model="aiUseMirror" type="checkbox" />使用国内镜像下载（hf-mirror.com）</label></div><button class="primary-button" @click="startAiDownload"><Download :size="15" />自动下载并启动（无需密钥）</button></div><div v-else-if="aiEnabled && aiNeedStart && aiConnState !== 'busy'" class="ai-setup-panel"><button class="primary-button" @click="startAiServer"><Play :size="15" />启动本地模型服务</button></div><div v-if="aiProgress && aiConnState === 'busy'" class="ai-progress-panel"><div v-if="aiProgress.phase === 'downloading-llama' || aiProgress.phase === 'fetching-release'" class="ai-progress-row"><span>llama.cpp 引擎</span><div class="ai-bar"><i :style="{ width: barPct(aiProgress.llamaDone, aiProgress.llamaTotal) }"></i></div><em>{{ barPct(aiProgress.llamaDone, aiProgress.llamaTotal) }}</em></div><div v-if="aiProgress.phase === 'downloading-model'" class="ai-progress-row"><span>模型 {{ aiProgress.modelName }}</span><div class="ai-bar"><i :style="{ width: barPct(aiProgress.modelDone, aiProgress.modelTotal) }"></i></div><em>{{ barPct(aiProgress.modelDone, aiProgress.modelTotal) }} · {{ fmtBytes(aiProgress.modelDone) }}/{{ fmtBytes(aiProgress.modelTotal) }}</em></div><p v-if="aiProgress.phase === 'extracting'" class="ai-phase-text">正在解压 llama.cpp…</p><p v-else-if="aiProgress.phase === 'starting'" class="ai-phase-text">正在启动模型服务并等待就绪（首次加载模型可能需要 30 秒以上）…</p></div><label class="field-label">AI 接口地址<input v-model="aiBaseUrl" placeholder="http://127.0.0.1:8080/v1" /><small>检测到本机 llama.cpp 后自动填入；也兼容 Ollama、LM Studio 等 OpenAI 兼容服务。</small></label><label class="field-label">模型名称<input v-model="aiModel" placeholder="qwen2.5-vl-7b-instruct" /><small>llama.cpp 不校验模型名；Ollama 需填实际模型名。</small></label><label class="field-label">API 密钥<input v-model="aiApiKey" type="password" placeholder="本地模型无需密钥，留空即可" /><small>仅接入云端服务时才需要；密钥只保存到后端，不回传。</small></label></section>
     </div>
   </div>
 </template>

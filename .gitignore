@@ -4,4 +4,6 @@ dist/
 .env.*
 !.env.example
 storage/
+models/
 client/.vite/
+logs/

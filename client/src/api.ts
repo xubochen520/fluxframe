@@ -36,6 +36,14 @@ export interface CurrentUser { id: string; username: string; role: 'ADMIN' | 'US
 export interface DashboardPayload { stats: { imageCount: number; tagCount: number; userCount: number; totalViews: number; storage: string; storageCapacity: string; storagePercent: number; databaseImageBytes: string }; top: ImageItem[]; recent: ImageItem[]; logs: AuditLog[] }
 export interface UploadAnalysisItem { sourceIndex: number; tempId: string | null; fileName: string; name: string; mimeType: string; size: number; width: number; height: number; tags: string[]; duplicate: boolean; duplicateName?: string; aiError?: string }
 export interface UploadAnalysisPayload { items: UploadAnalysisItem[]; aiEnabled: boolean; aiModel: string }
+export interface AiStatusPayload {
+  running: boolean
+  port: number | null
+  baseUrl: string | null
+  detected: { port: number; modelId: string | null } | null
+  files: { server: boolean; model: boolean; mmproj: boolean; variant: string | null }
+  progress: { phase: string; llamaDone: number; llamaTotal: number; modelDone: number; modelTotal: number; modelName: string; variant: string; error?: string; port?: number }
+}
 
 export const api = {
   me: () => request<CurrentUser>('/api/me'),
@@ -65,4 +73,8 @@ export const api = {
   logs: () => request<{ items: AuditLog[] }>('/api/audit-logs'),
   settings: () => request<Record<string, unknown>>('/api/settings'),
   saveSettings: (settings: Record<string, unknown>) => request<Record<string, unknown>>('/api/settings', { method: 'PATCH', body: JSON.stringify(settings) }),
+  aiStatus: () => request<AiStatusPayload>('/api/ai/status'),
+  aiDownload: (variant: string, mirror?: string) => request<{ ok: boolean; error?: string }>('/api/ai/download', { method: 'POST', body: JSON.stringify({ variant, mirror }) }),
+  aiStart: () => request<{ ok: boolean; error?: string }>('/api/ai/start', { method: 'POST', body: '{}' }),
+  aiStop: () => request<{ ok: boolean }>('/api/ai/stop', { method: 'POST', body: '{}' }),
 }
