@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>纯享解析 · 视频解析去水印工具 | 一键预览 / 下载 / 超分</title>
+<meta name="description" content="粘贴抖音、快手、B站、小红书等平台分享链接，自动识别并解析无水印视频，支持在线预览、无水印下载与 AI 画质增强（超分）。" />
+<meta name="theme-color" content="#07080f" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2322d3ee'/%3E%3Cstop offset='.55' stop-color='%23818cf8'/%3E%3Cstop offset='1' stop-color='%23f472b6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Cpath d='M26 20.5v23l19-11.5z' fill='%23fff'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="css/style.css" />
+<link rel="stylesheet" href="css/save-lib.css" />
+</head>
+<body data-mode="demo">
+
+<!-- 顶部公告 -->
+<div class="announce"><span class="announce-dot"></span>当前为<strong>本地演示模式</strong>：解析结果由内置引擎模拟生成；接入真实解析接口的方法见页面底部说明。</div>
+
+<!-- ============ 导航 ============ -->
+<header class="site-head" id="top">
+  <div class="container nav">
+    <a class="brand" href="#top" aria-label="纯享解析 首页">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 64 64" width="26" height="26"><path d="M26 20.5v23l19-11.5z" fill="#fff"/></svg>
+      </span>
+      <span class="brand-text">
+        <b>纯享解析</b>
+        <i>PureParse · 视频去水印下载</i>
+      </span>
+    </a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="#tool">开始解析</a>
+      <a href="#platforms">支持平台</a>
+      <a href="#how">使用步骤</a>
+      <a href="#faq">常见问题</a>
+    </nav>
+    <a class="btn btn-sm btn-primary nav-cta" href="#tool">立即解析</a>
+  </div>
+</header>
+
+<main>
+  <!-- ============ 英雄区 ============ -->
+  <section class="hero" id="hero">
+    <div class="hero-bg" aria-hidden="true">
+      <span class="blob blob-a"></span><span class="blob blob-b"></span><span class="blob blob-c"></span>
+      <span class="grid-fade"></span>
+    </div>
+    <div class="container hero-in">
+      <p class="eyebrow reveal"><span class="eyebrow-line"></span>抖音 · 快手 · B站 · 小红书 · 微博 · 视频号 等 8+ 平台<span class="eyebrow-line"></span></p>
+      <h1 class="reveal">
+        一键解析<em>无水印</em>视频
+        <span class="h1-sub">在线 <i class="grad-txt">预览</i> · <i class="grad-txt">下载</i> · <i class="grad-txt">超分</i>，一步到位</span>
+      </h1>
+      <p class="hero-desc reveal">粘贴平台分享链接，自动识别来源并提取去水印直链视频。<br class="br-desk" />全程无会员、无收费，支持本地历史记录与画质增强。</p>
+      <div class="hero-cta reveal">
+        <a class="btn btn-xl btn-primary" href="#tool"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>开始解析视频</a>
+        <a class="btn btn-xl btn-ghost" href="#how">查看使用步骤</a>
+      </div>
+      <ul class="hero-stats reveal">
+        <li><b>8+</b><span>主流平台</span></li>
+        <li><b>&lt;2s</b><span>识别响应</span></li>
+        <li><b>原画</b><span>无水印直链</span></li>
+        <li><b>2×/4×</b><span>AI 超分增强</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ 解析工具 ============ -->
+  <section class="section tool-sec" id="tool">
+    <div class="container">
+      <form class="tool-card glass-card reveal" id="parseForm" novalidate>
+        <div class="tool-head">
+          <div class="tool-heading">
+            <h2>视频解析工作台</h2>
+            <p>粘贴 / 输入任意平台的「分享」链接，回车即可开始</p>
+          </div>
+          <button type="button" class="mode-pill" id="modePill" title="点击了解演示模式">
+            <span class="dot" aria-hidden="true"></span><span id="modeText">演示模式 · 本地模拟</span>
+          </button>
+        </div>
+
+        <div class="parse-row">
+          <div class="parse-input-wrap" id="inputWrap">
+            <span class="plat-badge" id="platBadge" data-empty="1" title="自动识别平台">
+              <span class="plat-badge-inner" id="platBadgeInner"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v5c0 4.6-3 8.6-7 10-4-1.4-7-5.4-7-10V6z" opacity=".9"/><path d="M9.5 11.8l2 2 3.5-4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            </span>
+            <input id="urlInput" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+                   placeholder="粘贴分享链接，如 https://v.douyin.com/xxxxxxx/" aria-label="视频链接" />
+            <button class="input-clear" id="inputClear" type="button" aria-label="清空输入" hidden>
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <button class="btn btn-primary btn-parse" id="parseBtn" type="submit">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+            <span>开始解析</span>
+          </button>
+        </div>
+
+        <div class="parse-sub">
+          <div class="sample-row" id="sampleRow">
+            <span class="sample-label">试试示例：</span>
+            <button type="button" class="chip sample-chip" data-url="https://v.douyin.com/kIFVd-Q23eg/">抖音</button>
+            <button type="button" class="chip sample-chip" data-url="https://v.kuaishou.com/aBcDeFgH">快手</button>
+            <button type="button" class="chip sample-chip" data-url="https://www.bilibili.com/video/BV1xx411c7mD">B站</button>
+            <button type="button" class="chip sample-chip" data-url="https://xhslink.com/a/8ZfQ2mNbKxY">小红书</button>
+          </div>
+          <div class="detect-line" id="detectLine" hidden>
+            <span class="detect-chip" id="detectChip"><b id="detectName">抖音</b><span id="detectReason">从分享文本中自动提取</span></span>
+            <code class="detect-url" id="detectUrl" title="点击复制链接"></code>
+            <span class="detect-tail" id="detectTail" hidden></span>
+            <span class="ok-msg" id="detectOk">✓ 链接有效</span>
+          </div>
+        </div>
+
+        <!-- 解析进度 -->
+        <div class="parse-flow" id="parseFlow" hidden aria-live="polite">
+          <div class="flow-bar"><span id="flowBarFill"></span></div>
+          <ol class="flow-steps" id="flowSteps">
+            <li data-step="1"><span class="fs-ico"></span><span class="fs-label">校验链接</span></li>
+            <li data-step="2"><span class="fs-ico"></span><span class="fs-label">识别平台</span></li>
+            <li data-step="3"><span class="fs-ico"></span><span class="fs-label">解析无水印直链</span></li>
+            <li data-step="4"><span class="fs-ico"></span><span class="fs-label">提取视频信息</span></li>
+            <li data-step="5"><span class="fs-ico"></span><span class="fs-label">就绪</span></li>
+          </ol>
+          <p class="flow-msg" id="flowMsg">正在请求解析服务…</p>
+        </div>
+
+        <!-- 真实解析失败 → 显式演示降级 -->
+        <div class="fallback-bar" id="fallbackBar" hidden>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9L2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4.5M12 17.2v.1"/></svg>
+          <span class="fb-tx" id="fbMsg"></span>
+          <button class="btn btn-sm btn-primary" id="demoFallbackBtn" type="button">以演示片源预览完整流程</button>
+        </div>
+
+        <!-- 解析结果 -->
+        <div class="result" id="resultWrap" hidden>
+          <div class="result-grid">
+            <!-- 播放器 -->
+            <div class="media-col">
+              <div class="video-shell" id="videoShell">
+                <video id="vid" playsinline preload="metadata"></video>
+                <div class="cover-shade" id="coverShade"></div>
+                <span class="wm-fx" id="wmFx" hidden></span>
+                <div class="media-badges">
+                  <span class="badge badge-live" id="badgeNw"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>无水印直链</span>
+                  <span class="badge badge-demo" id="badgeDemo" hidden>🎬 演示片源 · 非平台真实内容</span>
+                  <span class="badge badge-plat" id="badgePlat">抖音</span>
+                  <span class="badge badge-sr" id="badgeSr" hidden><svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12 2l2.1 6.6L21 9.6l-5.1 4.4 1.5 6.9L12 17.2l-5.4 3.7 1.5-6.9L3 9.6l6.9-1z" opacity=".0"/></svg>✦ 已超分</span>
+                </div>
+                <button type="button" class="big-play" id="bigPlay" aria-label="播放预览">
+                  <span class="big-play-ring"></span>
+                  <svg viewBox="0 0 24 24" width="26" height="26" fill="#fff"><path d="M8 5.5v13l11-6.5z"/></svg>
+                </button>
+                <div class="v-loading" id="vLoading" hidden><span class="spinner"></span><i id="vLoadingMsg">加载中…</i></div>
+                <!-- 控制栏 -->
+                <div class="ctrl" id="ctrl" hidden>
+                  <div class="ctrl-seek">
+                    <span class="buf" id="bufBar"></span>
+                    <input type="range" id="seek" min="0" max="1000" step="1" value="0" aria-label="播放进度" />
+                  </div>
+                  <div class="ctrl-row">
+                    <button type="button" class="c-btn" id="pPlay" aria-label="播放 / 暂停">
+                      <svg class="ic-play" viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>
+                      <svg class="ic-pause" viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M7 5h3.4v14H7zM13.6 5H17v14h-3.4z"/></svg>
+                    </button>
+                    <span class="t-time"><b id="tNow">00:00</b><i>/</i><em id="tDur">00:00</em></span>
+                    <button type="button" class="c-btn rate" id="rateBtn" aria-label="播放速度">1×</button>
+                    <span class="ctrl-sp"></span>
+                    <span class="res-tag" id="resTag">640×360 · WebM</span>
+                    <button type="button" class="c-btn" id="pFs" aria-label="全屏">
+                      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 信息与操作 -->
+            <div class="info-col">
+              <div class="meta-top">
+                <span class="plat-chip" id="rPlatChip"><i class="plat-char">抖</i>抖音 · 短视频</span>
+                <span class="time-chip" id="rTimeChip"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg><em id="rDur">0:06</em></span>
+              </div>
+              <h3 class="r-title" id="rTitle">演示视频标题</h3>
+              <div class="r-author">
+                <span class="avatar" id="rAvatar">A</span>
+                <span class="a-info"><b id="rAuthor">演示作者</b><i id="rHandle">@demo_author · 已认证</i></span>
+              </div>
+              <ul class="r-stats">
+                <li><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg><b id="stLike">12.6万</b></li>
+                <li><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.3c-1.6 0-3-.4-4.3-1L3 20l1.2-5A8.3 8.3 0 0 1 4.5 11.5 8.4 8.4 0 0 1 13 3.2a8.4 8.4 0 0 1 8 8.3z" stroke-linejoin="round"/></svg><b id="stCmt">1.2万</b></li>
+                <li><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 11h14M5 11l4-4M5 11l4 4M19 13H5m14 0l-4-4m4 4l-4 4" stroke-linecap="round" stroke-linejoin="round"/></svg><b id="stShare">8.4万</b></li>
+              </ul>
+
+              <div class="hr"></div>
+
+              <div class="op-row">
+                <button type="button" class="btn btn-primary op-dl" id="dlVideo">
+                  <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  <span class="op-tx">下载无水印视频<em class="dl-size" id="dlSize">—</em></span>
+                </button>
+                <button type="button" class="btn btn-ghost op-sm" id="dlCover" title="下载封面图片">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-4.6-4.6a2 2 0 0 0-2.8 0L6 18"/></svg>封面
+                </button>
+                <button type="button" class="btn btn-ghost op-sm" id="copyLink" title="复制解析到的直链地址">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2.5"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>直链
+                </button>
+                <button type="button" class="btn btn-ghost op-sm" id="btnAgain" title="重新解析">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>重试
+                </button>
+              </div>
+
+              <button type="button" class="btn btn-primary op-save-lib" id="saveLib" title="保存到内网图片库（fluxframe）">
+                <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                <span class="op-tx">保存到图片库<em id="saveLibHint">无水印视频入库 · 自动带「视频」标签</em></span>
+              </button>
+
+              <!-- 超分 -->
+              <div class="sr-card" id="srCard">
+                <div class="sr-head">
+                  <span class="sr-ico"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.7L20 10l-5.1 4.3 1.5 6L12 17l-4.4 3.3 1.5-6L4 10l6.1-1.3z"/></svg></span>
+                  <span class="sr-tt"><b>AI 画质增强 · 超分</b><i>本地渲染增强（演示），接入后端后为真实推理</i></span>
+                </div>
+                <div class="sr-body">
+                  <div class="seg" id="srSeg" role="radiogroup" aria-label="超分倍数">
+                    <label class="seg-item"><input type="radio" name="sr" value="2" checked /><span>2× 高清增强 <i>→ 1280×720</i></span></label>
+                    <label class="seg-item"><input type="radio" name="sr" value="4" /><span>4× 超清重建 <i>→ 2560×1440 · 较慢</i></span></label>
+                  </div>
+                  <button type="button" class="btn btn-sr" id="srRun">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4.5 12.5H11L9.5 22 19 10.5h-6.5z"/></svg>
+                    开始超分
+                  </button>
+                </div>
+                <p class="sr-note" id="srNote">当前为源片画质，超分后自动替换预览与下载文件。</p>
+              </div>
+
+              <details class="raw-info">
+                <summary>查看解析信息（直链 / JSON）</summary>
+                <div class="raw-body">
+                  <div class="raw-line"><span>无水印直链</span><code id="rawUrl">blob:pureparse/demo</code><button class="mini-copy" id="copyRaw" type="button">复制</button></div>
+                  <pre id="rawJson" class="raw-json"></pre>
+                </div>
+              </details>
+            </div>
+          </div>
+        </div>
+      </form>
+
+      <!-- 历史 -->
+      <div class="history glass-card" id="history" hidden>
+        <div class="history-head"><h3><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2.5a9.5 9.5 0 1 0 9.5 9.5A9.5 9.5 0 0 0 12 2.5z" transform="rotate(0 12 12)"/><path d="M12 7v5.2l3.4 2"/></svg>最近解析</h3><button class="link-btn" id="clearHist" type="button">清空记录</button></div>
+        <div class="hist-chips" id="histChips"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 支持平台 ============ -->
+  <section class="section" id="platforms">
+    <div class="container">
+      <header class="sec-head reveal">
+        <p class="eyebrow">PLATFORMS</p>
+        <h2>支持主流短视频平台</h2>
+        <p>粘贴链接后自动识别来源，无需手动选择平台</p>
+      </header>
+      <div class="plat-grid">
+        <article class="plat-card reveal" data-plat="douyin"><span class="p-ico pc-douyin">抖</span><h3>抖音 / TikTok</h3><p>v.douyin.com · iesdouyin.com<br /><em>短视频 / 图文 · 无水印下载</em></p></article>
+        <article class="plat-card reveal" data-plat="kuaishou"><span class="p-ico pc-kuaishou">快</span><h3>快手</h3><p>v.kuaishou.com · chenzhongtech<br /><em>短视频 · 原画下载</em></p></article>
+        <article class="plat-card reveal" data-plat="bilibili"><span class="p-ico pc-bilibili">B</span><h3>哔哩哔哩</h3><p>bilibili.com · b23.tv<br /><em>视频 / 番剧 · 多清晰度</em></p></article>
+        <article class="plat-card reveal" data-plat="xiaohongshu"><span class="p-ico pc-xhs">红</span><h3>小红书</h3><p>xhslink.com · xiaohongshu.com<br /><em>视频笔记 · 无水印下载</em></p></article>
+        <article class="plat-card reveal" data-plat="weibo"><span class="p-ico pc-weibo">博</span><h3>微博</h3><p>weibo.com / tv · weibo.cn<br /><em>视频 / 直播回放</em></p></article>
+        <article class="plat-card reveal" data-plat="shipinhao"><span class="p-ico pc-sph">视</span><h3>微信视频号</h3><p>channels.weixin.qq.com<br /><em>视频号内容解析</em></p></article>
+        <article class="plat-card reveal" data-plat="xigua"><span class="p-ico pc-xigua">瓜</span><h3>西瓜视频</h3><p>ixigua.com · 中视频<br /><em>高清 / 4K 内容</em></p></article>
+        <article class="plat-card reveal" data-plat="pipixia"><span class="p-ico pc-pipixia">皮</span><h3>皮皮虾</h3><p>pipix.com<br /><em>鬼畜 / 搞笑短视频</em></p></article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 使用步骤 ============ -->
+  <section class="section" id="how">
+    <div class="container">
+      <header class="sec-head reveal">
+        <p class="eyebrow">HOW IT WORKS</p>
+        <h2>三步获取无水印视频</h2>
+        <p>从复制链接到超分下载，最快不到 10 秒</p>
+      </header>
+      <div class="how-grid">
+        <article class="how-card reveal"><span class="how-num">01</span><span class="how-ico i1"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg></span><h3>复制分享链接</h3><p>在 App 内点击「分享 → 复制链接」，把链接粘贴到上方输入框。</p></article>
+        <article class="how-card reveal"><span class="how-num">02</span><span class="how-ico i2"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><path d="M8 11l2 2 4-4.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><h3>点击「开始解析」</h3><p>工具自动识别平台 → 解析无水印直链 → 提取标题、作者与统计数据。</p></article>
+        <article class="how-card reveal"><span class="how-num">03</span><span class="how-ico i3"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/><path d="M12 3l1.9 5.7L20 10l-5.1 4.3 1.5 6L12 17l-4.4 3.3 1.5-6L4 10l6.1-1.3z"/></svg></span><h3>预览 / 下载 / 超分</h3><p>在线预览确认内容，下载无水印视频与封面，需要高清时一键 AI 超分。</p></article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 常见问题 ============ -->
+  <section class="section" id="faq">
+    <div class="container narrow">
+      <header class="sec-head reveal">
+        <p class="eyebrow">FAQ</p>
+        <h2>常见问题</h2>
+      </header>
+      <div class="faq-list">
+        <details class="faq reveal" open>
+          <summary>为什么当前是「演示模式」？如何接入真实解析？<span class="chev"></span></summary>
+          <div class="faq-a"><p>平台接口普遍存在防盗链与风控，浏览器直连无法完成解析，需要服务器转发。为方便体验，本页面内置了本地演示引擎：解析流程、平台识别、预览播放、下载与超分均为真实可用的完整交互，但视频内容为本地生成的示例片源。接入真实服务：将 <code>js/app.js</code> 顶部 <code>API.endpoint</code> 改为你的解析服务地址，并按 <code>README.md</code> 中的协议返回 JSON 即可，前端无需其他改动。</p></div>
+        </details>
+        <details class="faq reveal">
+          <summary>支持哪些平台？解析后是原画质吗？<span class="chev"></span></summary>
+          <div class="faq-a"><p>已内置抖音 / TikTok、快手、B站、小红书、微博、视频号、西瓜、皮皮虾等主流平台识别规则，可自由扩展。真实接入后默认返回平台无水印源画质（原画 / 高清直链）；演示模式下为 640×360 示例片源，可用超分增强至 720P / 1440P。</p></div>
+        </details>
+        <details class="faq reveal">
+          <summary>超分（Super Resolution）是怎么实现的？<span class="chev"></span></summary>
+          <div class="faq-a"><p>页面内置超分工作台：演示模式下用本地渲染引擎对片源进行 2× / 4× 真实重绘增强（生成的文件分辨率、体积会真实变化），用于完整走通交互链路；接入后端后可将任务转发给 Real-ESRGAN / Waifu2x 等模型服务，前端交互无需改动。</p></div>
+        </details>
+        <details class="faq reveal">
+          <summary>下载的文件是什么格式？可以商用吗？<span class="chev"></span></summary>
+          <div class="faq-a"><p>演示模式下载 WebM 视频与 PNG 封面；真实服务可配置为 MP4 / 封面 / 音频等资产。请仅用于个人学习、备份与二次创作素材，<b>不得搬运商用或恶意抹除版权信息牟利</b>，发布前请遵守各平台版权规则。</p></div>
+        </details>
+        <details class="faq reveal">
+          <summary>解析记录保存在哪里？会泄露隐私吗？<span class="chev"></span></summary>
+          <div class="faq-a"><p>历史记录仅存于浏览器 <code>localStorage</code>（本机），不会上传任何服务器；演示模式不发起任何网络请求，所有内容在本地生成。接入真实服务后，请求仅发往你配置的解析接口。</p></div>
+        </details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ============ 页脚 ============ -->
+<footer class="footer">
+  <div class="container footer-in">
+    <div class="foot-brand">
+      <span class="brand-mark sm"><svg viewBox="0 0 64 64" width="20" height="20"><path d="M26 20.5v23l19-11.5z" fill="#fff"/></svg></span>
+      <div><b>纯享解析 PureParse</b><p>视频解析 · 去水印下载 · 画质增强</p></div>
+    </div>
+    <p class="foot-note">演示项目 · 页面内解析为本地模拟，未接入真实平台接口<br />请遵守《著作权法》与各平台用户协议，仅限个人学习使用</p>
+    <p class="foot-copy">© 2025 PureParse · 用心构建 <span class="heart">♥</span></p>
+  </div>
+</footer>
+
+<!-- 超分进度弹窗 -->
+<div class="modal-back" id="srModal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-label="AI 超分进度">
+    <div class="modal-ico"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.7L20 10l-5.1 4.3 1.5 6L12 17l-4.4 3.3 1.5-6L4 10l6.1-1.3z"/></svg></div>
+    <h3>AI 画质增强进行中</h3>
+    <p class="modal-sub" id="srModalSub">正在以 2× 重建 1280×720 高清画面…</p>
+    <div class="modal-bar"><span id="srBarFill"></span></div>
+    <ul class="modal-steps" id="srSteps">
+      <li>帧序列提取</li>
+      <li>超分模型推理</li>
+      <li>去噪与锐化</li>
+      <li>编码封装</li>
+    </ul>
+    <p class="modal-tip">演示模式下由本地引擎渲染，真实服务可替换为 Real-ESRGAN 等模型</p>
+    <button class="btn btn-ghost modal-cancel" id="srCancel">取消</button>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script src="js/app.js"></script>
+<script src="js/save-lib.js"></script>
+</body>
+</html>

@@ -13,6 +13,7 @@ import { mkdir, readFile, readdir, rename, rm, stat, statfs, writeFile } from 'n
 import path from 'node:path'
 import { z } from 'zod'
 import { downloadAiStack, getAiStatus, startAiServer, stopAiServer } from './ai-manager.js'
+import { registerParseApi } from './parse-server.js'
 
 const prisma = new PrismaClient()
 const app = Fastify({
@@ -756,6 +757,9 @@ app.post('/api/ai/stop', async (request, reply) => {
   await recordAudit(request, 'AI 引擎停止', user.id, 'llama.cpp')
   return result
 })
+
+// ---------- 视频解析引擎（纯享解析 PureParse）：/api/parse /api/stream /api/ping ----------
+registerParseApi(app)
 
 async function start() {
   await prisma.$connect()
