@@ -52,6 +52,7 @@ async function chooseFiles(event: Event) {
   } finally { input.value = '' }
 }
 function isTagR18(name: string) { return name === 'R-18' || (props.availableTags || []).some((tag) => tag.name === name && tag.r18) }
+function isVideo(item: { mimeType?: string }) { return !!item.mimeType && item.mimeType.startsWith('video/') }
 function availableFor(item: ReviewItem): string[] {
   const queryText = (tagInputs.value[item.tempId!] || '').trim().replace(/^#/, '').toLowerCase()
   return (props.availableTags || []).map((tag) => tag.name).filter((name) => (props.r18Mode || !isTagR18(name)) && name !== 'R-18' && !item.tags.includes(name) && (!queryText || name.toLowerCase().includes(queryText))).slice(0, 10)
@@ -112,23 +113,23 @@ onBeforeUnmount(() => { items.value.forEach(revokePreview); void cancelPending()
     <div class="modal upload-review-modal">
       <button class="modal-close" :disabled="stage === 'analyzing' || stage === 'uploading'" @click="close"><X :size="18" /></button>
       <div class="upload-icon"><Sparkles v-if="stage === 'reviewing'" :size="25" /><Upload v-else :size="25" /></div>
-      <h2>{{ stage === 'reviewing' ? '确认图片标签' : stage === 'analyzing' ? 'AI 正在分析' : stage === 'uploading' ? '正在完成上传' : '上传图片' }}</h2>
-      <p v-if="stage === 'select'">支持 JPG、PNG、WEBP，可一次选择多张图片。</p>
-      <p v-else-if="stage === 'analyzing'" class="upload-status"><LoaderCircle :size="15" class="spin" />正在逐张识别图片内容和标签，请稍候。</p>
-      <p v-else-if="stage === 'uploading'" class="upload-status"><LoaderCircle :size="15" class="spin" />正在写入原图、缩略图和数据库。</p>
-      <p v-else class="upload-status"><Sparkles :size="15" />{{ aiEnabled ? `AI 建议已生成（${aiModel}），点击标签可删除。` : '未配置 AI 服务，可手动添加标签后上传。' }}</p>
+      <h2>{{ stage === 'reviewing' ? '确认媒体标签' : stage === 'analyzing' ? 'AI 正在分析' : stage === 'uploading' ? '正在完成上传' : '上传媒体' }}</h2>
+      <p v-if="stage === 'select'">支持图片（JPG、PNG、WEBP）与视频（MP4、WebM、MOV 等），视频会自动带上「视频」标签。</p>
+      <p v-else-if="stage === 'analyzing'" class="upload-status"><LoaderCircle :size="15" class="spin" />正在逐张分析图片内容，请稍候。</p>
+      <p v-else-if="stage === 'uploading'" class="upload-status"><LoaderCircle :size="15" class="spin" />正在写入文件和数据库。</p>
+      <p v-else class="upload-status"><Sparkles :size="15" />{{ aiEnabled ? `AI 建议已生成（${aiModel}），视频已自动标记「视频」。点击标签可删除。` : '视频已自动标记「视频」，可手动调整或补充标签。' }}</p>
 
       <label v-if="stage === 'select'" class="drop-zone upload-review-drop-zone">
-        <input type="file" accept="image/*" multiple @change="chooseFiles" />
-        <Upload :size="25" /><strong>点击选择图片</strong><span>选择后会先进入标签确认</span>
+        <input type="file" accept="image/*,video/*" multiple @change="chooseFiles" />
+        <Upload :size="25" /><strong>点击选择图片或视频</strong><span>选择后会先进入标签确认</span>
       </label>
 
       <div v-else-if="stage === 'reviewing'" class="upload-review-content">
-        <div class="upload-review-toolbar"><strong>{{ selectedCount }} 张待上传</strong><div class="upload-toolbar-right"><button class="r18-toggle" :class="{ on: props.r18Mode }" :title="props.r18Mode ? '关闭 R18 模式' : '开启 R18 模式后可选择 R18 链接标签'" @click="emit('toggleR18')"><ShieldCheck :size="13" />R18<i></i></button><span>{{ items.length }} 张已分析</span></div></div>
+        <div class="upload-review-toolbar"><strong>{{ selectedCount }} 个待上传</strong><div class="upload-toolbar-right"><button class="r18-toggle" :class="{ on: props.r18Mode }" :title="props.r18Mode ? '关闭 R18 模式' : '开启 R18 模式后可选择 R18 链接标签'" @click="emit('toggleR18')"><ShieldCheck :size="13" />R18<i></i></button><span>{{ items.length }} 个已分析</span></div></div>
         <div class="upload-review-grid">
           <article v-for="(item, index) in items" :key="item.tempId || `${item.fileName}-${index}`" class="upload-review-item" :class="{ duplicate: item.duplicate }">
             <button class="review-remove" title="移除" @click="removeItem(index)"><X :size="14" /></button>
-            <img class="review-preview" :src="item.previewUrl" :alt="item.fileName" />
+            <video v-if="isVideo(item)" class="review-preview" :src="item.previewUrl + '#t=0.5'" muted playsinline preload="metadata" :title="item.fileName" /><img v-else class="review-preview" :src="item.previewUrl" :alt="item.fileName" />
             <div class="review-info">
               <input v-model="item.name" class="review-name" :disabled="item.duplicate" />
               <small v-if="item.duplicate" class="review-warning">与已有图片重复：{{ item.duplicateName }}</small>
@@ -139,7 +140,7 @@ onBeforeUnmount(() => { items.value.forEach(revokePreview); void cancelPending()
             </div>
           </article>
         </div>
-        <button class="primary-button full" :disabled="!selectedCount" @click="complete"><Check :size="17" />完成上传（{{ selectedCount }} 张）</button>
+        <button class="primary-button full" :disabled="!selectedCount" @click="complete"><Check :size="17" />完成上传（{{ selectedCount }} 个）</button>
       </div>
       <div v-if="error" class="auth-error upload-review-error">{{ error }}</div>
     </div>

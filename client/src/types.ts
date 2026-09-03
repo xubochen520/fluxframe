@@ -4,6 +4,7 @@ export type IconName = 'LayoutDashboard' | 'Images' | 'Tags' | 'ScrollText' | 'T
 export interface ImageItem {
   id: string
   name: string
+  mimeType?: string
   url: string
   thumb: string
   width: number

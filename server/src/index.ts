@@ -3,6 +3,7 @@ import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify'
 import cors from '@fastify/cors'
 import cookie from '@fastify/cookie'
 import multipart from '@fastify/multipart'
+import fastifyStatic from '@fastify/static'
 import argon2 from 'argon2'
 import { PrismaClient, type Prisma } from '@prisma/client'
 import sharp from 'sharp'
@@ -272,6 +273,7 @@ function imageDto(image: any) {
   return {
     id: image.id,
     name: image.name,
+    mimeType: image.mimeType,
     url: `/api/images/${image.id}/file`,
     thumb: thumbnail ? `/api/images/${image.id}/variant/320` : `/api/images/${image.id}/file`,
     width: image.width || 0,
@@ -402,11 +404,14 @@ async function finalizePendingUpload(request: FastifyRequest, user: { id: string
   const originalKey = `originals/${id}${ext}`
   await rename(safeStoragePath(pending.tempKey), safeStoragePath(originalKey))
   const variants: Array<{ width: number; key: string }> = []
+  const isImage = pending.mimeType.startsWith('image/')
   try {
-    for (const width of [320, 768, 1600]) {
-      const key = `thumbnails/${id}-${width}.webp`
-      await sharp(safeStoragePath(originalKey)).resize({ width, withoutEnlargement: true }).webp({ quality: 84 }).toFile(safeStoragePath(key))
-      variants.push({ width, key })
+    if (isImage) {
+      for (const width of [320, 768, 1600]) {
+        const key = `thumbnails/${id}-${width}.webp`
+        await sharp(safeStoragePath(originalKey)).resize({ width, withoutEnlargement: true }).webp({ quality: 84 }).toFile(safeStoragePath(key))
+        variants.push({ width, key })
+      }
     }
     const image = await prisma.$transaction(async (tx) => {
       const created = await tx.image.create({ data: { id, name, originalKey, mimeType: pending.mimeType, size: BigInt(pending.size), width: pending.width, height: pending.height, sha256: pending.sha256, uploaderId: user.id, variants: { create: variants } } })
@@ -438,14 +443,16 @@ app.post('/api/images/upload/analyze', async (request, reply) => {
   for await (const part of request.parts()) {
     if (part.type !== 'file') continue
     const currentIndex = sourceIndex++
-    if (!part.mimetype.startsWith('image/')) continue
+    const isImage = part.mimetype.startsWith('image/')
+    const isVideo = part.mimetype.startsWith('video/')
+    if (!isImage && !isVideo) continue
     const buffer = await part.toBuffer()
-    if (buffer.byteLength > uploadLimitMb * 1024 * 1024) return reply.code(413).send({ message: `单张图片不能超过 ${uploadLimitMb} MB` })
-    const metadata = await sharp(buffer).metadata()
+    if (buffer.byteLength > uploadLimitMb * 1024 * 1024) return reply.code(413).send({ message: `单个文件不能超过 ${uploadLimitMb} MB` })
+    const metadata = isImage ? await sharp(buffer).metadata() : null
     const hash = createHash('sha256').update(buffer).digest('hex')
     const duplicate = await prisma.image.findUnique({ where: { sha256: hash }, select: { name: true } })
     if (duplicate) {
-      items.push({ sourceIndex: currentIndex, tempId: null, fileName: part.filename, name: part.filename.replace(/\.[^.]+$/, ''), mimeType: part.mimetype, size: buffer.byteLength, width: metadata.width || 0, height: metadata.height || 0, tags: [], duplicate: true, duplicateName: duplicate.name })
+      items.push({ sourceIndex: currentIndex, tempId: null, fileName: part.filename, name: part.filename.replace(/\.[^.]+$/, ''), mimeType: part.mimetype, size: buffer.byteLength, width: metadata?.width || 0, height: metadata?.height || 0, tags: isVideo ? ['视频'] : [], duplicate: true, duplicateName: duplicate.name })
       continue
     }
     const tempId = randomUUID()
@@ -453,15 +460,16 @@ app.post('/api/images/upload/analyze', async (request, reply) => {
     const tempKey = `temp/${user.id}/${tempId}${ext}`
     await mkdir(path.dirname(safeStoragePath(tempKey)), { recursive: true })
     await writeFile(safeStoragePath(tempKey), buffer)
-    let tags: string[] = []
+    // 视频不做视觉识别，自动带「视频」标签（可在确认页删除）
+    let tags: string[] = isVideo ? ['视频'] : []
     let aiError = ''
-    if (aiConfig.enabled) {
+    if (isImage && aiConfig.enabled) {
       try { tags = (await suggestTags(buffer, part.mimetype, existingTags.map((tag) => tag.name))).tags } catch (error) { aiError = error instanceof Error ? error.message : 'AI 分析失败'; app.log.warn({ error }, `AI tag analysis failed for ${part.filename}`) }
     }
-    pendingUploads.set(tempId, { userId: user.id, tempId, tempKey, fileName: part.filename, mimeType: part.mimetype, size: buffer.byteLength, width: metadata.width, height: metadata.height, sha256: hash, createdAt: Date.now() })
-    items.push({ sourceIndex: currentIndex, tempId, fileName: part.filename, name: part.filename.replace(/\.[^.]+$/, ''), mimeType: part.mimetype, size: buffer.byteLength, width: metadata.width || 0, height: metadata.height || 0, tags, duplicate: false, aiError })
+    pendingUploads.set(tempId, { userId: user.id, tempId, tempKey, fileName: part.filename, mimeType: part.mimetype, size: buffer.byteLength, width: metadata?.width, height: metadata?.height, sha256: hash, createdAt: Date.now() })
+    items.push({ sourceIndex: currentIndex, tempId, fileName: part.filename, name: part.filename.replace(/\.[^.]+$/, ''), mimeType: part.mimetype, size: buffer.byteLength, width: metadata?.width || 0, height: metadata?.height || 0, tags, duplicate: false, aiError })
   }
-  await recordAudit(request, '分析待上传图片', user.id, `${items.length} 张图片`)
+  await recordAudit(request, '分析待上传媒体', user.id, `${items.length} 个文件`)
   return { items, aiEnabled: aiConfig.enabled, aiModel: aiConfig.model }
 })
 
@@ -482,7 +490,7 @@ app.post('/api/images/upload/complete', async (request, reply) => {
     saved.push(image)
     pendingUploads.delete(upload.tempId)
   }
-  await recordAudit(request, '上传图片', user.id, `${saved.length} 张图片`)
+  await recordAudit(request, '上传媒体', user.id, `${saved.length} 个文件`)
   return reply.code(201).send({ items: saved })
 })
 
@@ -505,26 +513,37 @@ app.post('/api/images/upload', async (request, reply) => {
   const uploadLimitMb = typeof configuredLimit?.value === 'number' ? configuredLimit.value : defaultSettings.uploadLimitMb
   for await (const part of request.parts()) {
     if (part.type !== 'file') continue
-    if (!part.mimetype.startsWith('image/')) continue
+    const isImage = part.mimetype.startsWith('image/')
+    const isVideo = part.mimetype.startsWith('video/')
+    if (!isImage && !isVideo) continue
     const buffer = await part.toBuffer()
-    if (buffer.byteLength > uploadLimitMb * 1024 * 1024) return reply.code(413).send({ message: `单张图片不能超过 ${uploadLimitMb} MB` })
-    const metadata = await sharp(buffer).metadata()
+    if (buffer.byteLength > uploadLimitMb * 1024 * 1024) return reply.code(413).send({ message: `单个文件不能超过 ${uploadLimitMb} MB` })
+    const metadata = isImage ? await sharp(buffer).metadata() : null
     const hash = createHash('sha256').update(buffer).digest('hex')
     if (await prisma.image.findUnique({ where: { sha256: hash } })) continue
     const id = randomUUID()
     const ext = path.extname(part.filename).toLowerCase() || '.bin'
     const originalKey = `originals/${id}${ext}`
     await writeFile(safeStoragePath(originalKey), buffer)
-    const variants = []
-    for (const width of [320, 768, 1600]) {
-      const key = `thumbnails/${id}-${width}.webp`
-      await sharp(buffer).resize({ width, withoutEnlargement: true }).webp({ quality: 84 }).toFile(safeStoragePath(key))
-      variants.push({ width, key })
+    const variants: Array<{ width: number; key: string }> = []
+    if (isImage) {
+      for (const width of [320, 768, 1600]) {
+        const key = `thumbnails/${id}-${width}.webp`
+        await sharp(buffer).resize({ width, withoutEnlargement: true }).webp({ quality: 84 }).toFile(safeStoragePath(key))
+        variants.push({ width, key })
+      }
     }
-    const image = await prisma.image.create({ data: { id, name: part.filename.replace(/\.[^.]+$/, ''), originalKey, mimeType: part.mimetype, size: BigInt(buffer.byteLength), width: metadata.width, height: metadata.height, sha256: hash, uploaderId: user.id, variants: { create: variants } }, include: { tags: { include: { tag: true } }, variants: true } })
-    saved.push(imageDto(image))
+    const image = await prisma.$transaction(async (tx) => {
+      const created = await tx.image.create({ data: { id, name: part.filename.replace(/\.[^.]+$/, ''), originalKey, mimeType: part.mimetype, size: BigInt(buffer.byteLength), width: metadata?.width, height: metadata?.height, sha256: hash, uploaderId: user.id, variants: { create: variants } }, include: { tags: { include: { tag: true } }, variants: true } })
+      if (isVideo) {
+        const tag = await tx.tag.upsert({ where: { name: '视频' }, create: { name: '视频' }, update: {} })
+        await tx.imageTag.createMany({ data: [{ imageId: created.id, tagId: tag.id, addedById: user.id }], skipDuplicates: true })
+      }
+      return tx.image.findUnique({ where: { id: created.id }, include: { tags: { include: { tag: true } }, variants: true } })
+    })
+    if (image) saved.push(imageDto(image))
   }
-  await recordAudit(request, '上传图片', user.id, `${saved.length} 张图片`)
+  await recordAudit(request, '上传媒体', user.id, `${saved.length} 个文件`)
   return reply.code(201).send({ items: saved })
 })
 
@@ -758,6 +777,23 @@ async function start() {
     const password = process.env.ADMIN_PASSWORD || 'admin123'
     await prisma.user.create({ data: { username: process.env.ADMIN_USERNAME || 'admin', passwordHash: await argon2.hash(password), role: 'ADMIN' } })
     app.log.warn(`Created initial administrator. Username: ${process.env.ADMIN_USERNAME || 'admin'}`)
+  }
+  // 生产模式：托管前端构建产物（client/dist），手机/内网直接访问 http://<IP>:<port> 即可
+  const distDir = path.join(process.cwd(), '..', 'client', 'dist')
+  try {
+    const distStat = await stat(distDir)
+    if (distStat.isDirectory()) {
+      await app.register(fastifyStatic, { root: distDir, prefix: '/' })
+      app.setNotFoundHandler((request, reply) => {
+        if (request.method !== 'GET' || request.url.startsWith('/api') || request.url.startsWith('/assets')) return reply.code(404).send({ message: 'Not Found' })
+        return reply.type('text/html').header('Cache-Control', 'no-cache').send(createReadStream(path.join(distDir, 'index.html')))
+      })
+      app.log.warn(`Serving web app from ${distDir} (phone: http://<PC-IP>:${runtimePort})`)
+    } else {
+      app.log.warn('client/dist not found — skip static hosting (dev mode uses Vite on 5173)')
+    }
+  } catch {
+    app.log.warn('client/dist not found — skip static hosting (dev mode uses Vite on 5173)')
   }
   await app.listen({ port: runtimePort, host: process.env.HOST || '0.0.0.0' })
   // AI 已启用且本机文件就绪时，自动拉起 llama.cpp 服务（幂等：已在运行则直接复用）

@@ -7,3 +7,10 @@ storage/
 models/
 client/.vite/
 logs/
+*.apk
+client/android/.gradle/
+client/android/build/
+client/android/app/build/
+client/android/local.properties
+client/android/.idea/
+client/android/captures/

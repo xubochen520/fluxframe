@@ -39,6 +39,26 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 前端地址：`http://localhost:5173`，API 地址：`http://localhost:4311`。
 
+## 局域网访问与安卓 App
+
+电脑与手机连同一 Wi-Fi 后：
+
+- **网页访问**：执行 `npm.cmd --prefix client run build` 构建前端，后端（4311 端口）会自动托管页面，手机浏览器打开 `http://<电脑IP>:4311` 即可（电脑 IP 可用 `ipconfig` 查看，如 192.168.1.11）。
+- **安卓 App（APK）**：项目内置 Capacitor 壳（`client/android`），App 启动时**自动扫描局域网**并连接 4311 端口的图片管理服务（多个结果会列出选择，地址会被记住；也可手动输入）。构建 APK：
+
+```powershell
+npm.cmd --prefix client run build
+cd client
+npx.cmd cap sync android
+cd android
+.\gradlew.bat assembleDebug
+# 产物：client\android\app\build\outputs\apk\debug\app-debug.apk
+```
+
+把 APK 传到手机安装即可（需允许"安装未知来源应用"）。App 图标与等待页在 `client/android/app/src/main/res` 与 `assets/public/index.html`。
+
+> 首次手机访问前，请确认 Windows 防火墙已放行 4311 端口（或后端所在程序），否则手机无法连接。
+
 ## AI 标签识别（llama.cpp）
 
 上传图片时自动调用本地视觉模型生成建议标签，完全离线、无需密钥。系统设置 → AI 图片标签 → 打开开关后**一键自动下载并启动**（llama.cpp 引擎 + Qwen2.5-VL 模型，自动识别 NVIDIA 显卡与系统代理），就绪后自动填入接口地址并显示「成功」。详见 [AI_SETUP.md](AI_SETUP.md)；识别提示词在 `server/prompts/tagging.txt`，可随时编辑热生效。
