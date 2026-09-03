@@ -26,7 +26,8 @@ function Stop-ProjectProcesses {
     $_.ProcessId -ne $PID -and
     $_.Name -in $names -and
     $_.CommandLine -and
-    $_.CommandLine.Contains($projectRoot)
+    # 项目进程特征：命令行含项目路径（dev），或为发布模式服务（node dist/index.js，无路径）
+    ($_.CommandLine.Contains($projectRoot) -or $_.CommandLine -match 'dist/index\.js')
   })
   foreach ($process in $processes) {
     Write-Host "正在停止旧的项目进程：$($process.Name) [$($process.ProcessId)]" -ForegroundColor DarkGray
