@@ -296,7 +296,10 @@ async function imageWithRelations(id: string) {
 app.setErrorHandler(async (error, _request, reply) => {
   if (error instanceof z.ZodError) return reply.code(400).send({ message: '请求参数不正确', issues: error.issues })
   app.log.error(error)
-  return reply.code((error as any).statusCode || 500).send({ message: '服务器内部错误' })
+  const status = (error as any).statusCode || 500
+  /* 开发/内网环境透出真实原因，便于排查；生产环境保持笼统提示 */
+  const detail = process.env.NODE_ENV !== 'production' && status >= 500 ? `服务器内部错误：${(error as Error).message || String(error)}` : '服务器内部错误'
+  return reply.code(status).send({ message: detail })
 })
 await app.register(cookie)
 await app.register(cors, { origin: true, credentials: true })
