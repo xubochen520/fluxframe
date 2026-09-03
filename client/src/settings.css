@@ -157,8 +157,7 @@
   justify-content: space-between;
   padding: 0 36px;
   border-bottom: 1px solid var(--line);
-  background: rgba(11, 16, 32, .82);
-  backdrop-filter: blur(18px);
+  background: rgba(11, 16, 32, .94);
 }
 
 .settings-back,
@@ -326,6 +325,11 @@
   }
   .mobile-tabbar button.active { color: #c9bdff; background: rgba(167, 139, 250, .1); }
   .mobile-tabbar button:active { transform: scale(.96); }
+  /* 移动端禁用毛玻璃（同 B站/抖音 的实底风格）：backdrop-filter 会随背景动画每帧重采样，是手机卡顿主因 */
+  .mobile-tabbar { background: rgba(11, 16, 32, .97); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .sidebar { background: rgba(10, 15, 31, .97); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .auth-card { background: rgba(18, 25, 45, .94); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .library-progress { background: rgba(19, 26, 47, .9); -webkit-backdrop-filter: none; backdrop-filter: none; }
   /* 预览弹层放到底栏之下，保证点开图片后立刻点导航也能直接响应 */
   .preview-backdrop { z-index: 11; }
   .page-content { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
@@ -350,3 +354,11 @@
 }
 @keyframes preview-loading-in { to { opacity: 1; } }
 @keyframes preview-spin { to { transform: rotate(360deg); } }
+
+/* ---- 手机横屏（小屏设备）：底栏压缩成细条，内容接近普通横屏全屏观感 ---- */
+@media (max-width: 900px) and (orientation: landscape) and (max-height: 520px) {
+  .mobile-tabbar { padding-top: 2px; padding-bottom: calc(2px + env(safe-area-inset-bottom)); }
+  .mobile-tabbar button { padding: 2px 2px 1px; gap: 0; font-size: 8px; }
+  .mobile-tabbar button svg { width: 17px; height: 17px; }
+  .page-content { padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
+}
