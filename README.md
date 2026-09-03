@@ -43,8 +43,10 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 电脑与手机连同一 Wi-Fi 后：
 
-- **网页访问**：执行 `npm.cmd --prefix client run build` 构建前端，后端（4311 端口）会自动托管页面，手机浏览器打开 `http://<电脑IP>:4311` 即可（电脑 IP 可用 `ipconfig` 查看，如 192.168.1.11）。
-- **安卓 App（APK）**：项目内置 Capacitor 壳（`client/android`），App 启动时**自动扫描局域网**并连接 4311 端口的图片管理服务（多个结果会列出选择，地址会被记住；也可手动输入）。构建 APK：
+- **一键发布（推荐）**：双击根目录 `start-lan.cmd`（或执行 `.\start-lan.ps1`），脚本会自动完成：检查/启动 PostgreSQL → 按需构建前端与后端 → 以发布模式启动（单端口同时提供页面和 API）→ 显示局域网地址。首次请**以管理员身份运行一次**，脚本会自动放行防火墙（之后无需再操作）。手机端打开 App 会自动扫描并连接，无需输入任何地址。
+- **网页访问**：手机浏览器打开启动时显示的 `http://<电脑IP>:4311`（如 http://192.168.1.11:4311）即可。
+- **开发模式**：开发调试仍用 `npm.cmd run dev` 或 `start-windows.cmd`（Vite 热更新，手机可访问 5173）；发布模式改动前端源码后需重新运行 start-lan 或 `npm.cmd --prefix client run app:android`（会自动增量构建）。
+- **安卓 App（APK）**：`client/android` 为 Capacitor 壳，App 启动时自动扫描局域网 4311/5173 端口并连接（多结果选择、地址记忆、手动输入备用）。构建 APK：
 
 ```powershell
 npm.cmd --prefix client run build
