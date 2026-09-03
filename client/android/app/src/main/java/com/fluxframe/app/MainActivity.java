@@ -44,8 +44,9 @@ public class MainActivity extends BridgeActivity {
     private static final String PREFS = "fluxframe_server";
     private static final String KEY_SERVER = "server";
     private static final int[] SCAN_PORTS = {4311, 5173};
-    private static final int HEALTH_TIMEOUT_MS = 600;
-    private static final int SAVED_TIMEOUT_MS = 2000;
+    private static final int HEALTH_TIMEOUT_MS = 1500; // 扫描探测单次超时
+    private static final int SAVED_TIMEOUT_MS = 4000;  // 已保存地址检测
+    private static final int MANUAL_TIMEOUT_MS = 6000; // 手动输入检测
 
     private SharedPreferences prefs;
     private boolean dialogsUp = false;
@@ -65,7 +66,7 @@ public class MainActivity extends BridgeActivity {
         final String saved = prefs.getString(KEY_SERVER, null);
         ExecutorService pool = Executors.newSingleThreadExecutor();
         pool.execute(() -> {
-            if (saved != null && isHealthy(saved, SAVED_TIMEOUT_MS)) {
+            if (saved != null && healthError(saved, SAVED_TIMEOUT_MS) == null) {
                 runOnUiThread(() -> connectTo(saved));
                 pool.shutdown();
                 return;
@@ -102,8 +103,8 @@ public class MainActivity extends BridgeActivity {
         webView.loadUrl(url);
     }
 
-    /** 健康检查：http://host:port/api/health 返回 200 且含 ok */
-    private boolean isHealthy(String hostPort, int timeoutMs) {
+    /** 健康检查：http://host:port/api/health 返回 200 且含 ok。返回 null 表示正常，否则返回失败原因 */
+    private String healthError(String hostPort, int timeoutMs) {
         HttpURLConnection conn = null;
         try {
             URL url = new URL("http://" + hostPort + "/api/health");
@@ -113,12 +114,20 @@ public class MainActivity extends BridgeActivity {
             conn.setRequestMethod("GET");
             conn.setUseCaches(false);
             int code = conn.getResponseCode();
-            if (code != 200) return false;
-            BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+            if (code != 200) return "服务返回 HTTP " + code;
+            BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
             String line = reader.readLine();
-            return line != null && line.contains("ok");
+            if (line != null && line.contains("ok")) return null;
+            return "服务响应异常（这不是 Fluxframe 服务？）";
         } catch (Exception e) {
-            return false;
+            String m = e.getMessage();
+            if (m == null) m = e.getClass().getSimpleName();
+            if (m.contains("Cleartext")) return "系统禁止明文 HTTP——请卸载后重装最新版 APK";
+            if (m.contains("Permission") || m.contains("permission")) return "应用无联网权限——请到系统设置允许联网";
+            if (m.contains("timed out") || m.contains("Timeout")) return "连接超时（地址不通、电脑未开机或网络慢）";
+            if (m.contains("refused")) return "连接被拒绝（服务未运行或端口不对）";
+            if (m.contains("unreachable")) return "网络不可达（手机与电脑不在同一局域网？）";
+            return m.length() > 150 ? m.substring(0, 150) : m;
         } finally {
             if (conn != null) conn.disconnect();
         }
@@ -170,7 +179,7 @@ public class MainActivity extends BridgeActivity {
                 String ip = prefix + last;
                 for (int port : SCAN_PORTS) {
                     String hostPort = ip + ":" + port;
-                    if (isHealthy(hostPort, HEALTH_TIMEOUT_MS)) {
+                    if (healthError(hostPort, HEALTH_TIMEOUT_MS) == null) {
                         results.add(hostPort);
                         break; // 该主机已有一个可用服务
                     }
@@ -179,7 +188,7 @@ public class MainActivity extends BridgeActivity {
         }
         pool.shutdown();
         try {
-            pool.awaitTermination(30, TimeUnit.SECONDS);
+            pool.awaitTermination(45, TimeUnit.SECONDS);
         } catch (InterruptedException ignored) {
         }
         return results;
@@ -256,7 +265,7 @@ public class MainActivity extends BridgeActivity {
                 .show();
     }
 
-    private void testAndConnect(String hostPort) {
+    private void testAndConnect(final String hostPort) {
         final String target = hostPort.contains(":") ? hostPort : hostPort + ":4311";
         final AlertDialog waiting = new AlertDialog.Builder(this)
                 .setTitle("正在连接")
@@ -265,26 +274,34 @@ public class MainActivity extends BridgeActivity {
                 .show();
         ExecutorService pool = Executors.newSingleThreadExecutor();
         pool.execute(() -> {
-            boolean ok = isHealthy(target, SAVED_TIMEOUT_MS);
+            final String err = healthError(target, MANUAL_TIMEOUT_MS);
             runOnUiThread(() -> {
                 waiting.dismiss();
-                if (ok) {
+                if (err == null) {
                     connectTo(target);
-                } else {
-                    new AlertDialog.Builder(MainActivity.this)
-                            .setTitle("连接失败")
-                            .setMessage("无法访问 " + target + "，请检查地址、电脑防火墙与端口。")
-                            .setPositiveButton("重试", (d, w) -> {
-                                d.dismiss();
-                                testAndConnect(target);
-                            })
-                            .setNegativeButton("手动输入", (d, w) -> {
-                                d.dismiss();
-                                promptManual(target);
-                            })
-                            .setOnCancelListener(d -> { dialogsUp = false; finish(); })
-                            .show();
+                    return;
                 }
+                dialogsUp = true;
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("连接失败")
+                        .setMessage("无法访问 " + target + "\n\n原因：" + err
+                                + "\n\n提示：手机浏览器能打开的话，请检查本 App 的联网权限（系统设置→应用→内网图片管理）或 Wi-Fi 代理设置。")
+                        .setPositiveButton("重试", (d, w) -> {
+                            d.dismiss();
+                            dialogsUp = false;
+                            testAndConnect(target);
+                        })
+                        .setNegativeButton("跳过检测直接打开", (d, w) -> {
+                            d.dismiss();
+                            dialogsUp = false;
+                            connectTo(target);
+                        })
+                        .setNeutralButton("重新输入", (d, w) -> {
+                            d.dismiss();
+                            promptManual(target);
+                        })
+                        .setOnCancelListener(d -> { dialogsUp = false; finish(); })
+                        .show();
             });
             pool.shutdown();
         });
