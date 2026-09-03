@@ -312,21 +312,41 @@
 @media (max-width: 720px) {
   .mobile-tabbar {
     position: fixed; z-index: 12; left: 0; right: 0; bottom: 0;
-    display: grid; grid-template-columns: repeat(5, 1fr);
+    display: flex; justify-content: stretch;
     padding: 5px 6px calc(5px + env(safe-area-inset-bottom));
     background: rgba(10, 15, 31, .94);
     backdrop-filter: blur(18px);
     border-top: 1px solid var(--line);
   }
   .mobile-tabbar button {
+    flex: 1 1 0; min-width: 0;
     display: flex; flex-direction: column; align-items: center; gap: 3px;
-    padding: 6px 0 4px; border-radius: 9px;
-    background: transparent; color: #78839d; font-size: 9px; min-width: 0;
+    padding: 6px 2px 4px; border-radius: 9px;
+    background: transparent; color: #78839d; font-size: 9px;
   }
   .mobile-tabbar button.active { color: #c9bdff; background: rgba(167, 139, 250, .1); }
   .mobile-tabbar button:active { transform: scale(.96); }
+  /* 预览弹层放到底栏之下，保证点开图片后立刻点导航也能直接响应 */
+  .preview-backdrop { z-index: 11; }
   .page-content { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
   .main-area { min-height: 100vh; }
   .image-card:active .image-wrap img,
   .image-card:active .image-wrap video { transform: scale(1.02); }
 }
+
+/* ---- 图片/视频预览加载动画：延迟淡入，媒体就绪后立即移除，不闪屏 ---- */
+.preview-loading {
+  position: absolute; inset: 0; z-index: 3;
+  display: grid; place-items: center;
+  pointer-events: none;
+  opacity: 0; animation: preview-loading-in .2s ease .18s forwards;
+}
+.preview-loading i {
+  width: 46px; height: 46px; border-radius: 50%;
+  border: 3px solid rgba(167, 139, 250, .18);
+  border-top-color: #a78bfa;
+  animation: preview-spin .75s linear infinite;
+  box-shadow: 0 0 24px rgba(167, 139, 250, .25);
+}
+@keyframes preview-loading-in { to { opacity: 1; } }
+@keyframes preview-spin { to { transform: rotate(360deg); } }
