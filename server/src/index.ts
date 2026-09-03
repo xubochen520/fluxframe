@@ -8,12 +8,12 @@ import argon2 from 'argon2'
 import { PrismaClient, type Prisma } from '@prisma/client'
 import sharp from 'sharp'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { createReadStream } from 'node:fs'
+import { createReadStream, createWriteStream } from 'node:fs'
 import { mkdir, readFile, readdir, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { z } from 'zod'
 import { downloadAiStack, getAiStatus, startAiServer, stopAiServer } from './ai-manager.js'
-import { registerParseApi } from './parse-server.js'
+import { registerParseApi, pickUpstreamHeaders } from './parse-server.js'
 
 const prisma = new PrismaClient()
 const app = Fastify({
@@ -756,6 +756,179 @@ app.post('/api/ai/stop', async (request, reply) => {
   const result = await stopAiServer()
   await recordAudit(request, 'AI 引擎停止', user.id, 'llama.cpp')
   return result
+})
+
+// ---------- 视频解析 → 服务端导入（后台保存到图片库：直连片源、流式写盘、查重、入库） ----------
+type ParseImportJob = {
+  id: string
+  userId: string
+  kind: 'video' | 'cover'
+  status: 'working' | 'done' | 'error'
+  progress: number | null // 0..1；null 表示不确定进度
+  message: string
+  items: any[]
+  duplicate: boolean
+  error: string
+  cancel: boolean
+}
+const parseImportJobs = new Map<string, ParseImportJob>()
+
+function fmtBytes(n: number) {
+  if (n <= 0) return '0 B'
+  if (n < 1024) return `${n} B`
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1073741824) return `${(n / 1048576).toFixed(2)} MB`
+  return `${(n / 1073741824).toFixed(2)} GB`
+}
+
+async function runParseImportJob(job: ParseImportJob, request: FastifyRequest, input: { url: string; ref?: string; name: string; platTag?: string }) {
+  let tempKey = ''
+  try {
+    /* 1. 直连上游（UA/Referer 防盗链头），45s 连接超时（CDN 对同 URL 并发会排队） */
+    const headers = pickUpstreamHeaders(input.url, input.ref || '')
+    const controller = new AbortController()
+    const connectTimer = setTimeout(() => controller.abort(), 45_000)
+    let res: Response
+    try {
+      res = await fetch(input.url, { headers, redirect: 'follow', signal: controller.signal })
+    } catch {
+      clearTimeout(connectTimer)
+      throw new Error('片源响应超时（平台 CDN 排队或网络问题），请稍后重试')
+    }
+    clearTimeout(connectTimer)
+    if (!res.ok) throw new Error(`片源返回 HTTP ${res.status}`)
+    const ct = res.headers.get('content-type') || ''
+    if (job.kind === 'video' && !/video|octet-stream/i.test(ct)) throw new Error(`片源不是可识别的视频格式（${ct}）`)
+    if (job.kind === 'cover' && !/^image\//i.test(ct)) throw new Error('封面不是可识别的图片格式')
+    if (!res.body) throw new Error('片源流不可用')
+
+    /* 2. 流式写临时文件（背压感知 + sha256 + 真实进度上报） */
+    const total = Number(res.headers.get('content-length')) || 0
+    const ext = job.kind === 'video'
+      ? (/\bwebm\b/i.test(ct) ? '.webm' : '.mp4')
+      : (/\bwebp\b/i.test(ct) ? '.webp' : /\bpng\b/i.test(ct) ? '.png' : '.jpg')
+    tempKey = `temp/parse-import/${job.id}${ext}`
+    await mkdir(path.dirname(safeStoragePath(tempKey)), { recursive: true })
+    const ws = createWriteStream(safeStoragePath(tempKey))
+    const hash = createHash('sha256')
+    const reader = res.body.getReader()
+    let received = 0
+    let lastTick = 0
+    let idleSince = Date.now()
+    const watchdog = setInterval(() => {
+      if (Date.now() - idleSince > 90_000) { try { void reader.cancel().catch(() => undefined) } catch { /* 已结束 */ } }
+    }, 15_000)
+    try {
+      for (;;) {
+        if (job.cancel) throw new Error('已取消')
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value && value.length) {
+          idleSince = Date.now()
+          received += value.length
+          hash.update(value)
+          if (!ws.write(value)) await new Promise<void>((r) => ws.once('drain', r))
+          const now = Date.now()
+          if (now - lastTick > 200) {
+            lastTick = now
+            job.progress = total ? Math.min(1, received / total) : null
+            job.message = `下载片源中 ${fmtBytes(received)}${total ? ' / ' + fmtBytes(total) : ''}`
+          }
+        }
+      }
+      ws.end()
+      await new Promise<void>((resolve, reject) => {
+        ws.once('error', reject)
+        ws.once('finish', resolve)
+      })
+    } finally {
+      clearInterval(watchdog)
+    }
+    if (job.cancel) throw new Error('已取消')
+    const sha = hash.digest('hex')
+    const size = received
+
+    /* 3. 大小限制 / 查重 / 入库（复用正式上传收尾：缩略图、标签、审计） */
+    const limitRow = await prisma.systemSetting.findUnique({ where: { key: 'uploadLimitMb' } })
+    const limitMb = typeof limitRow?.value === 'number' ? limitRow.value : defaultSettings.uploadLimitMb
+    if (size > limitMb * 1024 * 1024) throw new Error(`文件 ${fmtBytes(size)} 超过上传上限 ${limitMb} MB，可在「系统设置→服务配置」调大后重试`)
+    const dup = await prisma.image.findUnique({ where: { sha256: sha }, select: { name: true } })
+    if (dup) {
+      job.duplicate = true
+      await rm(safeStoragePath(tempKey), { force: true })
+      tempKey = ''
+    } else {
+      const imageMeta = job.kind === 'cover' ? await sharp(safeStoragePath(tempKey)).metadata().catch(() => null) : null
+      const fileName = `${input.name.replace(/\.[^.]+$/, '')}${ext}`
+      const pending: PendingUpload = {
+        userId: job.userId, tempId: job.id, tempKey,
+        fileName, mimeType: ct || (job.kind === 'video' ? 'video/mp4' : 'image/jpeg'),
+        size, width: imageMeta?.width, height: imageMeta?.height,
+        sha256: sha, createdAt: Date.now(),
+      }
+      const tags = normalizeUploadTags([...(job.kind === 'video' ? ['视频'] : []), ...(input.platTag ? [input.platTag] : [])])
+      const dto = await finalizePendingUpload(request, { id: job.userId }, pending, input.name, tags)
+      job.items.push(dto)
+      tempKey = ''
+    }
+    job.status = 'done'
+    job.progress = 1
+    job.message = job.duplicate ? '已在图片库中（内容相同，自动去重）' : `已保存 ${job.items.length} 个文件到图片库 ✓`
+  } catch (e: any) {
+    if (job.cancel) {
+      if (tempKey) await rm(safeStoragePath(tempKey), { force: true }).catch(() => undefined)
+      parseImportJobs.delete(job.id)
+      return
+    }
+    job.status = 'error'
+    job.error = e?.message || '导入失败，请稍后重试'
+    job.message = job.error
+    if (tempKey) await rm(safeStoragePath(tempKey), { force: true }).catch(() => undefined)
+  }
+}
+
+app.post('/api/parse/import', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const body = z.object({
+    url: z.string().url(),
+    ref: z.string().max(500).optional(),
+    name: z.string().trim().min(1).max(200),
+    kind: z.enum(['video', 'cover']),
+    platTag: z.string().trim().max(40).optional(),
+  }).parse(request.body)
+  if (!/^https?:\/\//i.test(body.url)) return reply.code(400).send({ message: '片源地址无效' })
+  const job: ParseImportJob = {
+    id: randomUUID(), userId: user.id, kind: body.kind,
+    status: 'working', progress: null, message: '准备导入…',
+    items: [], duplicate: false, error: '', cancel: false,
+  }
+  parseImportJobs.set(job.id, job)
+  void runParseImportJob(job, request as FastifyRequest, body)
+  const cleanup = setTimeout(() => { parseImportJobs.delete(job.id) }, 30 * 60_000)
+  cleanup.unref()
+  return reply.code(201).send({ id: job.id })
+})
+
+app.get('/api/parse/import/:id', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const id = (request.params as { id: string }).id
+  const job = parseImportJobs.get(id)
+  if (!job || job.userId !== user.id) return reply.code(404).send({ message: '导入任务不存在' })
+  return { id: job.id, status: job.status, progress: job.progress, message: job.message, items: job.items, duplicate: job.duplicate }
+})
+
+app.delete('/api/parse/import/:id', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const id = (request.params as { id: string }).id
+  const job = parseImportJobs.get(id)
+  if (job && job.userId === user.id) {
+    if (job.status === 'working') job.cancel = true
+    else parseImportJobs.delete(id)
+  }
+  return { ok: true }
 })
 
 // ---------- 视频解析引擎（纯享解析 PureParse）：/api/parse /api/stream /api/ping ----------

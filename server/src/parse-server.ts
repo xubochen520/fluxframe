@@ -395,11 +395,23 @@ async function resolveAll(url: string) {
 /* ============================================================
    B. Fastify 路由（与图片库同源 4311）
    ============================================================ */
+
+/** 按片源域名选择带防盗链头的上游请求头（/api/stream 与 /api/parse/import 共用） */
+export function pickUpstreamHeaders(target: string, ref: string): Record<string, string> {
+  const headers: Record<string, string> = { 'User-Agent': UA_PC }
+  if (ref) headers.Referer = ref
+  /* 抖音系 CDN 使用与签名环境一致的浏览器 UA（douyinvod/douyinpic 等防盗链宽松但验 UA） */
+  if (/bilibili|bilivideo|hdslb|ixigua/i.test(target)) headers['User-Agent'] = UA_PC
+  else if (/douyin|douyinvod|douyinpic|snssdk|amemv|byteimg|bytecdn|toutiao|pstatp/i.test(target) || /douyin\.com/i.test(ref)) headers['User-Agent'] = DY_UA
+  return headers
+}
+
 export function registerParseApi(app: FastifyInstance) {
   app.post('/api/parse', async (request, reply) => {
     const input: any = request.body ?? {}
     const out = await resolveAll(input.url || input.share || '')
-    /* 媒体直链改写成同源代理流地址（播放/下载不受防盗链与 CORS 限制） */
+    /* 媒体直链改写成同源代理流地址（播放/下载不受防盗链与 CORS 限制）；
+       src / coverSrc 保留上游原始地址（服务端导入保存用） */
     if (out.ok) {
       const referer = out.data.media?.[0]?.referer || ''
       if (out.data.media?.[0]?.url) {
@@ -407,6 +419,7 @@ export function registerParseApi(app: FastifyInstance) {
         out.data.media[0].url = `/api/stream?url=${encodeURIComponent(out.data.media[0].url)}${referer ? '&ref=' + encodeURIComponent(referer) : ''}`
       }
       if (out.data.cover && /^https?:/i.test(out.data.cover)) {
+        out.data.coverSrc = out.data.cover
         const coverRef = referer || 'https://www.bilibili.com/'
         out.data.cover = `/api/stream?url=${encodeURIComponent(out.data.cover)}&ref=${encodeURIComponent(coverRef)}&disposition=inline`
       }
@@ -420,20 +433,27 @@ export function registerParseApi(app: FastifyInstance) {
     const target = query.url || ''
     const ref = query.ref || ''
     if (!/^https?:\/\//i.test(target)) return reply.code(400).send('bad url')
-    const headers: Record<string, string> = { 'User-Agent': UA_PC }
-    if (ref) headers.Referer = ref
-    /* 抖音系 CDN 使用与签名环境一致的浏览器 UA（douyinvod/douyinpic 等防盗链宽松但验 UA） */
-    if (/bilibili|bilivideo|hdslb|ixigua/i.test(target)) headers['User-Agent'] = UA_PC
-    else if (/douyin|douyinvod|douyinpic|snssdk|amemv|byteimg|bytecdn|toutiao|pstatp/i.test(target) || /douyin\.com/i.test(ref)) headers['User-Agent'] = DY_UA
     const rng = request.headers.range
+    const headers = pickUpstreamHeaders(target, ref)
     if (typeof rng === 'string') headers.Range = rng
+    /* 超时只作用于“等待响应头”（上游连接/首字节）。正文一旦开始就持续流式转发，
+       不再设硬时限 —— 大文件（几十 MB）在慢速 CDN 下需要远超 20s 的下载时间，
+       硬超时会在中途掐断导致客户端挂起。空闲看门狗兜底死链。 */
+    const controller = new AbortController()
+    /* 连接超时放宽到 45s：同一签名 URL 被并发连接时 CDN 会排队（实测约 20s+） */
+    const connectTimer = setTimeout(() => controller.abort(), 45_000)
     let upstream: Response
     try {
-      upstream = await fetch(target, { headers, redirect: 'follow', signal: AbortSignal.timeout(20000) })
+      upstream = await fetch(target, { headers, redirect: 'follow', signal: controller.signal })
     } catch (e: any) {
+      clearTimeout(connectTimer)
       return reply.code(502).type('text/plain; charset=utf-8').send('代理拉流失败：' + (e.message || ''))
     }
-    if (!upstream.ok && upstream.status !== 206) return reply.code(upstream.status).send()
+    clearTimeout(connectTimer)
+    if (!upstream.ok && upstream.status !== 206) {
+      upstream.body?.cancel().catch(() => undefined)
+      return reply.code(upstream.status).send()
+    }
     const outHeaders: Record<string, string> = {
       'Content-Type': upstream.headers.get('content-type') || 'application/octet-stream',
       'Accept-Ranges': 'bytes',
@@ -456,13 +476,20 @@ export function registerParseApi(app: FastifyInstance) {
     }
     if (!upstream.body) return reply.send()
     const stream = Readable.fromWeb(upstream.body as import('node:stream/web').ReadableStream)
-    stream.on('error', () => {
-      try {
-        reply.raw.destroy()
-      } catch {
-        /* 已断开 */
+    let watchdog: ReturnType<typeof setInterval> | undefined
+    const stopWatchdog = () => { if (watchdog) clearInterval(watchdog) }
+    let lastData = Date.now()
+    watchdog = setInterval(() => {
+      if (Date.now() - lastData > 60_000) {
+        try { stream.destroy(new Error('上游流空闲超时')) } catch { /* 已销毁 */ }
       }
+    }, 15_000)
+    stream.on('data', () => { lastData = Date.now() })
+    stream.on('error', () => {
+      stopWatchdog()
+      try { reply.raw.destroy() } catch { /* 已断开 */ }
     })
+    stream.on('close', stopWatchdog)
     /* 客户端断开时销毁上游流，避免悬挂请求拖住连接池 */
     request.raw.on('close', () => {
       if (!request.raw.readableEnded && !stream.destroyed) stream.destroy()

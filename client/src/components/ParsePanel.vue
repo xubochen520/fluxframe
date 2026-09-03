@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { Clock3, Download, Eye, Heart, Images, Link2, LoaderCircle, MessageCircle, RotateCcw, Save, Share2, Sparkles, Trash2, X } from 'lucide-vue-next'
+import { Check, Clock3, Download, Eye, Heart, Images, Link2, LoaderCircle, MessageCircle, RotateCcw, Save, Share2, Sparkles, Trash2, X } from 'lucide-vue-next'
+import { dismissSaveTask, retrySaveTask, startSaveTask, useSaveTasks, type SaveTaskOpts } from '../parseSaveStore'
 
 /* ============================================================
    视频解析工作台（PureParse 解析引擎 · 原生嵌入 · 主题自适配）
    链接识别 → /api/parse 真实解析 → 预览 → 下载 / 保存到图片库
+   保存走后台任务：左下角进度卡持续显示下载/上传进度
    ============================================================ */
 
 const PLATFORMS: Record<string, { name: string; char: string; bg: string; color: string; tag: string }> = {
@@ -38,9 +40,10 @@ interface ParseTask {
   share: number
   view: number
   cover: string
+  coverSrc: string
   resLabel: string
   duration: number
-  media: { url: string; w: number; h: number; dur: number; size: number; type: string }
+  media: { url: string; src?: string; referer?: string; w: number; h: number; dur: number; size: number; type: string }
 }
 interface HistoryItem { url: string; plat: string; title: string; time: number }
 
@@ -58,11 +61,12 @@ const saveName = ref('')
 const saveVideo = ref(true)
 const saveCover = ref(true)
 const savePlatTag = ref(true)
-const saving = ref(false)
-const saveStatus = ref<{ ok: boolean; text: string } | null>(null)
-const saveProgress = ref('')
+const saveHint = ref('')
 const lastUrl = ref('')
 let parseToken = 0
+
+/* 后台保存任务（模块级单例，切走视图继续下载） */
+const saveTasks = useSaveTasks()
 
 onMounted(() => { loadHistory(); onInput() })
 
@@ -87,16 +91,10 @@ function cleanName(s: string) {
   const raw = String(s || '').trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').replace(/^[.\s]+|[.\s]+$/g, '')
   return Array.from(raw).slice(0, 60).join('') || '视频'
 }
-function extOf(type: string, fallback = 'mp4') {
+function extOfType(type: string, fallback = 'mp4') {
   if (/webm/i.test(type)) return 'webm'
   if (/mp4|m4v|mov|mpeg/i.test(type)) return 'mp4'
   return fallback
-}
-function extOfBlob(type: string) {
-  if (/png/i.test(type)) return 'png'
-  if (/webp/i.test(type)) return 'webp'
-  if (/jpe?g/i.test(type)) return 'jpg'
-  return 'jpg'
 }
 
 /* ---------- 历史 ---------- */
@@ -194,15 +192,18 @@ async function runParse(url: string) {
       share: Number(stats.share) || 0,
       view: Number(stats.view) || 0,
       cover: typeof d.cover === 'string' ? d.cover : '',
+      coverSrc: typeof d.coverSrc === 'string' ? d.coverSrc : '',
       resLabel: d.qualityLabel || (media.width && media.height ? `${media.width}×${media.height} · 无水印` : '无水印直链'),
       duration: Number(media.duration || d.duration || 0),
       media: {
         url: String(media.url || d.url || ''),
+        src: media.src ? String(media.src) : undefined,
+        referer: media.referer ? String(media.referer) : undefined,
         w: Number(media.width) || 0,
         h: Number(media.height) || 0,
         dur: Number(media.duration || d.duration || 0),
         size: Number(media.size) || 0,
-        type: String(media.type || (d.platform === 'bilibili' ? 'mp4' : 'mp4')),
+        type: String(media.type || 'mp4'),
       },
     }
     stepText.value = '解析完成 ✓'
@@ -218,7 +219,7 @@ async function runParse(url: string) {
   }
 }
 
-/* ---------- 下载 ---------- */
+/* ---------- 本地下载 ---------- */
 async function grabAndDownload(url: string, filename: string) {
   try {
     const res = await fetch(url, { credentials: 'include' })
@@ -241,7 +242,7 @@ async function downloadMedia() {
   if (!task.value?.media.url) return
   const base = cleanName(task.value.title)
   error.value = ''
-  const msg = await grabAndDownload(task.value.media.url, `${base}.${extOf(task.value.media.type)}`)
+  const msg = await grabAndDownload(task.value.media.url, `${base}.${extOfType(task.value.media.type)}`)
   if (msg) error.value = `视频下载失败：${msg}`
 }
 async function downloadCover() {
@@ -251,99 +252,51 @@ async function downloadCover() {
   if (msg) error.value = `封面下载失败：${msg}`
 }
 
-/* ---------- 保存到图片库 ---------- */
+/* ---------- 保存到图片库（后台任务） ---------- */
 function openSave() {
   if (!task.value) return
   saveName.value = cleanName(task.value.title)
   saveVideo.value = true
   saveCover.value = !!task.value.cover
   savePlatTag.value = true
-  saveStatus.value = null
-  saveProgress.value = ''
-  saving.value = false
+  saveHint.value = ''
   showSave.value = true
 }
 function closeSave() { showSave.value = false }
 
-async function ensureTag(name: string) {
-  const res = await fetch('/api/tags', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, color: '#a78bfa' }),
-    credentials: 'include',
-  })
-  return res.ok || res.status === 409
-}
-async function attachTag(imageId: string, name: string) {
-  const res = await fetch(`/api/images/${encodeURIComponent(imageId)}/tags`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-    credentials: 'include',
-  })
-  return res.ok
-}
-
-async function doSave() {
+function confirmSave() {
   const t = task.value
-  if (!t || saving.value) return
+  if (!t) return
   const name = cleanName(saveName.value)
-  const blobs: Array<{ blob: Blob; filename: string }> = []
-  const wants = [saveVideo.value, saveCover.value]
-  if (!wants.some(Boolean)) { saveStatus.value = { ok: false, text: '请至少勾选一项要保存的内容' }; return }
-  saving.value = true
-  saveStatus.value = null
-  try {
-    if (saveVideo.value) {
-      saveProgress.value = '正在获取无水印视频…'
-      const res = await fetch(t.media.url, { credentials: 'include' })
-      if (!res.ok) throw new Error(`视频下载失败（HTTP ${res.status}）`)
-      const blob = await res.blob()
-      blobs.push({ blob, filename: `${name}.${extOf(blob.type || t.media.type)}` })
-    }
-    if (saveCover.value && t.cover) {
-      saveProgress.value = '正在获取封面…'
-      const res = await fetch(t.cover, { credentials: 'include' })
-      if (res.ok) {
-        const blob = await res.blob()
-        blobs.push({ blob, filename: `${name}-封面.${extOfBlob(blob.type)}` })
-      }
-    }
-    if (!blobs.length) throw new Error('没有可保存的媒体文件')
-    saveProgress.value = '正在上传到图片库…'
-    const fd = new FormData()
-    blobs.forEach((f) => fd.append('files', f.blob, f.filename))
-    const up = await fetch('/api/images/upload', { method: 'POST', body: fd, credentials: 'include' })
-    if (!up.ok) {
-      let msg = `上传失败（HTTP ${up.status}）`
-      try { const ej = await up.json(); if (ej?.message) msg = String(ej.message) } catch { /* 非 JSON */ }
-      throw new Error(msg)
-    }
-    const json = await up.json()
-    const items: Array<{ id: string; mimeType?: string }> = Array.isArray(json?.items) ? json.items : []
-    if (!items.length) {
-      saveStatus.value = { ok: true, text: '相同内容已在图片库中（自动去重），未重复入库。' }
-    } else {
-      saveStatus.value = { ok: true, text: `已保存 ${items.length} 个文件到图片库 ✓` }
-      if (savePlatTag.value && t.platName && !/未知|未内置/.test(t.platName)) {
-        const video = items.find((it) => String(it.mimeType || '').startsWith('video'))
-        if (video) {
-          await ensureTag(t.platName)
-          await attachTag(video.id, t.platName)
-        }
-      }
-    }
-    saveProgress.value = ''
-  } catch (err: any) {
-    saveStatus.value = { ok: false, text: err && err.message ? String(err.message) : '保存失败，请稍后重试' }
-  } finally {
-    saving.value = false
+  const videoSrc = t.media.src || ''
+  const coverSrc = t.coverSrc || (t.cover && !String(t.cover).startsWith('/api/stream') ? t.cover : '')
+  if (saveVideo.value && !/^https?:/i.test(videoSrc)) {
+    saveHint.value = '该片源缺少可导入的直链地址，请改用「下载视频」'
+    return
   }
-}
-function afterSaveGotoLibrary() {
+  if (saveCover.value && t.cover && !/^https?:/i.test(coverSrc)) {
+    saveHint.value = '该封面缺少可导入的直链地址'
+    return
+  }
+  const opts: SaveTaskOpts = {
+    name,
+    video: saveVideo.value && t.media.url
+      ? { url: videoSrc, ref: t.media.referer, name, kind: 'video' }
+      : null,
+    cover: saveCover.value && t.cover
+      ? { url: coverSrc, ref: t.media.referer, name: `${name}-封面`, kind: 'cover' }
+      : null,
+    platTag: savePlatTag.value && !/未知|未内置/.test(t.platName) ? t.platName : null,
+  }
+  if (!opts.video && !opts.cover) {
+    saveHint.value = '请至少勾选一项要保存的内容'
+    return
+  }
+  /* 立即关闭弹窗，转入左下角后台任务（服务端下载入库） */
+  startSaveTask(opts)
   showSave.value = false
-  emit('goto', 'library')
 }
+function gotoLibrary() { emit('goto', 'library') }
 </script>
 
 <template>
@@ -352,7 +305,7 @@ function afterSaveGotoLibrary() {
       <div>
         <p class="eyebrow"><Link2 :size="14" /> VIDEO EXTRACTOR</p>
         <h1>视频解析工作台</h1>
-        <p class="subheading">粘贴抖音 / B站 / 快手等平台的分享链接或完整口令，解析无水印视频并预览，可下载或一键保存到图片库。</p>
+        <p class="subheading">粘贴抖音 / B站 / 快手等平台的分享链接或完整口令，解析无水印视频并预览，可下载或后台保存到图片库。</p>
       </div>
     </div>
 
@@ -410,7 +363,7 @@ function afterSaveGotoLibrary() {
           <button v-if="task.cover" class="filter-button" @click="downloadCover"><Images :size="14" />封面</button>
           <button class="filter-button" @click="runParse(lastUrl)"><RotateCcw :size="14" />重新解析</button>
         </div>
-        <p class="pw-tip"><Save :size="12" /> 保存后视频自动带「视频」标签，可另附来源标签，方便在图片库检索。</p>
+        <p class="pw-tip"><Save :size="12" /> 保存走服务端后台导入：不占手机流量，左下角实时显示下载进度，可随时取消或继续解析其它链接。</p>
       </div>
     </div>
 
@@ -420,20 +373,46 @@ function afterSaveGotoLibrary() {
         <button class="modal-close" @click="closeSave"><X :size="18" /></button>
         <div class="upload-icon"><Save :size="24" /></div>
         <h2>保存到图片库</h2>
-        <p v-if="!saveStatus">解析结果将保存为图片库媒体文件。</p>
-        <p v-else :class="['pw-save-status', { ok: saveStatus.ok }]">{{ saveStatus.text }}</p>
-        <label class="field-label">入库名称<input v-model="saveName" class="modal-input" maxlength="80" :disabled="saving" /></label>
+        <p>由服务器后台下载并入库（左下角显示实时进度），无需占用本机流量，可继续解析其它链接。</p>
+        <label class="field-label">入库名称<input v-model="saveName" class="modal-input" maxlength="80" /></label>
         <div class="pw-save-opts">
-          <label><input v-model="saveVideo" type="checkbox" :disabled="saving" /><span><b>无水印视频</b><small>自动带「视频」标签 · {{ task?.resLabel }}</small></span></label>
-          <label v-if="task?.cover"><input v-model="saveCover" type="checkbox" :disabled="saving" /><span><b>封面图</b><small>与视频一起保存，无附加标签</small></span></label>
-          <label><input v-model="savePlatTag" type="checkbox" :disabled="saving" /><span><b>附带来源标签「{{ task?.platName }}」</b><small>便于按平台检索</small></span></label>
+          <label><input v-model="saveVideo" type="checkbox" /><span><b>无水印视频</b><small>自动带「视频」标签 · {{ task?.resLabel }} · {{ task?.media.size ? fmtSize(task.media.size) : '' }}</small></span></label>
+          <label v-if="task?.cover"><input v-model="saveCover" type="checkbox" /><span><b>封面图</b><small>与视频一起保存，无附加标签</small></span></label>
+          <label><input v-model="savePlatTag" type="checkbox" /><span><b>附带来源标签「{{ task?.platName }}」</b><small>便于按平台检索</small></span></label>
         </div>
-        <div v-if="saving" class="pw-saving"><LoaderCircle class="spin" :size="15" />{{ saveProgress || '准备中…' }}</div>
-        <div v-if="saveStatus?.ok" class="pw-save-after">
-          <button class="primary-button full" @click="afterSaveGotoLibrary"><Images :size="16" />去图片库查看</button>
-          <button class="filter-button full" @click="closeSave">完成</button>
+        <p v-if="saveHint" class="pw-save-hint">{{ saveHint }}</p>
+        <button class="primary-button full" @click="confirmSave"><Save :size="16" />开始后台保存</button>
+      </div>
+    </div>
+
+    <!-- 左下角后台任务进度 -->
+    <div v-if="saveTasks.length" class="pw-tasks">
+      <div v-for="t in saveTasks" :key="t.id" :class="['pw-task', t.state]">
+        <div class="pw-task-head">
+          <span class="pw-task-ico">
+            <LoaderCircle v-if="t.state === 'working'" class="spin" :size="15" />
+            <Check v-else-if="t.state === 'done'" :size="15" />
+            <X v-else :size="15" />
+          </span>
+          <div class="pw-task-tx">
+            <b>{{ t.opts.name }}</b>
+            <small>{{ t.stageText }}</small>
+          </div>
+          <button class="pw-task-x" :title="t.state === 'working' ? '取消' : '关闭'" @click="dismissSaveTask(t.id)"><X :size="13" /></button>
         </div>
-        <button v-else class="primary-button full" :disabled="saving" @click="doSave"><Save :size="16" />{{ saving ? '保存中…' : '确认保存' }}</button>
+        <div class="pw-task-bar">
+          <i v-if="t.state === 'working'" :class="{ indet: t.unknown || !t.pct }"
+            :style="{ width: t.unknown || !t.pct ? '34%' : Math.round(t.pct * 100) + '%' }"></i>
+          <i v-else :class="[t.state === 'done' ? 'fill-ok' : 'fill-err']"></i>
+        </div>
+        <div v-if="t.state === 'done'" class="pw-task-acts">
+          <button class="pw-task-btn" @click="dismissSaveTask(t.id)">知道了</button>
+          <button class="pw-task-btn pw-task-go" @click="gotoLibrary"><Images :size="12" />去图片库查看</button>
+        </div>
+        <div v-else-if="t.state === 'error'" class="pw-task-acts">
+          <button class="pw-task-btn" @click="dismissSaveTask(t.id)">关闭</button>
+          <button class="pw-task-btn pw-task-go" @click="retrySaveTask(t.id)"><RotateCcw :size="12" />重试</button>
+        </div>
       </div>
     </div>
   </div>
@@ -568,12 +547,13 @@ function afterSaveGotoLibrary() {
 
 /* 保存弹窗 */
 .pw-save { width: min(430px, 100%); }
-.pw-save-status { display: flex; align-items: flex-start; gap: 7px; padding: 9px 11px; border-radius: 8px; font-size: 12px; line-height: 1.6; }
-.pw-save-status.ok { background: rgba(74, 222, 128, .1); color: #7ce7a5; border: 1px solid rgba(74, 222, 128, .22); }
-.pw-save-status:not(.ok) { background: rgba(248, 113, 113, .1); color: #fda4af; border: 1px solid rgba(248, 113, 113, .25); }
-.pw-status-inline { display: inline-flex; }
-.pw-status-inline.ok::before { content: '✓ '; }
-.pw-status-inline.err::before { content: '✕ '; }
+.pw-save .full { width: 100%; justify-content: center; margin-top: 16px; }
+.pw-save-hint {
+  margin: 8px 0 0; padding: 8px 11px; border-radius: 8px;
+  font-size: 12px; line-height: 1.5;
+  color: #fda4af; background: rgba(248, 113, 113, .1);
+  border: 1px solid rgba(248, 113, 113, .25);
+}
 .pw-save-opts { margin-top: 6px; }
 .pw-save-opts label {
   display: flex; align-items: flex-start; gap: 10px; cursor: pointer;
@@ -583,12 +563,83 @@ function afterSaveGotoLibrary() {
 .pw-save-opts input { margin: 3px 0 0; accent-color: #a78bfa; width: 15px; height: 15px; cursor: pointer; flex: none; }
 .pw-save-opts b { display: block; font-size: 12px; font-weight: 500; }
 .pw-save-opts small { display: block; color: #78839e; font-size: 10.5px; margin-top: 3px; }
-.pw-saving { display: flex; align-items: center; gap: 8px; margin-top: 15px; color: #a99cf6; font-size: 12px; }
-.pw-saving svg { flex: none; }
-.pw-save-after { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
-.pw-save-after .full { width: 100%; justify-content: center; }
-.pw-save .full { width: 100%; justify-content: center; margin-top: 16px; }
 
+/* 左下角后台任务进度卡 */
+.pw-tasks {
+  position: fixed; left: 20px; bottom: 20px; z-index: 46;
+  display: flex; flex-direction: column; gap: 9px;
+  width: min(350px, calc(100vw - 32px));
+  pointer-events: none;
+}
+.pw-task {
+  pointer-events: auto;
+  border: 1px solid rgba(157, 171, 210, .2);
+  border-radius: 13px;
+  background: rgba(16, 22, 40, .97);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, .42);
+  padding: 12px 13px 11px;
+}
+.pw-task.error { border-color: rgba(248, 113, 113, .32); }
+.pw-task.done { border-color: rgba(74, 222, 128, .26); }
+.pw-task-head { display: flex; align-items: flex-start; gap: 10px; }
+.pw-task-ico {
+  width: 26px; height: 26px; flex: none; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(167, 139, 250, .13); color: #b7a5ff;
+}
+.pw-task.done .pw-task-ico { background: rgba(74, 222, 128, .13); color: #6ee7a2; }
+.pw-task.error .pw-task-ico { background: rgba(248, 113, 113, .13); color: #fb8294; }
+.pw-task-tx { flex: 1; min-width: 0; }
+.pw-task-tx b {
+  display: block; font-size: 12px; font-weight: 500; color: #dfe4ef;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pw-task-tx small {
+  display: block; margin-top: 3px; font-size: 10.5px; line-height: 1.45;
+  color: #8b96ad; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pw-task.done .pw-task-tx small { color: #7ce7a5; }
+.pw-task.error .pw-task-tx small { color: #fda4af; }
+.pw-task-x {
+  flex: none; width: 22px; height: 22px; border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; color: #6d7894;
+}
+.pw-task-x:hover { background: rgba(255, 255, 255, .07); color: #cfd6e6; }
+.pw-task-bar {
+  height: 5px; margin-top: 10px; border-radius: 6px;
+  background: rgba(255, 255, 255, .07); overflow: hidden;
+}
+.pw-task-bar i {
+  display: block; height: 100%; border-radius: 6px;
+  background: linear-gradient(90deg, #22d3ee, #a78bfa, #e15aa6);
+  transition: width .18s ease;
+}
+.pw-task-bar i.indet { animation: pw-indet 1.15s ease-in-out infinite alternate; }
+.pw-task-bar i.fill-ok { width: 100%; background: linear-gradient(90deg, #34d399, #6ee7a2); }
+.pw-task-bar i.fill-err { width: 100%; background: rgba(248, 113, 113, .55); }
+@keyframes pw-indet {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(320%); }
+}
+.pw-task-acts { display: flex; gap: 8px; margin-top: 11px; }
+.pw-task-btn {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 7px 10px; border-radius: 8px;
+  background: rgba(255, 255, 255, .05); color: #aab3c8; font-size: 11px;
+  transition: .16s;
+}
+.pw-task-btn:hover { background: rgba(255, 255, 255, .1); color: #fff; }
+.pw-task-btn.pw-task-go { background: rgba(167, 139, 250, .16); color: #cfc3ff; }
+.pw-task-btn.pw-task-go:hover { background: rgba(167, 139, 250, .26); }
+
+@media (max-width: 720px) {
+  .pw-tasks {
+    left: 12px; right: 12px; bottom: calc(70px + env(safe-area-inset-bottom));
+    width: auto; max-width: none;
+  }
+  .pw-task { padding: 11px 12px 10px; }
+}
 @media (max-width: 900px) {
   .pw-result { grid-template-columns: 1fr; }
 }
