@@ -24,6 +24,11 @@ const previewImageElement = ref<HTMLElement | null>(null)
 const previewScale = ref(1)
 const previewOffset = ref({ x: 0, y: 0 })
 const previewLoading = ref(false)
+/* ---- 设备方向感知：横屏→视频大屏全屏，竖屏→退回小窗 ---- */
+const landscapeQuery = window.matchMedia('(orientation: landscape)')
+const isLandscape = ref(landscapeQuery.matches)
+const videoFullscreen = ref(false)
+let landscapeCleanup: (() => void) | undefined
 const contextImage = ref<ImageItem | null>(null)
 const contextPosition = ref({ x: 0, y: 0 })
 const contextTag = ref<TagItem | null>(null)
@@ -156,7 +161,7 @@ function clearGlobalSearch() { query.value = ''; if (activeView.value === 'libra
 async function viewTag(tagName: string) { activeView.value = 'library'; selectedTag.value = tagName; sidebarOpen.value = false; await refreshImages(); nextTick(() => gsap.fromTo('.page-content', { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: .4, ease: 'power2.out' })) }
 function openContext(image: ImageItem, event: MouseEvent) { contextImage.value = image; contextPosition.value = { x: Math.min(event.clientX, window.innerWidth - 220), y: Math.min(event.clientY, window.innerHeight - 245) } }
 function resetPreview() { previewScale.value = 1; previewOffset.value = { x: 0, y: 0 } }
-function closePreview() { selectedImage.value = null; resetPreview() }
+function closePreview() { selectedImage.value = null; videoFullscreen.value = false; resetPreview() }
 function handlePreviewWheel(event: WheelEvent) {
   const element = previewImageElement.value
   if (!element || isVideoItem(selectedImage.value)) return
@@ -171,7 +176,7 @@ function handlePreviewWheel(event: WheelEvent) {
   previewOffset.value = { x: event.clientX - baseLeft - localX * nextScale, y: event.clientY - baseTop - localY * nextScale }
   previewScale.value = nextScale
 }
-async function openImage(image: ImageItem) { try { resetPreview(); previewLoading.value = true; selectedImage.value = image; const result = await api.viewImage(image.id); image.views = result.views; if (selectedImage.value) selectedImage.value.views = result.views; stats.value.totalViews += 1; if (currentUser.value?.role === 'ADMIN') await refreshLogs() } catch (error) { notify(errorMessage(error)) } }
+async function openImage(image: ImageItem) { try { resetPreview(); previewLoading.value = true; videoFullscreen.value = isVideoItem(image) && isLandscape.value; selectedImage.value = image; const result = await api.viewImage(image.id); image.views = result.views; if (selectedImage.value) selectedImage.value.views = result.views; stats.value.totalViews += 1; if (currentUser.value?.role === 'ADMIN') await refreshLogs() } catch (error) { notify(errorMessage(error)) } }
 async function softDelete(image: ImageItem) { try { await api.deleteImage(image.id); contextImage.value = null; selectedImage.value = null; await refreshImages(); await refreshDashboard(); notify('图片已移入回收站') } catch (error) { notify(errorMessage(error)) } }
 async function restore(image: ImageItem) { try { await api.restoreImage(image.id); contextImage.value = null; await refreshImages(); notify('图片已恢复') } catch (error) { notify(errorMessage(error)) } }
 async function permanentDelete(image: ImageItem) { try { await api.permanentDelete(image.id); contextImage.value = null; await refreshImages(); notify('图片已永久删除') } catch (error) { notify(errorMessage(error)) } }
@@ -211,8 +216,23 @@ function closeContext() { contextImage.value = null; contextTag.value = null }
 function toggleTheme() { isDark.value = !isDark.value; applyPreferences() }
 
 watch([isDark, animationEnabled, selectedTheme, () => settings.value.siteName], applyPreferences)
-onMounted(() => { applyPreferences(); greetingTimer = window.setInterval(() => { currentHour.value = new Date().getHours() }, 60_000); checkSession() })
-onBeforeUnmount(() => { if (greetingTimer) window.clearInterval(greetingTimer) })
+onMounted(() => { applyPreferences(); greetingTimer = window.setInterval(() => { currentHour.value = new Date().getHours() }, 60_000); checkSession()
+  /* —— 设备动作与方向：进入 APP 即请求权限（iOS 需显式授权，Android 兼容兜底）；监听横竖屏变化 —— */
+  const syncOrientation = () => {
+    isLandscape.value = landscapeQuery.matches
+    if (selectedImage.value && isVideoItem(selectedImage.value)) videoFullscreen.value = landscapeQuery.matches
+  }
+  const onWindowOrientation = () => syncOrientation()
+  const onMediaQuery = () => syncOrientation()
+  if (typeof landscapeQuery.addEventListener === 'function') landscapeQuery.addEventListener('change', onMediaQuery)
+  window.addEventListener('orientationchange', onWindowOrientation)
+  const screenOrientation = (screen as unknown as { orientation?: { addEventListener?: (type: string, listener: () => void) => void; removeEventListener?: (type: string, listener: () => void) => void } }).orientation
+  screenOrientation?.addEventListener?.('change', onMediaQuery)
+  syncOrientation()
+  const sensorCtors = [window.DeviceOrientationEvent, window.DeviceMotionEvent] as unknown as { requestPermission?: () => Promise<string> }[]
+  sensorCtors.forEach((ctor) => { try { ctor.requestPermission?.().catch(() => undefined) } catch { /* 忽略拒绝 */ } })
+  landscapeCleanup = () => { if (typeof landscapeQuery.removeEventListener === 'function') landscapeQuery.removeEventListener('change', onMediaQuery); window.removeEventListener('orientationchange', onWindowOrientation); screenOrientation?.removeEventListener?.('change', onMediaQuery) } })
+onBeforeUnmount(() => { if (greetingTimer) window.clearInterval(greetingTimer); landscapeCleanup?.() })
 </script>
 
 <template>
@@ -244,7 +264,7 @@ onBeforeUnmount(() => { if (greetingTimer) window.clearInterval(greetingTimer) }
     <div v-if="showTagDialog" class="modal-backdrop" @click.self="showTagDialog = false"><div class="modal"><button class="modal-close" @click="showTagDialog = false"><X :size="18" /></button><div class="upload-icon"><Tags :size="24" /></div><h2>新建标签</h2><p>创建一个新的视觉索引。</p><input v-model="newTag" class="modal-input" placeholder="例如：灵感、人物、项目" @keyup.enter="createTag" /><label v-if="r18Mode" class="new-tag-r18"><input v-model="newTagR18" type="checkbox" /><span>标记为 R18 链接标签</span><small>仅 R18 模式开启时可见、可选择</small></label><button class="primary-button full" @click="createTag">创建标签</button></div></div>
     <div v-if="showAddTag" class="modal-backdrop" @click.self="showAddTag = false"><div class="modal"><button class="modal-close" @click="showAddTag = false"><X :size="18" /></button><h2>添加标签</h2><p>选择一个标签添加到「{{ contextImage?.name }}」。</p><div class="tag-picker"><button v-for="tag in tags" :key="tag.id" @click="addTag(tag.name)"><i :style="{ background: tag.color }"></i>{{ tag.name }}<Plus :size="15" /></button></div></div></div>
     <div v-if="showRemoveTag" class="modal-backdrop" @click.self="showRemoveTag = false"><div class="modal" @click.stop><button class="modal-close" @click="showRemoveTag = false"><X :size="18" /></button><h2>移除标签</h2><p>选择要从「{{ contextImage?.name }}」移除的标签。</p><div class="tag-picker"><button v-for="(tag, index) in contextImage?.tags || []" :key="tag" class="danger" @click="removeImageTag(contextImage!.tagIds[index], tag)"><i :style="{ background: tags.find((item) => item.name === tag)?.color || '#fb7185' }"></i>{{ tag }}<Trash2 :size="15" /></button></div></div></div>
-    <div v-if="selectedImage" class="preview-backdrop" @click.self="closePreview" @wheel.prevent="handlePreviewWheel"><div v-if="previewLoading" class="preview-loading" aria-label="正在加载"><i></i></div><button class="preview-close" @click="closePreview"><X :size="22" /></button><div ref="previewImageElement" class="preview-image" :style="{ transform: `translate(${previewOffset.x}px, ${previewOffset.y}px) scale(${previewScale})` }"><video v-if="isVideoItem(selectedImage)" :src="selectedImage.url" controls autoplay playsinline @loadeddata="previewLoading = false" @error="previewLoading = false" @abort="previewLoading = false" /><img v-else :src="selectedImage.url" :alt="selectedImage.name" decoding="async" @load="previewLoading = false" @error="previewLoading = false" /><div class="preview-caption"><strong>{{ selectedImage.name }}</strong><span v-if="isVideoItem(selectedImage)">视频 · {{ selectedImage.size }} · {{ selectedImage.views.toLocaleString() }} 次查看</span><span v-else>{{ selectedImage.width }} × {{ selectedImage.height }} · {{ selectedImage.views.toLocaleString() }} 次查看</span></div></div></div>
+    <div v-if="selectedImage" :class="['preview-backdrop', { 'video-fs': videoFullscreen }]" @click.self="videoFullscreen ? undefined : closePreview()" @wheel.prevent="handlePreviewWheel"><div v-if="previewLoading" class="preview-loading" aria-label="正在加载"><i></i></div><button v-if="isVideoItem(selectedImage)" class="preview-fs-toggle" @click="videoFullscreen = !videoFullscreen">{{ videoFullscreen ? '退出全屏' : '全屏播放' }}</button><button class="preview-close" @click="closePreview"><X :size="22" /></button><div ref="previewImageElement" class="preview-image" :style="{ transform: `translate(${previewOffset.x}px, ${previewOffset.y}px) scale(${previewScale})` }"><video v-if="isVideoItem(selectedImage)" :src="selectedImage.url" controls autoplay playsinline @loadeddata="previewLoading = false" @error="previewLoading = false" @abort="previewLoading = false" /><img v-else :src="selectedImage.url" :alt="selectedImage.name" decoding="async" @load="previewLoading = false" @error="previewLoading = false" /><div class="preview-caption"><strong>{{ selectedImage.name }}</strong><span v-if="isVideoItem(selectedImage)">视频 · {{ selectedImage.size }} · {{ selectedImage.views.toLocaleString() }} 次查看</span><span v-else>{{ selectedImage.width }} × {{ selectedImage.height }} · {{ selectedImage.views.toLocaleString() }} 次查看</span></div></div></div>
     <transition name="toast"><div v-if="toast" class="toast-message"><Check :size="16" />{{ toast }}</div></transition>
   </div>
 </template>

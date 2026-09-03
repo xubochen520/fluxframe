@@ -362,3 +362,20 @@
   .mobile-tabbar button svg { width: 17px; height: 17px; }
   .page-content { padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
 }
+
+/* ---- 视频大屏全屏播放：跟随设备横竖屏自动切换（横屏进入 / 竖屏退回小窗） ---- */
+.preview-fs-toggle {
+  position: absolute; left: 16px; top: 16px; z-index: 2;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 13px; border-radius: 999px;
+  border: 1px solid rgba(157, 171, 210, .3);
+  background: rgba(8, 12, 24, .72); color: #d5dcea; font-size: 11px;
+}
+.preview-fs-toggle:active { transform: scale(.96); }
+.preview-backdrop.video-fs { padding: 0; background: #000; z-index: 30; }
+.preview-backdrop.video-fs .preview-close { color: #fff; background: rgba(8, 12, 24, .5); border-radius: 50%; }
+.preview-backdrop.video-fs .preview-fs-toggle { background: rgba(8, 12, 24, .72); }
+.preview-backdrop.video-fs .preview-image { transform: none !important; width: 100vw; height: 100vh; height: 100dvh; max-width: none; cursor: default; }
+.preview-backdrop.video-fs .preview-image video { width: 100%; height: 100%; max-height: none; border-radius: 0; box-shadow: none; background: #000; object-fit: contain; }
+.preview-backdrop.video-fs .preview-caption { display: none; }
+.preview-backdrop.video-fs .preview-loading { background: rgba(0, 0, 0, .35); }
