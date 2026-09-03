@@ -428,8 +428,9 @@ async function finalizePendingUpload(request: FastifyRequest, user: { id: string
     if (tagNames.length) await recordAudit(request, '添加标签', user.id, `${name} → ${tagNames.join('、')}`)
     return imageDto(image)
   } catch (error) {
-    await rm(safeStoragePath(originalKey), { force: true })
-    await Promise.all(variants.map((variant) => rm(safeStoragePath(variant.key), { force: true })))
+    /* 数据安全优先：一旦文件已 rename 进 originals（或缩略图已生成），出错时也不再删除 ——
+       否则会出现「数据库记录已提交、原文件却被清理」的孤儿记录（文件缺失且去重锁死）。
+       残留孤儿文件无害，可由 sha256 查重跳过；rename 未发生时的临时文件由上层清理。 */
     throw error
   }
 }
@@ -572,7 +573,13 @@ async function sendImageFile(request: AuthenticatedRequest, reply: FastifyReply,
   const key = variant ? image.variants.find((item) => item.width === variant)?.key : image.originalKey
   if (!key) return reply.code(404).send({ message: '图片文件不存在' })
   const filePath = safeStoragePath(key)
-  const fileInfo = await stat(filePath)
+  let fileInfo
+  try {
+    fileInfo = await stat(filePath)
+  } catch {
+    /* 记录存在但文件缺失（可能被外部清理）→ 友好提示而非 500 */
+    return reply.code(404).send({ message: '媒体文件缺失（可能在入库后被外部删除），请重新上传或在「视频提取」中重新保存' })
+  }
   const contentType = variant ? 'image/webp' : image.mimeType
   const rangeHeader = request.headers.range
   if (typeof rangeHeader === 'string') {
@@ -855,12 +862,26 @@ async function runParseImportJob(job: ParseImportJob, request: FastifyRequest, i
     const limitRow = await prisma.systemSetting.findUnique({ where: { key: 'uploadLimitMb' } })
     const limitMb = typeof limitRow?.value === 'number' ? limitRow.value : defaultSettings.uploadLimitMb
     if (size > limitMb * 1024 * 1024) throw new Error(`文件 ${fmtBytes(size)} 超过上传上限 ${limitMb} MB，可在「系统设置→服务配置」调大后重试`)
-    const dup = await prisma.image.findUnique({ where: { sha256: sha }, select: { name: true } })
+    const dup = await prisma.image.findUnique({ where: { sha256: sha }, select: { id: true, name: true, originalKey: true } })
     if (dup) {
-      job.duplicate = true
-      await rm(safeStoragePath(tempKey), { force: true })
-      tempKey = ''
-    } else {
+      /* 自愈：记录存在但原文件缺失（曾被外部删除等）→ 清掉孤儿记录后重新入库，
+         避免「去重锁死」导致内容永远无法保存 */
+      let dupMissing = false
+      try {
+        await stat(safeStoragePath(dup.originalKey))
+      } catch {
+        dupMissing = true
+      }
+      if (dupMissing) {
+        await prisma.image.delete({ where: { id: dup.id } }).catch(() => undefined)
+        app.log.warn(`[parse-import] 清理孤儿记录 ${dup.id}（${dup.name}）：sha256 命中但原文件缺失`)
+      } else {
+        job.duplicate = true
+        await rm(safeStoragePath(tempKey), { force: true })
+        tempKey = ''
+      }
+    }
+    if (!job.duplicate && tempKey) {
       const imageMeta = job.kind === 'cover' ? await sharp(safeStoragePath(tempKey)).metadata().catch(() => null) : null
       const fileName = `${input.name.replace(/\.[^.]+$/, '')}${ext}`
       const pending: PendingUpload = {
