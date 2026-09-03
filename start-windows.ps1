@@ -36,6 +36,25 @@ function Stop-ProjectProcesses {
   if ($processes.Count -gt 0) { Start-Sleep -Seconds 2 }
 }
 
+function Is-Admin {
+  $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-LanAddresses {
+  $list = @()
+  try {
+    $list = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and $_.PrefixOrigin -ne 'WellKnown' } |
+      Select-Object -ExpandProperty IPAddress)
+  } catch { }
+  if ($list.Count -eq 0) {
+    $parsed = @(ipconfig | Select-String -Pattern 'IPv4' | ForEach-Object { ($_ -split ':')[-1].Trim() } | Where-Object { $_ -notlike '127.*' -and $_ -notlike '169.254.*' })
+    $list = $parsed
+  }
+  return $list
+}
+
 Write-Host 'Fluxframe 内网图片管理器' -ForegroundColor Magenta
 Write-Host "项目路径：$projectRoot" -ForegroundColor DarkGray
 
@@ -101,6 +120,30 @@ if ($devProcess.HasExited) { Fail "开发进程启动失败，请查看日志：
 if (-not $NoBrowser) { Start-Process 'http://localhost:5173' }
 Write-Host '客户端：http://localhost:5173' -ForegroundColor Green
 Write-Host "API：    http://localhost:$apiPort" -ForegroundColor Green
+
+# ---- 放行防火墙并提示局域网地址（手机可访问） ----
+if (Is-Admin) {
+  foreach ($rule in @(@{ Name = "Fluxframe API $apiPort"; Port = $apiPort }, @{ Name = 'Fluxframe Vite 5173'; Port = 5173 })) {
+    try {
+      & netsh.exe advfirewall firewall delete rule name="$($rule.Name)" 2>$null | Out-Null
+      & netsh.exe advfirewall firewall add rule name="$($rule.Name)" dir=in action=allow protocol=TCP localport=$($rule.Port) 2>$null | Out-Null
+    } catch { }
+  }
+  Write-Host '防火墙已放行（4311 API + 5173 开发页），手机可访问' -ForegroundColor Green
+} else {
+  Write-Host '提示：当前不是管理员，未自动放行防火墙。' -ForegroundColor Yellow
+  Write-Host '若手机无法连接，请以管理员身份运行一次本脚本（或执行以下命令）：' -ForegroundColor Yellow
+  Write-Host "  netsh advfirewall firewall add rule name=`"Fluxframe API $apiPort`" dir=in action=allow protocol=TCP localport=$apiPort" -ForegroundColor DarkGray
+  Write-Host '  netsh advfirewall firewall add rule name="Fluxframe Vite 5173" dir=in action=allow protocol=TCP localport=5173' -ForegroundColor DarkGray
+}
+$lanAddresses = Get-LanAddresses
+if ($lanAddresses.Count -gt 0) {
+  Write-Host "`n手机同 Wi-Fi 访问：" -ForegroundColor Magenta
+  foreach ($address in $lanAddresses) {
+    Write-Host "  http://$address`:$apiPort  （App 自动扫描或浏览器访问）" -ForegroundColor Cyan
+  }
+}
+
 Write-Host "开发日志已写入：$stdoutLog" -ForegroundColor DarkGray
 Write-Host '按 Ctrl+C 停止开发服务。' -ForegroundColor DarkGray
 
