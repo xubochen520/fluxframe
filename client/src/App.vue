@@ -7,6 +7,8 @@ import SettingsPanel from './components/SettingsPanel.vue'
 import FluidCanvas from './components/FluidCanvas.vue'
 import UploadReviewModal from './components/UploadReviewModal.vue'
 import ParsePanel from './components/ParsePanel.vue'
+import TaskDock from './components/TaskDock.vue'
+import { startDownload } from './downloadTaskStore'
 import { api, type CurrentUser } from './api'
 import type { AuditLog, ImageItem, TagItem, View } from './types'
 
@@ -227,26 +229,11 @@ function downloadExt(mime: string | undefined) {
   if (m.includes('jpeg') || m.includes('jpg')) return 'jpg'
   return 'bin'
 }
-/** 下载图片 / 视频（拉取原文件为本地文件） */
-async function downloadImage(image: ImageItem | null | undefined) {
+/** 下载图片 / 视频：左下角任务坞显示真实进度，完成后保存到本机下载目录 */
+function downloadImage(image: ImageItem | null | undefined) {
   if (!image) return
-  try {
-    const response = await fetch(image.url, { credentials: 'include' })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const blob = await response.blob()
-    const base = image.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').replace(/^[.\s]+|[.\s]+$/g, '') || '媒体文件'
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `${base}.${downloadExt(image.mimeType || blob.type)}`
-    a.rel = 'noopener'
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    window.setTimeout(() => URL.revokeObjectURL(a.href), 10_000)
-    notify(`已开始下载「${image.name}」`)
-  } catch {
-    notify('下载失败，请稍后重试')
-  }
+  const base = image.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').replace(/^[.\s]+|[.\s]+$/g, '') || '媒体文件'
+  startDownload({ url: image.url, filename: `${base}.${downloadExt(image.mimeType)}` })
 }
 /** 图片库标签栏：桌面滚轮纵向滚动 → 横向切换标签（可横滚时才拦截） */
 function onPillsWheel(event: WheelEvent) {
@@ -312,5 +299,6 @@ onBeforeUnmount(() => { if (greetingTimer) window.clearInterval(greetingTimer); 
     <div v-if="showRemoveTag" class="modal-backdrop" @click.self="showRemoveTag = false"><div class="modal" @click.stop><button class="modal-close" @click="showRemoveTag = false"><X :size="18" /></button><h2>移除标签</h2><p>选择要从「{{ contextImage?.name }}」移除的标签。</p><div class="tag-picker"><button v-for="(tag, index) in contextImage?.tags || []" :key="tag" class="danger" @click="removeImageTag(contextImage!.tagIds[index], tag)"><i :style="{ background: tags.find((item) => item.name === tag)?.color || '#fb7185' }"></i>{{ tag }}<Trash2 :size="15" /></button></div></div></div>
     <div v-if="selectedImage" :class="['preview-backdrop', { 'video-fs': videoFullscreen }]" @click.self="videoFullscreen ? undefined : closePreview()" @wheel.prevent="handlePreviewWheel"><div v-if="previewLoading" class="preview-loading" aria-label="正在加载"><i></i></div><button v-if="isVideoItem(selectedImage)" class="preview-fs-toggle" @click="videoFullscreen = !videoFullscreen">{{ videoFullscreen ? '退出全屏' : '全屏播放' }}</button><button class="preview-close" @click="closePreview"><X :size="22" /></button><div ref="previewImageElement" class="preview-image" :style="{ transform: `translate(${previewOffset.x}px, ${previewOffset.y}px) scale(${previewScale})` }"><video v-if="isVideoItem(selectedImage)" :src="selectedImage.url" controls autoplay playsinline @loadeddata="previewLoading = false" @error="previewLoading = false" @abort="previewLoading = false" /><img v-else :src="selectedImage.url" :alt="selectedImage.name" decoding="async" @load="previewLoading = false" @error="previewLoading = false" /><div class="preview-caption"><strong>{{ selectedImage.name }}</strong><span class="preview-meta"><span v-if="isVideoItem(selectedImage)">视频 · {{ selectedImage.size }} · {{ selectedImage.views.toLocaleString() }} 次查看</span><span v-else>{{ selectedImage.width }} × {{ selectedImage.height }} · {{ selectedImage.views.toLocaleString() }} 次查看</span><button class="caption-download" :title="isVideoItem(selectedImage) ? '下载视频' : '下载图片'" @click.stop="downloadImage(selectedImage)"><Download :size="13" />下载</button></span></div></div></div>
     <transition name="toast"><div v-if="toast" class="toast-message"><Check :size="16" />{{ toast }}</div></transition>
+    <TaskDock :hidden="videoFullscreen" @goto-library="onPanelGoto('library')" />
   </div>
 </template>

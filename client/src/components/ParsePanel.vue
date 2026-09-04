@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { Check, Clock3, Download, Eye, Heart, Images, Link2, LoaderCircle, MessageCircle, RotateCcw, Save, Share2, Sparkles, Trash2, X } from 'lucide-vue-next'
-import { dismissSaveTask, retrySaveTask, startSaveTask, useSaveTasks, type SaveTaskOpts } from '../parseSaveStore'
+import { Clock3, Download, Eye, Heart, Images, Link2, LoaderCircle, MessageCircle, RotateCcw, Save, Share2, Sparkles, Trash2, X } from 'lucide-vue-next'
+import { startSaveTask, type SaveTaskOpts } from '../parseSaveStore'
 
 /* ============================================================
    视频解析工作台（PureParse 解析引擎 · 原生嵌入 · 主题自适配）
@@ -47,8 +47,6 @@ interface ParseTask {
 }
 interface HistoryItem { url: string; plat: string; title: string; time: number }
 
-const emit = defineEmits<{ goto: [view: 'library' | 'tags'] }>()
-
 const input = ref('')
 const busy = ref(false)
 const stepText = ref('')
@@ -64,9 +62,6 @@ const savePlatTag = ref(true)
 const saveHint = ref('')
 const lastUrl = ref('')
 let parseToken = 0
-
-/* 后台保存任务（模块级单例，切走视图继续下载） */
-const saveTasks = useSaveTasks()
 
 onMounted(() => { loadHistory(); onInput() })
 
@@ -296,7 +291,6 @@ function confirmSave() {
   startSaveTask(opts)
   showSave.value = false
 }
-function gotoLibrary() { emit('goto', 'library') }
 </script>
 
 <template>
@@ -382,37 +376,6 @@ function gotoLibrary() { emit('goto', 'library') }
         </div>
         <p v-if="saveHint" class="pw-save-hint">{{ saveHint }}</p>
         <button class="primary-button full" @click="confirmSave"><Save :size="16" />开始后台保存</button>
-      </div>
-    </div>
-
-    <!-- 左下角后台任务进度 -->
-    <div v-if="saveTasks.length" class="pw-tasks">
-      <div v-for="t in saveTasks" :key="t.id" :class="['pw-task', t.state]">
-        <div class="pw-task-head">
-          <span class="pw-task-ico">
-            <LoaderCircle v-if="t.state === 'working'" class="spin" :size="15" />
-            <Check v-else-if="t.state === 'done'" :size="15" />
-            <X v-else :size="15" />
-          </span>
-          <div class="pw-task-tx">
-            <b>{{ t.opts.name }}</b>
-            <small>{{ t.stageText }}</small>
-          </div>
-          <button class="pw-task-x" :title="t.state === 'working' ? '取消' : '关闭'" @click="dismissSaveTask(t.id)"><X :size="13" /></button>
-        </div>
-        <div class="pw-task-bar">
-          <i v-if="t.state === 'working'" :class="{ indet: t.unknown || !t.pct }"
-            :style="{ width: t.unknown || !t.pct ? '34%' : Math.round(t.pct * 100) + '%' }"></i>
-          <i v-else :class="[t.state === 'done' ? 'fill-ok' : 'fill-err']"></i>
-        </div>
-        <div v-if="t.state === 'done'" class="pw-task-acts">
-          <button class="pw-task-btn" @click="dismissSaveTask(t.id)">知道了</button>
-          <button class="pw-task-btn pw-task-go" @click="gotoLibrary"><Images :size="12" />去图片库查看</button>
-        </div>
-        <div v-else-if="t.state === 'error'" class="pw-task-acts">
-          <button class="pw-task-btn" @click="dismissSaveTask(t.id)">关闭</button>
-          <button class="pw-task-btn pw-task-go" @click="retrySaveTask(t.id)"><RotateCcw :size="12" />重试</button>
-        </div>
       </div>
     </div>
   </div>
@@ -563,75 +526,6 @@ function gotoLibrary() { emit('goto', 'library') }
 .pw-save-opts input { margin: 3px 0 0; accent-color: #a78bfa; width: 15px; height: 15px; cursor: pointer; flex: none; }
 .pw-save-opts b { display: block; font-size: 12px; font-weight: 500; }
 .pw-save-opts small { display: block; color: #78839e; font-size: 10.5px; margin-top: 3px; }
-
-/* 左下角后台任务进度卡 */
-.pw-tasks {
-  position: fixed; left: 20px; bottom: 20px; z-index: 46;
-  display: flex; flex-direction: column; gap: 9px;
-  width: min(350px, calc(100vw - 32px));
-  pointer-events: none;
-}
-.pw-task {
-  pointer-events: auto;
-  border: 1px solid rgba(157, 171, 210, .2);
-  border-radius: 13px;
-  background: rgba(16, 22, 40, .97);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, .42);
-  padding: 12px 13px 11px;
-}
-.pw-task.error { border-color: rgba(248, 113, 113, .32); }
-.pw-task.done { border-color: rgba(74, 222, 128, .26); }
-.pw-task-head { display: flex; align-items: flex-start; gap: 10px; }
-.pw-task-ico {
-  width: 26px; height: 26px; flex: none; border-radius: 8px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: rgba(167, 139, 250, .13); color: #b7a5ff;
-}
-.pw-task.done .pw-task-ico { background: rgba(74, 222, 128, .13); color: #6ee7a2; }
-.pw-task.error .pw-task-ico { background: rgba(248, 113, 113, .13); color: #fb8294; }
-.pw-task-tx { flex: 1; min-width: 0; }
-.pw-task-tx b {
-  display: block; font-size: 12px; font-weight: 500; color: #dfe4ef;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.pw-task-tx small {
-  display: block; margin-top: 3px; font-size: 10.5px; line-height: 1.45;
-  color: #8b96ad; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.pw-task.done .pw-task-tx small { color: #7ce7a5; }
-.pw-task.error .pw-task-tx small { color: #fda4af; }
-.pw-task-x {
-  flex: none; width: 22px; height: 22px; border-radius: 6px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: transparent; color: #6d7894;
-}
-.pw-task-x:hover { background: rgba(255, 255, 255, .07); color: #cfd6e6; }
-.pw-task-bar {
-  height: 5px; margin-top: 10px; border-radius: 6px;
-  background: rgba(255, 255, 255, .07); overflow: hidden;
-}
-.pw-task-bar i {
-  display: block; height: 100%; border-radius: 6px;
-  background: linear-gradient(90deg, #22d3ee, #a78bfa, #e15aa6);
-  transition: width .18s ease;
-}
-.pw-task-bar i.indet { animation: pw-indet 1.15s ease-in-out infinite alternate; }
-.pw-task-bar i.fill-ok { width: 100%; background: linear-gradient(90deg, #34d399, #6ee7a2); }
-.pw-task-bar i.fill-err { width: 100%; background: rgba(248, 113, 113, .55); }
-@keyframes pw-indet {
-  from { transform: translateX(-110%); }
-  to { transform: translateX(320%); }
-}
-.pw-task-acts { display: flex; gap: 8px; margin-top: 11px; }
-.pw-task-btn {
-  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  padding: 7px 10px; border-radius: 8px;
-  background: rgba(255, 255, 255, .05); color: #aab3c8; font-size: 11px;
-  transition: .16s;
-}
-.pw-task-btn:hover { background: rgba(255, 255, 255, .1); color: #fff; }
-.pw-task-btn.pw-task-go { background: rgba(167, 139, 250, .16); color: #cfc3ff; }
-.pw-task-btn.pw-task-go:hover { background: rgba(167, 139, 250, .26); }
 
 @media (max-width: 720px) {
   .pw-tasks {
