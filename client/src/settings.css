@@ -384,6 +384,11 @@
 .filter-pills {
   flex-wrap: nowrap;
   overflow-x: auto;
+  /* 关键修复：移动端 .library-toolbar 为 align-items:flex-start 的纵向 flex，
+     标签栏若按内容宽(fit-content)会撑到 668px 溢出被裁、无法内部滚动；
+     强制宽度=父容器宽，让溢出发生在自身内部才能横向滚动 */
+  width: 100%;
+  max-width: 100%;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;          /* Firefox */
   -ms-overflow-style: none;       /* IE/旧 Edge */
