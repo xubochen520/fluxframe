@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { Check, Images, LoaderCircle, RotateCcw, X } from 'lucide-vue-next'
-import { dismissDownloadTask, retryDownloadTask, useDownloadTasks } from '../downloadTaskStore'
+import { Check, FolderOpen, Images, LoaderCircle, RotateCcw, X } from 'lucide-vue-next'
+import { dismissDownloadTask, markDownloadOpenError, openDownloadedFile, retryDownloadTask, useDownloadTasks } from '../downloadTaskStore'
 import { dismissSaveTask, retrySaveTask, useSaveTasks } from '../parseSaveStore'
 
 /* ============================================================
@@ -12,6 +12,12 @@ defineProps<{ hidden?: boolean }>()
 
 const saveTasks = useSaveTasks()
 const downloadTasks = useDownloadTasks()
+
+/** APK 下载完成 → 用系统查看器打开文件验证落盘；失败则卡片转错误态显示原因 */
+async function onOpenDownload(id: number) {
+  const result = await openDownloadedFile(id)
+  if (!result.ok) markDownloadOpenError(id, result.message || '无法打开文件')
+}
 </script>
 
 <template>
@@ -65,6 +71,7 @@ const downloadTasks = useDownloadTasks()
         <i v-else :class="[t.state === 'done' ? 'fill-ok' : 'fill-err']"></i>
       </div>
       <div v-if="t.state === 'done'" class="task-acts">
+        <button v-if="t.fileId" class="task-btn task-go" @click="onOpenDownload(t.id)"><FolderOpen :size="12" />打开文件</button>
         <button class="task-btn task-go" @click="dismissDownloadTask(t.id)">知道了</button>
       </div>
       <div v-else-if="t.state === 'error'" class="task-acts">

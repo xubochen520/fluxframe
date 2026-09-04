@@ -11,8 +11,9 @@ import { Capacitor, registerPlugin } from '@capacitor/core'
 
 interface NativeDownloadsApi {
   start(opts: { url: string; filename: string; cookie: string }): Promise<{ id: string }>
-  progress(opts: { id: string }): Promise<{ status: string; downloaded: number; total: number; message?: string }>
+  progress(opts: { id: string }): Promise<{ status: string; downloaded: number; total: number; message?: string; path?: string }>
   cancel(opts: { id: string }): Promise<void>
+  openFile(opts: { id: string }): Promise<void>
 }
 
 export const NativeDownloads = registerPlugin<NativeDownloadsApi>('NativeDownloads')

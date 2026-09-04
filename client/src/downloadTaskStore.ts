@@ -22,6 +22,8 @@ export interface DownloadTask {
   pct: number
   unknown: boolean
   opts: DownloadOpts
+  /** APK 原生任务完成后的系统下载记录 id（供「打开文件」验证落盘） */
+  fileId?: string
 }
 
 const tasks = ref<DownloadTask[]>([])
@@ -155,6 +157,7 @@ async function runNative(task: DownloadTask, signal: AbortSignal) {
     task.state = 'done'
     task.pct = 1
     task.unknown = false
+    task.fileId = nativeId
     task.stageText = '已保存到手机「下载」文件夹'
   } catch (err: any) {
     if (signal.aborted) return
@@ -172,4 +175,25 @@ export function retryDownloadTask(id: number) {
   if (!old) return
   dismissDownloadTask(id)
   startDownload(old.opts)
+}
+
+/** APK：用系统查看器打开刚下载完成的文件（验证是否真的落盘） */
+export async function openDownloadedFile(id: number): Promise<{ ok: boolean; message?: string }> {
+  const task = tasks.value.find((t) => t.id === id)
+  if (!task?.fileId) return { ok: false, message: '无文件记录' }
+  try {
+    await NativeDownloads.openFile({ id: task.fileId })
+    return { ok: true }
+  } catch (err: any) {
+    return { ok: false, message: (err && err.message) ? String(err.message) : '无法打开文件' }
+  }
+}
+
+/** 打开失败时把卡片转为错误态展示原因 */
+export function markDownloadOpenError(id: number, message: string) {
+  const task = tasks.value.find((t) => t.id === id)
+  if (task) {
+    task.state = 'error'
+    task.stageText = message
+  }
 }

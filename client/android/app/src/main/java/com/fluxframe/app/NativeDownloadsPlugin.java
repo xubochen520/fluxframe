@@ -11,6 +11,8 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.ActivityNotFoundException;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -39,16 +41,15 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 原生下载桥（自研下载器，不依赖系统 DownloadManager —— 部分手机 ROM
- * 不给存储权限时 DownloadManager 无法写入公共下载目录）。
+ * 原生下载桥（自研下载器，不依赖系统 DownloadManager）。
  *
- * · Android 9 及以下：先请求「存储」运行时权限（弹窗），授权后直接写入
- *   /Download 公共下载目录；
- * · Android 10 及以上：经 MediaStore.Downloads（IS_PENDING 事务）写入
- *   公共「下载」目录，系统授权模型下无需存储权限；
- * · Android 13 及以上：附带请求通知权限，用于下载完成通知（不授权也不影响保存）。
+ * · Android 9 及以下：请求「存储」运行时权限后直接写入公共 /Download 目录；
+ * · Android 10 及以上：经 MediaStore.Downloads（IS_PENDING 事务）写入公共
+ *   「下载」目录；写完必须回查确认 IS_PENDING 已清除、文件对系统可见，
+ *   否则如实报错而不是假报成功；
+ * · Android 13 及以上：附带请求通知权限（仅影响完成通知）。
  *
- * 进度由页面每 ~800ms 轮询 progress() 返回真实字节数；取消会中断连接并清理半成品。
+ * 成功后可经 openFile(id) 直接调起系统查看器打开刚保存的文件，用于验证落盘。
  */
 @CapacitorPlugin(name = "NativeDownloads")
 public class NativeDownloadsPlugin extends Plugin {
@@ -65,6 +66,18 @@ public class NativeDownloadsPlugin extends Plugin {
     private static final AtomicLong idSeq = new AtomicLong(1);
     private static PluginCall pendingStorageCall; // 等待存储授权结果的 start 调用
 
+    /** 最近完成的下载（供 openFile 打开验证），jobId → 落盘信息 */
+    private static final Map<String, SavedFile> recentDone = new ConcurrentHashMap<>();
+
+    private static class SavedFile {
+        Uri uri;
+        String path;
+        String name;
+        String mime;
+        long size;
+        long time;
+    }
+
     private static class Job {
         long id;
         volatile String status = "pending"; // pending | running | successful | failed
@@ -77,6 +90,7 @@ public class NativeDownloadsPlugin extends Plugin {
         String safeName;
         Uri mediaUri;      // Android 10+ MediaStore 条目
         File destFile;     // Android 9 及以下目标文件
+        String savedPath;  // 校验后回查到的真实路径（可能为空）
     }
 
     @Override
@@ -131,7 +145,7 @@ public class NativeDownloadsPlugin extends Plugin {
     }
 
     // ------------------------------------------------------------------
-    // 对外方法（与页面任务坞配合：start / progress / cancel）
+    // 对外方法（与页面任务坞配合：start / progress / cancel / openFile）
     // ------------------------------------------------------------------
 
     @PluginMethod
@@ -244,11 +258,12 @@ public class NativeDownloadsPlugin extends Plugin {
             out.flush();
             if (job.cancelled) return;
             if (Build.VERSION.SDK_INT >= 29) {
-                finalizeMediaStore(app, job); // 清除 IS_PENDING → 文件对系统可见
+                finalizeAndVerifyMediaStore(app, job); // 未通过校验会抛错 → 报失败而非假成功
             }
             finalized = true;
             job.status = "successful";
             job.downloaded = job.total > 0 ? job.total : done;
+            rememberSaved(job); // 供 openFile 打开验证
             postCompletionNotification(job);
         } catch (Exception e) {
             if (job.cancelled) return;
@@ -273,7 +288,7 @@ public class NativeDownloadsPlugin extends Plugin {
             ContentValues values = new ContentValues();
             values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
             values.put(MediaStore.MediaColumns.MIME_TYPE, mimeOf(name));
-            values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+            values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/");
             values.put(MediaStore.MediaColumns.IS_PENDING, 1);
             Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
             if (uri != null) {
@@ -286,12 +301,37 @@ public class NativeDownloadsPlugin extends Plugin {
         throw new IOException("无法在下载目录创建文件");
     }
 
-    private void finalizeMediaStore(Context app, Job job) {
-        try {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.MediaColumns.IS_PENDING, 0);
-            app.getContentResolver().update(job.mediaUri, values, null, null);
-        } catch (Exception ignored) { }
+    /**
+     * 清除 IS_PENDING 并回查确认：媒体库必须确认文件已对系统可见，
+     * 否则抛错（避免出现“提示成功但文件管理器里找不到”）。
+     */
+    private void finalizeAndVerifyMediaStore(Context app, Job job) throws IOException {
+        ContentResolver resolver = app.getContentResolver();
+        IOException lastError = null;
+        for (int attempt = 0; attempt < 4; attempt++) {
+            try {
+                ContentValues pendingOff = new ContentValues();
+                pendingOff.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                resolver.update(job.mediaUri, pendingOff, null, null);
+            } catch (Exception e) {
+                lastError = new IOException("媒体库拒绝确认文件：" + e.getMessage());
+            }
+            /* 稍候回查：IS_PENDING 应已为 0 */
+            String[] projection = {MediaStore.MediaColumns.IS_PENDING, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATA};
+            try (Cursor cursor = resolver.query(job.mediaUri, projection, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    int pending = cursor.getInt(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING));
+                    if (pending == 0) {
+                        int dataIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA);
+                        if (dataIdx >= 0) job.savedPath = cursor.getString(dataIdx);
+                        return; // ✅ 媒体库已确认
+                    }
+                }
+            } catch (Exception ignored) { }
+            try { Thread.sleep(300); } catch (InterruptedException ignored) { }
+        }
+        if (lastError != null) throw lastError;
+        throw new IOException("系统媒体库未确认保存完成（文件可能不可见），请重试；若反复失败请反馈此提示");
     }
 
     /** Android 9 及以下：请求存储权限后直接写公共下载目录文件 */
@@ -304,6 +344,7 @@ public class NativeDownloadsPlugin extends Plugin {
         }
         job.destFile = file;
         job.safeName = file.getName();
+        job.savedPath = file.getAbsolutePath();
         return new FileOutputStream(file);
     }
 
@@ -313,6 +354,27 @@ public class NativeDownloadsPlugin extends Plugin {
             return name.substring(0, ext) + " (" + n + ")" + name.substring(ext);
         }
         return name + " (" + n + ")";
+    }
+
+    private void rememberSaved(Job job) {
+        try {
+            pruneRecent();
+            SavedFile saved = new SavedFile();
+            saved.uri = job.mediaUri;
+            saved.path = job.savedPath;
+            saved.name = job.safeName;
+            saved.mime = mimeOf(job.safeName);
+            saved.size = job.downloaded;
+            saved.time = System.currentTimeMillis();
+            recentDone.put(String.valueOf(job.id), saved);
+        } catch (Exception ignored) { }
+    }
+
+    private void pruneRecent() {
+        long now = System.currentTimeMillis();
+        if (recentDone.size() > 50) {
+            recentDone.entrySet().removeIf(e -> now - e.getValue().time > 30 * 60 * 1000);
+        }
     }
 
     private void cleanupPartial(Job job) {
@@ -390,6 +452,9 @@ public class NativeDownloadsPlugin extends Plugin {
         ret.put("downloaded", job.downloaded);
         ret.put("total", job.total);
         if (job.status.equals("failed")) ret.put("message", job.message);
+        if (job.status.equals("successful")) {
+            ret.put("path", job.savedPath == null ? "" : job.savedPath);
+        }
         call.resolve(ret);
         if (job.status.equals("successful") || job.status.equals("failed")) {
             jobs.remove(id); // 终态后移除，JS 不再轮询
@@ -413,6 +478,42 @@ public class NativeDownloadsPlugin extends Plugin {
             call.resolve();
         } catch (Exception e) {
             call.reject("取消失败：" + e.getMessage());
+        }
+    }
+
+    /** 打开刚下载完成的文件（任务卡「打开」按钮 → 验证落盘并可直接查看） */
+    @PluginMethod
+    public void openFile(PluginCall call) {
+        String sid = call.getString("id");
+        if (sid == null) { call.reject("缺少文件记录"); return; }
+        SavedFile saved = recentDone.get(sid);
+        if (saved == null) {
+            call.reject("下载记录已过期，请重新下载后再打开");
+            return;
+        }
+        try {
+            Context app = getContext().getApplicationContext();
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            Uri target;
+            if (saved.uri != null) {
+                target = saved.uri;
+            } else {
+                File file = new File(saved.path);
+                if (!file.exists()) {
+                    call.reject("文件不存在：" + saved.path);
+                    return;
+                }
+                target = FileProvider.getUriForFile(app, app.getPackageName() + ".fileprovider", file);
+            }
+            intent.setDataAndType(target, saved.mime);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            app.startActivity(intent);
+            call.resolve();
+        } catch (ActivityNotFoundException e) {
+            call.reject("手机上没有能打开此类文件的应用");
+        } catch (Exception e) {
+            String msg = e.getMessage();
+            call.reject("打开失败：" + (msg == null ? e.getClass().getSimpleName() : msg));
         }
     }
 }
