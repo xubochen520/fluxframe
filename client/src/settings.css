@@ -379,3 +379,49 @@
 .preview-backdrop.video-fs .preview-image video { width: 100%; height: 100%; max-height: none; border-radius: 0; box-shadow: none; background: #000; object-fit: contain; }
 .preview-backdrop.video-fs .preview-caption { display: none; }
 .preview-backdrop.video-fs .preview-loading { background: rgba(0, 0, 0, .35); }
+
+/* ---- 图片库标签栏横滚：桌面滚轮纵滚=横切标签；手机触控左右滑 ---- */
+.filter-pills {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;          /* Firefox */
+  -ms-overflow-style: none;       /* IE/旧 Edge */
+  overscroll-behavior-x: contain;
+  scroll-behavior: smooth;
+}
+.filter-pills::-webkit-scrollbar { display: none; height: 0; }
+.filter-pills .pill { flex: 0 0 auto; white-space: nowrap; }
+.filter-pills .pill:active { transform: scale(.96); }
+
+/* ---- 媒体卡片右下角下载按钮（手机端触屏直达；桌面 hover 显示，也可用右键菜单） ---- */
+.image-download {
+  position: absolute; right: 7px; bottom: 7px; z-index: 2;
+  width: 27px; height: 27px; border-radius: 8px;
+  display: none; align-items: center; justify-content: center;
+  background: rgba(6, 11, 24, .76); color: #dfe5f1;
+  border: 1px solid rgba(157, 171, 210, .22);
+}
+.image-card:hover .image-download { display: inline-flex; }
+@media (max-width: 720px) {
+  .image-download { display: inline-flex; }
+  .image-download:active { transform: scale(.9); background: rgba(6, 11, 24, .92); }
+}
+
+/* ---- 预览层下载按钮（位于底部信息条内：不遮挡播放器控件，图片/视频通用） ---- */
+.preview-meta { display: inline-flex; align-items: center; gap: 10px; }
+.caption-download {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 11px; border-radius: 999px;
+  border: 1px solid rgba(157, 171, 210, .32);
+  background: rgba(8, 12, 24, .74); color: #e2e7f2;
+  font-size: 11px; white-space: nowrap;
+  transition: .16s;
+}
+.caption-download:hover { background: rgba(8, 12, 24, .95); color: #fff; border-color: rgba(167, 139, 250, .6); }
+.caption-download:active { transform: scale(.95); }
+@media (max-width: 720px) {
+  .preview-caption .preview-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 7px; }
+  .preview-caption .preview-meta span { display: inline; margin-top: 0; }
+  .caption-download { padding: 6px 13px; font-size: 12px; }
+}
