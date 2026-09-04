@@ -2,6 +2,8 @@
 import { onMounted, ref } from 'vue'
 import { Clock3, Download, Eye, Heart, Images, Link2, LoaderCircle, MessageCircle, RotateCcw, Save, Share2, Sparkles, Trash2, X } from 'lucide-vue-next'
 import { startSaveTask, type SaveTaskOpts } from '../parseSaveStore'
+import { isNativeAndroid } from '../nativeDownload'
+import { startDownload } from '../downloadTaskStore'
 
 /* ============================================================
    视频解析工作台（PureParse 解析引擎 · 原生嵌入 · 主题自适配）
@@ -217,6 +219,11 @@ async function runParse(url: string) {
 /* ---------- 本地下载 ---------- */
 async function grabAndDownload(url: string, filename: string) {
   try {
+    /* APK 端：blob 保存不生效 → 转左下角任务坞走系统 DownloadManager 直连下载 */
+    if (isNativeAndroid) {
+      startDownload({ url, filename })
+      return ''
+    }
     const res = await fetch(url, { credentials: 'include' })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const blob = await res.blob()

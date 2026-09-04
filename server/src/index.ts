@@ -345,6 +345,15 @@ app.get('/api/me', async (request, reply) => {
   return { id: user.id, username: user.username, role: user.role, r18Mode: user.r18Mode }
 })
 
+/* APK 原生下载桥专用：系统 DownloadManager 不带 WebView Cookie，下载前由本页 JS
+   以已登录 Cookie 换取一次会话令牌，再以明文 Cookie 头交给系统下载器直连内网拉取。
+   令牌不出本机、不进 URL，仅在同一会话内使用。 */
+app.get('/api/download/session', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  return { token: request.cookies[sessionCookie] || '' }
+})
+
 app.patch('/api/me/r18-mode', async (request, reply) => {
   const user = await requireUser(request as AuthenticatedRequest, reply)
   if (!user) return

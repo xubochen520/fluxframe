@@ -53,6 +53,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(NativeDownloadsPlugin.class); // 原生下载桥（系统 DownloadManager）
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (savedInstanceState == null) {
