@@ -993,10 +993,10 @@ async function start() {
   try {
     const distStat = await stat(distDir)
     if (distStat.isDirectory()) {
-      await app.register(fastifyStatic, { root: distDir, prefix: '/' })
+      await app.register(fastifyStatic, { root: distDir, prefix: '/', setHeaders(reply, filePath) { if (filePath.endsWith('.html')) reply.header('Cache-Control', 'no-store') } })
       app.setNotFoundHandler((request, reply) => {
         if (request.method !== 'GET' || request.url.startsWith('/api') || request.url.startsWith('/assets')) return reply.code(404).send({ message: 'Not Found' })
-        return reply.type('text/html').header('Cache-Control', 'no-cache').send(createReadStream(path.join(distDir, 'index.html')))
+        return reply.type('text/html').header('Cache-Control', 'no-store').send(createReadStream(path.join(distDir, 'index.html')))
       })
       app.log.warn(`Serving web app from ${distDir} (phone: http://<PC-IP>:${runtimePort})`)
     } else {

@@ -97,7 +97,8 @@ public class MainActivity extends BridgeActivity {
     private void connectTo(String hostPort) {
         dialogsUp = false;
         prefs.edit().putString(KEY_SERVER, hostPort).apply();
-        String url = "http://" + hostPort + "/";
+        /* 带版本号的查询参数：每次发版 URL 不同 → 强制 WebView 拉取新页面，杜绝旧 UI 缓存 */
+        String url = "http://" + hostPort + "/?v=" + BuildConfig.VERSION_NAME;
         WebView webView = getBridge().getWebView();
         webView.setWebViewClient(new BridgeWebViewClient(getBridge()) {
             @Override

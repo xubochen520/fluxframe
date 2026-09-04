@@ -138,10 +138,11 @@ async function runNative(task: DownloadTask, signal: AbortSignal) {
     nativeIds.set(task.id, nativeId)
     if (signal.aborted) { onAbort(); return }
     task.stageText = '开始下载…'
+    let savedPath = ''
     for (;;) {
       if (signal.aborted) return
       const p = await NativeDownloads.progress({ id: nativeId })
-      if (p.status === 'successful') break
+      if (p.status === 'successful') { savedPath = p.path || ''; break }
       if (p.status === 'failed') throw new Error(`下载失败：${p.message || '系统错误，请重试'}`)
       if (p.status === 'gone') throw new Error('下载任务已被系统移除，请重试')
       const totalKnown = Number(p.total) > 0
@@ -158,7 +159,9 @@ async function runNative(task: DownloadTask, signal: AbortSignal) {
     task.pct = 1
     task.unknown = false
     task.fileId = nativeId
-    task.stageText = '已保存到手机「下载」文件夹'
+    task.stageText = savedPath
+      ? `已保存：${savedPath.replace('/storage/emulated/0/', '')}`
+      : '已保存到手机「下载」文件夹'
   } catch (err: any) {
     if (signal.aborted) return
     task.state = 'error'
