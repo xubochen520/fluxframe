@@ -1,8 +1,8 @@
 /* ============================================================
    本地下载任务（模块级单例）：左下角任务坞显示真实字节进度
    · 桌面浏览器：拉取为 blob 后触发浏览器保存到本机下载目录
-   · APK 手机端：交给 Android 系统 DownloadManager 内网直连下载，
-     直接落盘到手机「下载」文件夹（WebView 无法触发系统保存）
+   · APK 手机端：原生下载器（存储权限授权后）内网直连服务器，
+     亲自写入手机「下载」文件夹（WebView 无法触发系统保存）
    ============================================================ */
 import { reactive, ref } from 'vue'
 import { isNativeAndroid, NativeDownloads, prepareNativeDownload } from './nativeDownload'
@@ -135,7 +135,7 @@ async function runNative(task: DownloadTask, signal: AbortSignal) {
     nativeId = started.id
     nativeIds.set(task.id, nativeId)
     if (signal.aborted) { onAbort(); return }
-    task.stageText = '系统下载器下载中…'
+    task.stageText = '开始下载…'
     for (;;) {
       if (signal.aborted) return
       const p = await NativeDownloads.progress({ id: nativeId })

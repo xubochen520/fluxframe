@@ -53,12 +53,19 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        registerPlugin(NativeDownloadsPlugin.class); // 原生下载桥（系统 DownloadManager）
+        registerPlugin(NativeDownloadsPlugin.class); // 原生下载桥（存储权限 + 内网直连落盘）
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (savedInstanceState == null) {
             startDiscovery();
         }
+    }
+
+    /* 存储/通知等运行时权限结果转交原生下载桥（授权后自动继续下载任务） */
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        NativeDownloadsPlugin.handlePermissionResult(requestCode, grantResults);
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
     }
 
     // ---------- 连接流程 ----------
