@@ -10,6 +10,7 @@ import android.view.Gravity;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebView;
+import android.webkit.JavascriptInterface;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -55,6 +56,9 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(NativeDownloadsPlugin.class); // 原生下载桥（存储权限 + 内网直连落盘）
         super.onCreate(savedInstanceState);
+        /* 主页面由电脑端 HTTP 服务提供，无法依赖 Capacitor 对本地页面的 JS 自动注入。 */
+        getBridge().getWebView().addJavascriptInterface(
+                new RemoteNativeDownloadsBridge(getApplicationContext()), "FluxframeNativeDownloads");
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (savedInstanceState == null) {
             startDiscovery();
@@ -314,5 +318,37 @@ public class MainActivity extends BridgeActivity {
             });
             pool.shutdown();
         });
+    }
+
+    /**
+     * 给远程内网页面使用的最小原生下载桥。方法只接收下载地址、文件名和会话 Cookie，
+     * 不把 Cookie 写入日志；实际下载和 MediaStore 发布仍由 NativeDownloadsPlugin 完成。
+     */
+    public static final class RemoteNativeDownloadsBridge {
+        private final Context context;
+
+        RemoteNativeDownloadsBridge(Context context) {
+            this.context = context;
+        }
+
+        @JavascriptInterface
+        public String start(String url, String filename, String cookie) {
+            return NativeDownloadsPlugin.startFromJavascript(context, url, filename, cookie);
+        }
+
+        @JavascriptInterface
+        public String progress(String id) {
+            return NativeDownloadsPlugin.progressFromJavascript(id);
+        }
+
+        @JavascriptInterface
+        public String cancel(String id) {
+            return NativeDownloadsPlugin.cancelFromJavascript(id);
+        }
+
+        @JavascriptInterface
+        public String openFile(String id) {
+            return NativeDownloadsPlugin.openFileFromJavascript(context, id);
+        }
     }
 }

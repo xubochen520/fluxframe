@@ -459,14 +459,18 @@ export function registerParseApi(app: FastifyInstance) {
       'Accept-Ranges': 'bytes',
       'Cache-Control': 'public, max-age=600',
     }
+    /* undici 可能已解压上游响应；此时原始 Content-Length 不再代表转发正文长度，
+       不应把它传给 APK，否则原生端会把完整正文误判为截断。 */
+    const upstreamEncoding = upstream.headers.get('content-encoding')
+    const safeContentLength = upstreamEncoding ? null : upstream.headers.get('content-length')
     if (query.disposition === 'inline') outHeaders['Content-Disposition'] = 'inline'
     if (rng) {
       const cr = upstream.headers.get('content-range')
-      const cl = upstream.headers.get('content-length')
+      const cl = safeContentLength
       if (cr) outHeaders['Content-Range'] = cr
       if (cl) outHeaders['Content-Length'] = cl
     } else {
-      const cl = upstream.headers.get('content-length')
+      const cl = safeContentLength
       if (cl) outHeaders['Content-Length'] = cl
     }
     reply.code(upstream.status).headers(outHeaders)

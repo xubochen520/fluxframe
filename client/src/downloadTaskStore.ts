@@ -1,8 +1,8 @@
 /* ============================================================
    本地下载任务（模块级单例）：左下角任务坞显示真实字节进度
    · 桌面浏览器：拉取为 blob 后触发浏览器保存到本机下载目录
-   · APK 手机端：原生下载器（存储权限授权后）内网直连服务器，
-     亲自写入手机「下载」文件夹（WebView 无法触发系统保存）
+   · APK 手机端：系统 DownloadManager 下载后由原生桥发布到 MediaStore，
+     视频/图片在图库可见后才结束任务（WebView 无法触发系统保存）
    ============================================================ */
 import { reactive, ref } from 'vue'
 import { isNativeAndroid, NativeDownloads, prepareNativeDownload } from './nativeDownload'
@@ -22,13 +22,13 @@ export interface DownloadTask {
   pct: number
   unknown: boolean
   opts: DownloadOpts
-  /** APK 原生任务完成后的系统下载记录 id（供「打开文件」验证落盘） */
+  /** APK 原生任务 id（供「打开文件」通过已保存的 MediaStore URI 验证落盘） */
   fileId?: string
 }
 
 const tasks = ref<DownloadTask[]>([])
 const controllers = new Map<number, AbortController>()
-/** 原生任务：任务 id → 系统下载器请求 id */
+/** 原生任务：页面任务 id → 原生下载任务 id */
 const nativeIds = new Map<number, string>()
 let nextId = 1
 
@@ -122,7 +122,7 @@ async function run(task: DownloadTask, signal: AbortSignal) {
   }
 }
 
-/** APK 原生路径：系统 DownloadManager 直连内网服务器落盘（不经页面内存） */
+/** APK 原生路径：DownloadManager 传输，MediaStore 最终发布（不经页面内存） */
 async function runNative(task: DownloadTask, signal: AbortSignal) {
   let nativeId: string | undefined
   const onAbort = () => {
@@ -145,6 +145,13 @@ async function runNative(task: DownloadTask, signal: AbortSignal) {
       if (p.status === 'successful') { savedPath = p.path || ''; break }
       if (p.status === 'failed') throw new Error(`下载失败：${p.message || '系统错误，请重试'}`)
       if (p.status === 'gone') throw new Error('下载任务已被系统移除，请重试')
+      if (p.status === 'finalizing') {
+        task.pct = 1
+        task.unknown = false
+        task.stageText = '下载完成，正在写入手机图库…'
+        await sleep(500)
+        continue
+      }
       const totalKnown = Number(p.total) > 0
       task.pct = totalKnown ? Math.min(1, Number(p.downloaded) / Number(p.total)) : 0
       task.unknown = !totalKnown
@@ -159,9 +166,12 @@ async function runNative(task: DownloadTask, signal: AbortSignal) {
     task.pct = 1
     task.unknown = false
     task.fileId = nativeId
+    const mediaFile = /\.(mp4|m4v|mov|webm|mpeg)$/i.test(task.opts.filename)
     task.stageText = savedPath
       ? `已保存：${savedPath.replace('/storage/emulated/0/', '')}`
-      : '已保存到手机「下载」文件夹'
+      : mediaFile
+        ? '已保存到手机图库（DCIM/Fluxframe）'
+        : '已保存到手机媒体库/下载文件夹'
   } catch (err: any) {
     if (signal.aborted) return
     task.state = 'error'
@@ -180,7 +190,7 @@ export function retryDownloadTask(id: number) {
   startDownload(old.opts)
 }
 
-/** APK：用系统查看器打开刚下载完成的文件（验证是否真的落盘） */
+/** APK：用系统查看器打开已发布的 MediaStore 文件（验证是否真的落盘） */
 export async function openDownloadedFile(id: number): Promise<{ ok: boolean; message?: string }> {
   const task = tasks.value.find((t) => t.id === id)
   if (!task?.fileId) return { ok: false, message: '无文件记录' }

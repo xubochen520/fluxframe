@@ -219,7 +219,7 @@ async function runParse(url: string) {
 /* ---------- 本地下载 ---------- */
 async function grabAndDownload(url: string, filename: string) {
   try {
-    /* APK 端：blob 保存不生效 → 转左下角任务坞走系统 DownloadManager 直连下载 */
+    /* APK 端：blob 保存不生效 → 转左下角任务坞走原生媒体库下载 */
     if (isNativeAndroid) {
       startDownload({ url, filename })
       return ''
