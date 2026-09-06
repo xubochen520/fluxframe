@@ -5,7 +5,8 @@
                         B站/b23.tv  → 官方开放 API 全链真实解析
                         抖音        → 网页版官方 API + a_bogus 动态签名直连
                                       （开源签名算法 server/dyab，附 ttwid/uifid 会话，风控自动重试）
-                        快手等      → 页面内嵌数据尽力解析，其余返回明确原因
+                        快手        → H5 分享页详情接口直解（免签名免 Cookie，2025 改版后
+                                      手机页已无内嵌数据，页面直链/短链均可）
    · GET  /api/stream   媒体代理流：透传 UA/Referer/Range，供播放与下载（防防盗链+CORS）
    · GET  /api/ping     健康检查（解析页据此自动切换到真实解析模式）
    与图片库同源（4311），前端静态页位于 client/public/parse/（/parse/），
@@ -31,7 +32,7 @@ function detectPlatform(url: string) {
     const host = new URL(url).hostname.toLowerCase()
     if (/bilibili\.com|b23\.tv|bilibili\.tv/.test(host)) return 'bilibili'
     if (/douyin\.com|iesdouyin\.com/.test(host)) return 'douyin'
-    if (/kuaishou\.com|chenzhongtech\.com/.test(host)) return 'kuaishou'
+    if (/kuaishou\.com|chenzhongtech\.com|gifshow\.com/.test(host)) return 'kuaishou'
     if (/xiaohongshu\.com|xhslink\.com/.test(host)) return 'xiaohongshu'
     if (/weibo\.(com|cn)/.test(host)) return 'weibo'
     if (/ixigua\.com/.test(host)) return 'xigua'
@@ -338,31 +339,146 @@ async function resolveDouyin(url: string) {
   }
 }
 
-/* ---------- 快手：手机页内嵌 JSON 尽力解析 ---------- */
+/* ---------- 快手：H5 分享页详情接口（2025 改版后手机页为纯客户端渲染，旧版页面内嵌
+   __INITIAL_STATE__ 已不存在；改为直接调分享页同源的详情接口：
+   POST /rest/wd/ugH5App/photo/simple/info { photoId, isLongVideo }
+   免签名、免 Cookie，返回封面/无水印播放直链/作者/数据统计 ---------- */
+/** 从快手分享链接/展开后的页面地址中提取作品 ID（字母数字混合或纯数字均可） */
+function extractKsPhotoId(target: string) {
+  const pathM = target.match(/\/(?:fw\/(?:photo|long-video|concept-photo|share\/photo)|short-video|share\/photo)\/([0-9A-Za-z_-]{4,64})/)
+  if (pathM) return pathM[1]
+  try {
+    const u = new URL(target)
+    for (const key of ['photoId', 'photo_id', 'shareObjectId', 'shareId', 'fid', 'id']) {
+      const value = u.searchParams.get(key) || ''
+      if (/^[0-9A-Za-z_-]{4,64}$/.test(value)) return value
+    }
+  } catch { /* 非法 URL */ }
+  return ''
+}
+/** 截断长地址用于错误提示（避免刷屏日志） */
+function clipUrl(value: string, max = 100) { return value.length > max ? `${value.slice(0, max)}…` : value }
+
+/** 探测快手 CDN 直链可播并取真实总大小（Range 首字节；kwimgs/yximgs/kwaicdn 均支持） */
+async function probeKsMedia(url: string) {
+  for (let i = 0; i < 3; i++) {
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': UA_PC, Referer: 'https://www.kuaishou.com/', Range: 'bytes=0-0', Accept: '*/*' },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(12000),
+      })
+      const ct = res.headers.get('content-type') || ''
+      const cr = res.headers.get('content-range') || ''
+      if ((res.status === 200 || res.status === 206) && /video|octet-stream/i.test(ct)) {
+        const total = cr ? Number(cr.split('/')[1]) || 0 : 0
+        return { ok: true, type: ct, size: total }
+      }
+      await new Promise((r) => setTimeout(r, 600))
+    } catch {
+      await new Promise((r) => setTimeout(r, 600))
+    }
+  }
+  return { ok: false }
+}
+
 async function resolveKuaishou(url: string) {
   try {
-    const short = await jget(url, { 'User-Agent': UA_MOBILE }, 8000)
-    const finalUrl = short.finalUrl || url
-    const idM = finalUrl.match(/(?:fw\/photo|fw\/share|short-video)\/(\d+)/) || finalUrl.match(/(\d{8,20})/)
-    if (!idM) return fail('快手链接展开失败')
-    const page = await jget(`https://m.gifshow.com/fw/photo/${idM[1]}`, { 'User-Agent': UA_MOBILE, Referer: 'https://m.gifshow.com/' }, 8000)
-    const html = page.buf.toString('utf8')
-    const m = html.match(/window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*<\/script>/s) || html.match(/__INITIAL_STATE__\s*=\s*(\{.*?\})\s*;/s)
-    if (!m) return fail('快手页面未包含可解析数据（接口风控），暂无法本机直解')
-    const state = JSON.parse(m[1])
-    const photo = state?.photo || state?.feed?.main?.photo || state?.pages?.[0]?.photo
-    const videoUrl = photo?.manifest?.videoUrl || photo?.manifest?.adaptiveUrl?.[0]?.url
-    if (!videoUrl) return fail('快手视频流字段缺失（接口变动），暂无法本机直解')
+    /* 1. 短链/未知路径先用手机 UA 展开（v.kuaishou.com 等）；直接页面链接无需展开 */
+    let target = url
+    const looksShort = /^https?:\/\/[^/]*(?:kuaishou|gifshow)\.(?:com|cn|tv)\//i.test(url) && !/\/(?:fw|short-video)\//.test(url)
+    if (looksShort) {
+      const short = await jget(url, { 'User-Agent': UA_MOBILE }, 8000)
+      target = short.finalUrl || url
+    }
+    /* 2. 提取作品 ID：展开后地址优先，原链接兜底（部分跳转会丢弃 query 参数） */
+    let photoId = extractKsPhotoId(target)
+    if (!photoId) photoId = extractKsPhotoId(url)
+    /* 3. 个别场景手机 UA 被拦（落地 JSON 校验页），换桌面 UA 再展开一次 */
+    if (!photoId && looksShort) {
+      const short = await jget(url, { 'User-Agent': UA_PC, Referer: 'https://www.kuaishou.com/' }, 8000)
+      target = short.finalUrl || url
+      photoId = extractKsPhotoId(target)
+      if (!photoId) photoId = extractKsPhotoId(url)
+    }
+    if (!photoId) {
+      /* 展开后落到推荐/校验页：多半是链接失效或触发了临时风控，给用户可操作的提示 */
+      const gateHint = /new-reco|security|verify|captcha|passport/i.test(target)
+        ? '（快手返回了推荐/校验页——链接可能已失效，或该次请求被临时风控，可稍后重试或换一条分享链接）'
+        : ''
+      return fail(`快手链接展开失败：未能识别作品 ID（已解析地址：${clipUrl(target)}）${gateHint}`)
+    }
+
+    /* 2. 详情接口（与 H5 分享页同源；短视频与中长视频同接口，仅 isLongVideo 不同） */
+    const isLong = /\/fw\/long-video\//.test(target)
+    const res = await fetch('https://m.gifshow.com/rest/wd/ugH5App/photo/simple/info', {
+      method: 'POST',
+      headers: { 'User-Agent': UA_MOBILE, 'Content-Type': 'application/json', Referer: 'https://m.gifshow.com/' },
+      body: JSON.stringify({ photoId, isLongVideo: isLong }),
+      signal: AbortSignal.timeout(12000),
+    })
+    if (!res.ok) return fail(`快手详情接口返回 HTTP ${res.status}`)
+    let json: any = null
+    try { json = await res.json() } catch { /* 非 JSON */ }
+    if (!json || json.result !== 1 || !json.photo) {
+      return fail(json?.error_msg ? `快手未返回作品：${json.error_msg}` : '快手未返回作品数据（作品不存在、已删除或账号风控）')
+    }
+    const photo = json.photo
+
+    /* 3. 播放直链候选：manifest 自适应流（含清晰度/大小/尺寸）优先，mainMvUrls 兜底；
+       逐个探测可播性，取首个真实可播的直链（避免 CDN 路由失效的坏链） */
+    const reps: any[] = []
+    for (const set of Array.isArray(photo.manifest?.adaptationSet) ? photo.manifest.adaptationSet : []) {
+      for (const rep of Array.isArray(set?.representation) ? set.representation : []) {
+        if (rep && typeof rep.url === 'string' && rep.url && !rep.hidden) reps.push(rep)
+      }
+    }
+    reps.sort((a, b) => (Number(b.height) || 0) - (Number(a.height) || 0) || Number(b.defaultSelect ? 1 : 0) - Number(a.defaultSelect ? 1 : 0))
+    const toHttps = (value: string | undefined) => (value || '').replace(/^http:\/\//i, 'https://')
+    const candidates: Array<{ url: string; width: number; height: number; size: number; qualityLabel: string }> = []
+    for (const rep of reps) {
+      candidates.push({ url: toHttps(rep.url), width: Number(rep.width) || 0, height: Number(rep.height) || 0, size: Number(rep.fileSize) || 0, qualityLabel: String(rep.qualityLabel || (rep.height ? `${rep.height}P` : '')) })
+    }
+    for (const mv of Array.isArray(photo.mainMvUrls) ? photo.mainMvUrls : []) {
+      const u = toHttps(mv?.url)
+      if (u && !candidates.some((c) => c.url === u)) candidates.push({ url: u, width: 0, height: 0, size: 0, qualityLabel: '' })
+    }
+    if (!candidates.length) return fail('该快手作品为图文/其他类型，不含可提取的视频流')
+    let chosen: (typeof candidates)[0] | null = null
+    for (const candidate of candidates) {
+      const probe = await probeKsMedia(candidate.url)
+      if (probe.ok) {
+        chosen = candidate
+        if (!chosen.size && probe.size) chosen.size = probe.size
+        break
+      }
+    }
+    if (!chosen) return fail('快手视频流验证失败（直链不可达，多为临时限流），请稍后重试')
+    const cover = toHttps(photo.coverUrls?.[0]?.url) || toHttps(photo.webpCoverUrls?.[0]?.url) || ''
+    const durationMs = Number(photo.duration) || 0
     return {
       platform: 'kuaishou',
-      title: photo?.caption || '快手视频',
-      author: { name: photo?.user?.name || '未知作者', handle: '', verified: false, tag: '快手' },
-      stats: { like: photo?.likeCount || 0, comment: photo?.commentCount || 0, share: photo?.shareCount || 0 },
-      cover: photo?.coverUrl || photo?.coverUrls?.[0]?.url || '',
-      qualityLabel: '原画',
-      duration: Math.round((photo?.manifest?.duration || 0) / 1000),
+      title: String(photo.caption || '快手视频').trim(),
+      author: { name: String(photo.userName || '未知作者'), handle: '', verified: !!photo.verified, tag: '快手' },
+      stats: {
+        like: Number(photo.likeCount) || 0,
+        comment: Number(photo.commentCount) || 0,
+        share: Number(photo.shareCount) || 0,
+        view: Number(photo.viewCount) || 0,
+      },
+      cover,
+      qualityLabel: chosen.qualityLabel || (chosen.height ? `${chosen.height}P` : '原画'),
+      duration: Math.round(durationMs / 1000),
       watermarkFree: true,
-      media: [{ url: videoUrl, width: 0, height: 0, duration: 0, size: 0, type: 'mp4', referer: 'https://m.gifshow.com/' }],
+      media: [{
+        url: chosen.url,
+        width: chosen.width || Number(photo.width) || 0,
+        height: chosen.height || Number(photo.height) || 0,
+        duration: Math.round(durationMs / 1000),
+        size: chosen.size,
+        type: /\.webm($|\?)/i.test(chosen.url) ? 'webm' : 'mp4',
+        referer: 'https://www.kuaishou.com/',
+      }],
     }
   } catch (e: any) {
     return fail('快手解析请求失败：' + (e.message || '网络错误'))
