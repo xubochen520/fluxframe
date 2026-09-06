@@ -16,6 +16,7 @@ import { z } from 'zod'
 import { downloadAiStack, getAiStatus, startAiServer, stopAiServer } from './ai-manager.js'
 import { registerParseApi, pickUpstreamHeaders, type ParseServerDeps } from './parse-server.js'
 import { locateFfmpeg, downloadFfmpeg, getFfmpegStatus } from './ffmpeg-manager.js'
+import { biliQrCreate, biliQrPoll, extractSessdata } from './bili-login.js'
 
 const prisma = new PrismaClient()
 const app = Fastify({
@@ -825,10 +826,12 @@ app.patch('/api/settings', async (request, reply) => {
   if (!user) return
   const body: Record<string, unknown> = { ...z.record(z.unknown()).parse(request.body), fluidSpeed: fixedFluidSpeed }
   if (typeof body.aiApiKey === 'string' && !body.aiApiKey.trim()) delete body.aiApiKey
-  /* B站 Cookie：留空 = 清除配置（空串照常入库，读取端按空处理） */
+  /* B站 Cookie：留空 = 清除配置（空串照常入库，读取端按空处理）。
+     兼容 Mineradio 式粘贴：支持完整 Cookie 头文本（自动提取 SESSDATA），也支持纯 SESSDATA 值 */
   if (typeof body.biliSessdata === 'string') {
-    body.biliSessdata = body.biliSessdata.trim()
-    if (body.biliSessdata && !/^[A-Za-z0-9%_-]{20,200}$/.test(String(body.biliSessdata))) return reply.code(400).send({ message: 'B站 Cookie 格式不正确（应粘贴 SESSDATA 的值）' })
+    const sessdata = extractSessdata(body.biliSessdata)
+    if (sessdata && !/^[A-Za-z0-9%_-]{20,200}$/.test(sessdata)) return reply.code(400).send({ message: 'B站 Cookie 格式不正确（请粘贴 SESSDATA 的值，或浏览器里完整的 Cookie 文本）' })
+    body.biliSessdata = sessdata
   }
   if (body.port !== undefined && (!Number.isInteger(Number(body.port)) || Number(body.port) < 1024 || Number(body.port) > 65535)) return reply.code(400).send({ message: '端口必须在 1024-65535 之间' })
   if (body.uploadLimitMb !== undefined && (!Number.isFinite(Number(body.uploadLimitMb)) || Number(body.uploadLimitMb) < 1 || Number(body.uploadLimitMb) > 2048)) return reply.code(400).send({ message: '上传限制必须在 1-2048 MB 之间' })
@@ -885,6 +888,28 @@ app.post('/api/ai/stop', async (request, reply) => {
   const result = await stopAiServer()
   await recordAudit(request, 'AI 引擎停止', user.id, 'llama.cpp')
   return result
+})
+
+// ---------- B站扫码登录（官方 passport 二维码，成功后自动保存 SESSDATA） ----------
+app.post('/api/bili/qr/create', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const result = await biliQrCreate()
+  await recordAudit(request, 'B站扫码登录', user.id, result.ok ? '二维码已生成，等待扫码' : `生成二维码失败：${result.error || ''}`)
+  return result
+})
+app.post('/api/bili/qr/poll', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const body = z.object({ qrcodeKey: z.string().trim().min(1).max(100) }).parse(request.body)
+  const result = await biliQrPoll(body.qrcodeKey)
+  if (result.ok && result.status === 'ok' && result.sessdata) {
+    await prisma.systemSetting.upsert({ where: { key: 'biliSessdata' }, create: { key: 'biliSessdata', value: result.sessdata }, update: { value: result.sessdata } })
+    await recordAudit(request, 'B站扫码登录', user.id, `登录成功${result.nickname ? `（${result.nickname}）` : ''}`)
+  }
+  const safe = { ...result }
+  delete safe.sessdata
+  return safe
 })
 
 // ---------- 视频解析 → 服务端导入（后台保存到图片库：直连片源、流式写盘、查重、入库） ----------

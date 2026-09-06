@@ -13,7 +13,7 @@ const props = defineProps<{
   webglEnabled: boolean
   animationEnabled: boolean
 }>()
-const emit = defineEmits<{ close: []; save: [payload: Record<string, any>]; changePassword: [] }>()
+const emit = defineEmits<{ close: []; save: [payload: Record<string, any>]; changePassword: []; refresh: [] }>()
 const siteName = ref('fluxframe')
 const port = ref(4310)
 const storageDir = ref('./storage')
@@ -65,6 +65,68 @@ async function startFfmpegDownload() {
     pollFfmpegStatus()
   } catch { /* 启动失败静默 */ }
 }
+
+/* ---------- B站扫码登录（官方 passport 二维码） ---------- */
+const qrActive = ref(false)
+const qrImage = ref('')
+const qrKey = ref('')
+const qrText = ref('')
+const qrOk = ref(false)
+let qrTimer: number | null = null
+let qrDeadline = 0
+function stopPollQr() { if (qrTimer !== null) { clearInterval(qrTimer); qrTimer = null } }
+async function beginBiliQr() {
+  stopPollQr()
+  qrActive.value = true
+  qrOk.value = false
+  qrText.value = '正在生成二维码…'
+  qrImage.value = ''
+  qrKey.value = ''
+  try {
+    const created = await api.biliQrCreate()
+    if (!created.ok || !created.qrcodeKey) {
+      qrText.value = created.error || '生成二维码失败，请稍后重试'
+      return
+    }
+    qrImage.value = created.image || ''
+    qrKey.value = created.qrcodeKey
+    qrDeadline = Date.now() + 175000
+    qrText.value = '请使用 B站 App 扫码登录'
+    qrTimer = window.setInterval(async () => {
+      if (!qrKey.value) return
+      if (Date.now() > qrDeadline) {
+        stopPollQr()
+        qrText.value = '二维码已过期，请点击刷新'
+        return
+      }
+      try {
+        const polled = await api.biliQrPoll(qrKey.value)
+        if (polled.status === 'ok') {
+          stopPollQr()
+          qrText.value = polled.nickname ? `登录成功（${polled.nickname}），SESSDATA 已保存` : '登录成功，SESSDATA 已保存'
+          qrOk.value = true
+          biliConfigured.value = true
+          emit('refresh')
+          return
+        }
+        if (polled.status === 'scanned') qrText.value = '已扫码，请在手机上确认…'
+        else if (polled.status === 'expired') {
+          stopPollQr()
+          qrText.value = '二维码已过期，请点击刷新'
+        } else if (polled.status === 'error') {
+          stopPollQr()
+          qrText.value = polled.error || '轮询失败，请刷新重试'
+        } else {
+          qrText.value = '请使用 B站 App 扫码登录'
+        }
+      } catch { /* 轮询失败静默，等下一次 */ }
+    }, 2000)
+  } catch (error: any) {
+    qrText.value = error?.message || '生成二维码失败'
+  }
+}
+function refreshBiliQr() { void beginBiliQr() }
+function closeBiliQr() { stopPollQr(); qrActive.value = false }
 
 const themePalettes: Record<string, string[]> = {
   Aurora: ['#4f46e5', '#06b6d4', '#f472b6'],
@@ -198,7 +260,7 @@ async function startAiServer() {
 }
 
 onMounted(() => { if (aiEnabled.value) void checkAiConnection() })
-onUnmounted(() => { stopPollAi(); stopPollFfmpeg() })
+onUnmounted(() => { stopPollAi(); stopPollFfmpeg(); stopPollQr() })
 
 function selectTheme(theme: string) {
   localTheme.value = theme
@@ -216,7 +278,7 @@ function save() { const payload: Record<string, any> = { siteName: siteName.valu
         <section class="settings-section panel"><div class="setting-title"><div><h2>组件配色流体预览</h2><p>主题颜色会同时用于全网页背景、导航和内容面板。</p></div><Palette :size="20" /></div><div class="fluid-preview"><FluidCanvas v-if="localWebgl" :palette="localColors" :speed="3" :paused="!localAnimation" :inline="true" /><div v-else class="fluid-disabled">WebGL 预览已关闭</div><div class="fluid-preview-caption">{{ localTheme.toUpperCase() }} / LIVE COLOR PREVIEW</div></div><div class="color-controls"><label v-for="(color, index) in localColors" :key="index" class="color-control"><input v-model="localColors[index]" type="color" /><span>COLOR {{ index + 1 }}<br>{{ color }}</span></label></div><div class="fixed-speed field-label">流体速度 <strong>3.0（固定）</strong><small>用于观察组件颜色在流体中的占比。</small></div><div class="theme-swatches large"><button v-for="theme in themeNames" :key="theme" :class="['theme-swatch', theme.toLowerCase(), { active: localTheme === theme }]" @click="selectTheme(theme)"><i></i><span>{{ theme }}</span></button></div></section>
         <section class="settings-section panel"><div class="setting-title"><div><h2>工作区与显示</h2><p>控制站点名称、主题和动画行为。</p></div><SlidersHorizontal :size="20" /></div><label class="field-label">站点名称<input v-model="siteName" /><small>显示在登录页和浏览器标题中。</small></label><div class="setting-row"><div><strong>显示模式</strong><small>切换深色或浅色工作区。</small></div><div class="segmented"><button :class="{ active: localDark }" @click="localDark = true">深色</button><button :class="{ active: !localDark }" @click="localDark = false">浅色</button></div></div><div class="setting-row"><div><strong>全站流体背景</strong><small>控制 WebGL 星河背景；关闭后自动使用静态主题背景。</small></div><button :class="['switch', { on: localWebgl }]" @click="localWebgl = !localWebgl"><i></i></button></div><div class="setting-row"><div><strong>页面动画</strong><small>关闭后遵循减少动态效果偏好。</small></div><button :class="['switch', { on: localAnimation }]" @click="localAnimation = !localAnimation"><i></i></button></div></section>
         <section class="settings-section panel"><div class="setting-title"><div><h2>服务、上传与存储</h2><p>修改端口后需要重启 Node 服务。</p></div><Zap :size="20" /></div><label class="field-label">服务端口<input v-model.number="port" type="number" min="1024" max="65535" /><small>当前服务地址端口。</small></label><label class="field-label">图片存储目录<input v-model="storageDir" /><small>支持本机目录或已映射的 NAS 盘符。</small></label><label class="field-label">单张上传限制（MB）<input v-model.number="uploadLimitMb" type="number" min="1" max="2048" /></label><label class="field-label">回收站保留天数<input v-model.number="recycleRetentionDays" type="number" min="0" max="3650" /></label></section>
-        <section class="settings-section panel"><div class="setting-title"><div><h2>B站高清保存</h2><p>B站 1080P 及以上为音视频分离流，配置本项后「视频提取」保存 B站视频时自动下载最高可用档位并用 ffmpeg 合并入库（预览仍为快速 720P）。</p></div><Download :size="20" /></div><div class="setting-row"><div><strong>B站登录 Cookie（SESSDATA）</strong><small>电脑浏览器登录 bilibili.com → F12 → 应用/Application → Cookie，复制 SESSDATA 的值。普通账号最高 1080P，大会员可到 1080P+/4K。仅保存在本机数据库，不回显。</small></div><span :class="['ai-badge', biliConfigured ? 'ok' : 'error']">{{ biliConfigured ? '已配置' : '未配置' }}</span></div><label class="field-label">SESSDATA Cookie<input v-model="biliSessdata" type="password" autocomplete="off" placeholder="粘贴 SESSDATA 值（留空保存 = 不修改）" /></label><div class="setting-row"><div><strong>ffmpeg 引擎</strong><small>用于合并 B站高清音视频分离流（无损 -c copy）。未安装时可一键下载到 models\ffmpeg，约 90MB。</small></div><span :class="['ai-badge', ffmpegFound ? 'ok' : 'error']">{{ ffmpegBusy ? '下载中' : (ffmpegFound ? (ffmpegVersion ? '已就绪 v' + ffmpegVersion : '已就绪') : '未安装') }}</span></div><p v-if="ffmpegPath" class="ai-conn-text">ffmpeg 路径：{{ ffmpegPath }}</p><button v-if="!ffmpegFound && !ffmpegBusy" class="primary-button" @click="startFfmpegDownload"><Download :size="15" />一键下载 ffmpeg（约 90MB）</button><div v-if="ffmpegBusy && ffmpegProgress" class="ai-progress-panel"><div class="ai-progress-row"><span>{{ ffmpegProgress.phase === 'extracting' ? '解压安装中…' : (ffmpegProgress.error ? ffmpegProgress.error : '正在下载 ffmpeg…') }}</span><div class="ai-bar"><i :style="{ width: barPct(ffmpegProgress.done, ffmpegProgress.total) }"></i></div><em>{{ ffmpegProgress.total ? barPct(ffmpegProgress.done, ffmpegProgress.total) : '…' }}</em></div></div><p class="bili-tip"><Sparkles :size="12" /> 生效条件：SESSDATA 已配置 + ffmpeg 已就绪。之后解析 B站视频点「保存到图片库」即自动保存高清；若未满足条件会自动回退默认清晰度并说明原因。</p></section>
+        <section class="settings-section panel"><div class="setting-title"><div><h2>B站高清保存</h2><p>B站 1080P 及以上为音视频分离流，配置本项后「视频提取」保存 B站视频时自动下载最高可用档位并用 ffmpeg 合并入库（预览仍为快速 720P）。</p></div><Download :size="20" /></div><div class="setting-row"><div><strong>B站登录</strong><small>普通账号最高 1080P，大会员可到 1080P+/4K。登录态仅保存在本机数据库，不回显。</small></div><span :class="['ai-badge', biliConfigured ? 'ok' : 'error']">{{ biliConfigured ? '已登录' : '未登录' }}</span></div><div class="setting-row bili-login-row"><div><strong>方式一：扫码登录（推荐）</strong><small>点击后用 B站 App 扫二维码，确认后自动保存登录态，无需手动复制。</small></div><button class="filter-button" @click="qrActive ? refreshBiliQr() : beginBiliQr()">{{ qrActive ? '刷新二维码' : (biliConfigured ? '重新扫码' : '扫码登录') }}</button></div><div v-if="qrActive" class="bili-qr-panel"><img v-if="qrImage" :src="qrImage" alt="B站登录二维码" /><p :class="['bili-qr-text', { ok: qrOk }]"><Loader2 v-if="!qrImage" :size="13" class="spin" />{{ qrText }}</p><button v-if="qrText.includes('过期')" class="text-button" @click="refreshBiliQr">重新生成二维码</button></div><label class="field-label">方式二：手动粘贴 Cookie（备用）<input v-model="biliSessdata" type="password" autocomplete="off" placeholder="粘贴完整 Cookie 或 SESSDATA 值（留空保存 = 不修改）" /><small>参考开源项目 Mineradio 的获取方式：浏览器登录 bilibili.com → F12 → 应用/Application → Cookie，复制整段或其中的 SESSDATA 值粘贴即可，系统会自动提取。</small></label><div class="setting-row"><div><strong>ffmpeg 引擎</strong><small>用于合并 B站高清音视频分离流（无损 -c copy）。未安装时可一键下载到 models\ffmpeg，约 90MB。</small></div><span :class="['ai-badge', ffmpegFound ? 'ok' : 'error']">{{ ffmpegBusy ? '下载中' : (ffmpegFound ? (ffmpegVersion ? '已就绪 v' + ffmpegVersion : '已就绪') : '未安装') }}</span></div><p v-if="ffmpegPath" class="ai-conn-text">ffmpeg 路径：{{ ffmpegPath }}</p><button v-if="!ffmpegFound && !ffmpegBusy" class="primary-button" @click="startFfmpegDownload"><Download :size="15" />一键下载 ffmpeg（约 90MB）</button><div v-if="ffmpegBusy && ffmpegProgress" class="ai-progress-panel"><div class="ai-progress-row"><span>{{ ffmpegProgress.phase === 'extracting' ? '解压安装中…' : (ffmpegProgress.error ? ffmpegProgress.error : '正在下载 ffmpeg…') }}</span><div class="ai-bar"><i :style="{ width: barPct(ffmpegProgress.done, ffmpegProgress.total) }"></i></div><em>{{ ffmpegProgress.total ? barPct(ffmpegProgress.done, ffmpegProgress.total) : '…' }}</em></div></div><p class="bili-tip"><Sparkles :size="12" /> 生效条件：B站已登录（扫码或 Cookie）+ ffmpeg 已就绪。之后解析 B站视频点「保存到图片库」即自动保存高清；若未满足条件会自动回退默认清晰度并说明原因。</p></section>
         <section class="settings-section panel"><div class="setting-title"><div><h2>账户安全</h2><p>定期更新密码，保护内网媒体库。</p></div><ShieldCheck :size="20" /></div><button class="security-action" @click="emit('changePassword')"><ShieldCheck :size="16" /><span><strong>修改当前密码</strong><small>使用当前密码确认后设置新密码。</small></span><ChevronLeft :size="16" /></button></section>
       </div>
       <section class="settings-section panel ai-settings-section"><div class="setting-title"><div><h2>AI 图片标签</h2><p>自动下载并运行 llama.cpp 本地视觉模型，上传时生成建议标签，图片不离开本机。</p></div><Sparkles :size="20" /></div><div class="setting-row"><div><strong>启用 AI 标签分析</strong><small>开启后自动检测本机 llama.cpp，未安装时可一键自动下载。</small></div><div class="ai-switch-row"><span v-if="aiConnState === 'ok'" class="ai-badge ok"><CheckCircle2 :size="14" />成功</span><span v-else-if="aiConnState === 'checking'" class="ai-badge checking"><Loader2 :size="14" class="spin" />检测中</span><span v-else-if="aiConnState === 'busy'" class="ai-badge busy"><Loader2 :size="14" class="spin" />运行中</span><span v-else-if="aiConnState === 'error'" class="ai-badge error"><X :size="14" />未连接</span><button :class="['switch', { on: aiEnabled }]" @click="toggleAi"><i></i></button></div></div><p v-if="aiConnText" class="ai-conn-text">{{ aiConnText }}</p><div v-if="aiEnabled && aiNeedDownload && aiConnState !== 'busy'" class="ai-setup-panel"><div class="ai-setup-options"><label>模型<select v-model="aiVariant"><option value="7b">Qwen2.5-VL-7B（推荐，约 5.7GB）</option><option value="3b">Qwen2.5-VL-3B（轻量，约 3.1GB）</option></select></label><label class="ai-mirror"><input v-model="aiUseMirror" type="checkbox" />使用国内镜像下载（hf-mirror.com）</label></div><button class="primary-button" @click="startAiDownload"><Download :size="15" />自动下载并启动（无需密钥）</button></div><div v-else-if="aiEnabled && aiNeedStart && aiConnState !== 'busy'" class="ai-setup-panel"><button class="primary-button" @click="startAiServer"><Play :size="15" />启动本地模型服务</button></div><div v-if="aiProgress && aiConnState === 'busy'" class="ai-progress-panel"><div v-if="aiProgress.phase === 'downloading-llama' || aiProgress.phase === 'fetching-release'" class="ai-progress-row"><span>llama.cpp 引擎</span><div class="ai-bar"><i :style="{ width: barPct(aiProgress.llamaDone, aiProgress.llamaTotal) }"></i></div><em>{{ barPct(aiProgress.llamaDone, aiProgress.llamaTotal) }}</em></div><div v-if="aiProgress.phase === 'downloading-model'" class="ai-progress-row"><span>模型 {{ aiProgress.modelName }}</span><div class="ai-bar"><i :style="{ width: barPct(aiProgress.modelDone, aiProgress.modelTotal) }"></i></div><em>{{ barPct(aiProgress.modelDone, aiProgress.modelTotal) }} · {{ fmtBytes(aiProgress.modelDone) }}/{{ fmtBytes(aiProgress.modelTotal) }}</em></div><p v-if="aiProgress.phase === 'extracting'" class="ai-phase-text">正在解压 llama.cpp…</p><p v-else-if="aiProgress.phase === 'starting'" class="ai-phase-text">正在启动模型服务并等待就绪（首次加载模型可能需要 30 秒以上）…</p></div><label class="field-label">AI 接口地址<input v-model="aiBaseUrl" placeholder="http://127.0.0.1:8080/v1" /><small>检测到本机 llama.cpp 后自动填入；也兼容 Ollama、LM Studio 等 OpenAI 兼容服务。</small></label><label class="field-label">模型名称<input v-model="aiModel" placeholder="qwen2.5-vl-7b-instruct" /><small>llama.cpp 不校验模型名；Ollama 需填实际模型名。</small></label><label class="field-label">API 密钥<input v-model="aiApiKey" type="password" placeholder="本地模型无需密钥，留空即可" /><small>仅接入云端服务时才需要；密钥只保存到后端，不回传。</small></label></section>

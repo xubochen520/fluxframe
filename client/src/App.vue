@@ -360,7 +360,7 @@ onBeforeUnmount(() => { if (greetingTimer) window.clearInterval(greetingTimer); 
 </script>
 
 <template>
-  <SettingsPanel v-if="authenticated && activeView === 'settings'" :settings="settings" :fluid-colors="fluidColors" :fluid-speed="fluidSpeed" :selected-theme="selectedTheme" :is-dark="isDark" :webgl-enabled="webglEnabled" :animation-enabled="animationEnabled" @close="go('overview')" @save="saveSettings" @change-password="changePassword" />
+  <SettingsPanel v-if="authenticated && activeView === 'settings'" :settings="settings" :fluid-colors="fluidColors" :fluid-speed="fluidSpeed" :selected-theme="selectedTheme" :is-dark="isDark" :webgl-enabled="webglEnabled" :animation-enabled="animationEnabled" @close="go('overview')" @save="saveSettings" @change-password="changePassword" @refresh="refreshSettings" />
   <LoginView v-if="!booting && !authenticated" :loading="authLoading" :error="authError" @login="handleLogin" @register="handleRegister" />
   <div v-else-if="authenticated" class="app-shell" @click="closeContext">
     <FluidCanvas v-if="webglEnabled" class="app-fluid-background" :palette="fluidColors" :speed="3" :paused="!animationEnabled" :edge-color="fluidColors[0]" :edge-highlight="true" />

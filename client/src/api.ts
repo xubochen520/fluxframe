@@ -51,6 +51,8 @@ export interface FfmpegStatusPayload {
   busy: boolean
   progress: { phase: string; done: number; total: number; error?: string }
 }
+export interface BiliQrCreatePayload { ok: boolean; error?: string; qrcodeKey?: string; image?: string }
+export interface BiliQrPollPayload { ok: boolean; status: 'waiting' | 'scanned' | 'expired' | 'ok' | 'error'; error?: string; nickname?: string }
 
 export const api = {
   me: () => request<CurrentUser>('/api/me'),
@@ -87,4 +89,6 @@ export const api = {
   aiStop: () => request<{ ok: boolean }>('/api/ai/stop', { method: 'POST', body: '{}' }),
   ffmpegStatus: () => request<FfmpegStatusPayload>('/api/ffmpeg/status'),
   ffmpegDownload: () => request<{ ok: boolean }>('/api/ffmpeg/download', { method: 'POST', body: '{}' }),
+  biliQrCreate: () => request<BiliQrCreatePayload>('/api/bili/qr/create', { method: 'POST', body: '{}' }),
+  biliQrPoll: (qrcodeKey: string) => request<BiliQrPollPayload>('/api/bili/qr/poll', { method: 'POST', body: JSON.stringify({ qrcodeKey }) }),
 }
