@@ -430,3 +430,8 @@
   .preview-caption .preview-meta span { display: inline; margin-top: 0; }
   .caption-download { padding: 6px 13px; font-size: 12px; }
 }
+
+/* ---- B站高清保存卡片 ---- */
+.bili-tip { display: flex; align-items: flex-start; gap: 6px; margin: 12px 0 0; color: #78839e; font-size: 10.5px; line-height: 1.7; }
+.bili-tip svg { flex: none; margin-top: 2px; color: #a78bfa; }
+.settings-section .field-label input[type="password"] { font-family: 'DM Mono', monospace; }

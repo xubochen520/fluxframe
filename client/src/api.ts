@@ -44,6 +44,13 @@ export interface AiStatusPayload {
   files: { server: boolean; model: boolean; mmproj: boolean; variant: string | null }
   progress: { phase: string; llamaDone: number; llamaTotal: number; modelDone: number; modelTotal: number; modelName: string; variant: string; error?: string; port?: number }
 }
+export interface FfmpegStatusPayload {
+  found: boolean
+  path: string | null
+  version: string | null
+  busy: boolean
+  progress: { phase: string; done: number; total: number; error?: string }
+}
 
 export const api = {
   me: () => request<CurrentUser>('/api/me'),
@@ -78,4 +85,6 @@ export const api = {
   aiDownload: (variant: string, mirror?: string) => request<{ ok: boolean; error?: string }>('/api/ai/download', { method: 'POST', body: JSON.stringify({ variant, mirror }) }),
   aiStart: () => request<{ ok: boolean; error?: string }>('/api/ai/start', { method: 'POST', body: '{}' }),
   aiStop: () => request<{ ok: boolean }>('/api/ai/stop', { method: 'POST', body: '{}' }),
+  ffmpegStatus: () => request<FfmpegStatusPayload>('/api/ffmpeg/status'),
+  ffmpegDownload: () => request<{ ok: boolean }>('/api/ffmpeg/download', { method: 'POST', body: '{}' }),
 }

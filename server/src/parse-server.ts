@@ -18,6 +18,12 @@ import { signDouyin, signerReady, signerError, DY_UA } from '../dyab/index.mjs'
 
 const UA_PC = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36'
 const UA_MOBILE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1'
+/* 宿主注入（index.ts）：B站登录 Cookie、ffmpeg 定位，供 B站高清 DASH 解析/保存使用 */
+export interface ParseServerDeps {
+  getBiliSession?: () => Promise<string>
+  findFfmpeg?: () => Promise<string | null>
+}
+let deps: ParseServerDeps = {}
 const jget = async (url: string, headers: Record<string, string> = {}, timeout = 10000) => {
   const res = await fetch(url, { headers, redirect: 'follow', signal: AbortSignal.timeout(timeout) })
   const body = await res.arrayBuffer()
@@ -45,8 +51,17 @@ function detectPlatform(url: string) {
 const QUALITY_NAME: Record<number, string> = { 127: '8K', 126: '杜比', 125: 'HDR', 120: '4K', 116: '1080P60', 112: '1080P+', 80: '1080P', 74: '720P60', 64: '720P', 32: '480P', 16: '360P', 6: '240P' }
 const fail = (msg: string) => ({ ok: false as const, msg })
 
-/* ---------- B站 / b23.tv（官方开放接口，全链真实） ---------- */
+/* ---------- B站 / b23.tv（官方开放接口，全链真实） ----------
+   清晰度说明（实测）：B 站对未登录游客封顶 720P，任何更高档位请求都会被降级；
+   且 1080P 及以上只有 DASH 分离流（音视频分开）。因此：
+   · 预览/常规保存：mp4 单文件直链（游客 720P，登录后老视频可能拿到更高 mp4 档）
+   · 高清保存：登录 Cookie（SESSDATA）存在且本机有 ffmpeg 时，额外取 DASH 最高档
+     （普通账号 1080P，大会员 1080P+/4K），由服务端下载双流并用 ffmpeg 无损合并 */
 async function resolveBilibili(url: string) {
+  const [biliSession, ffmpegExe] = await Promise.all([deps.getBiliSession ? deps.getBiliSession() : Promise.resolve(String(process.env.BILI_SESSDATA || '')), deps.findFfmpeg ? deps.findFfmpeg() : Promise.resolve(null)])
+  const sessdata = biliSession.trim()
+  const cookieHeaders: Record<string, string> = { 'User-Agent': UA_PC, Referer: 'https://www.bilibili.com/' }
+  if (sessdata) cookieHeaders.Cookie = `SESSDATA=${sessdata}`
   const view = await jget('https://api.bilibili.com/x/web-interface/view?bvid=' + (url.match(/BV[0-9A-Za-z]{10}/) || [])[0], { 'User-Agent': UA_PC, Referer: 'https://www.bilibili.com/' })
   let vj: any
   try {
@@ -58,10 +73,10 @@ async function resolveBilibili(url: string) {
   const d = vj.data
   const stat = d.stat || {}
 
-  /* 播放地址：免登录优先尝试 1080P→720P→480P→360P 实际可得档位 */
+  /* 播放地址（mp4 单文件）：从高到低请求实际可得档位（游客会被服务端降到 720P） */
   let quality = 0, label = '', durl: any = null
-  for (const qn of [80, 64, 32, 16, 6]) {
-    const pj = await jget(`https://api.bilibili.com/x/player/playurl?bvid=${d.bvid}&cid=${d.cid}&qn=${qn}&fnval=0&fnver=0&fourk=0`, { 'User-Agent': UA_PC, Referer: 'https://www.bilibili.com/' })
+  for (const qn of [116, 80, 64, 32, 16]) {
+    const pj = await jget(`https://api.bilibili.com/x/player/playurl?bvid=${d.bvid}&cid=${d.cid}&qn=${qn}&fnval=0&fnver=0&fourk=0`, cookieHeaders)
     try {
       const p = JSON.parse(pj.buf.toString())
       if (p.code === 0 && p.data?.durl?.[0]?.url) {
@@ -75,6 +90,31 @@ async function resolveBilibili(url: string) {
   }
   if (!durl) return fail('未获取到可播放的清晰度（该视频可能需登录或为互动视频）')
 
+  /* 高清候选（DASH 分离流）：仅登录 + ffmpeg 就绪时附加，供「保存到图片库」自动使用 */
+  let biliHigh: { videoUrl: string; audioUrl: string; quality: number; label: string } | undefined
+  if (sessdata && ffmpegExe) {
+    try {
+      const pj = await jget(`https://api.bilibili.com/x/player/playurl?bvid=${d.bvid}&cid=${d.cid}&qn=116&fnval=16&fnver=0&fourk=1`, cookieHeaders)
+      const p = JSON.parse(pj.buf.toString())
+      if (p.code === 0 && p.data?.dash && p.data.quality >= 80) {
+        const dash = p.data.dash
+        const videos = Array.isArray(dash.video) ? dash.video : []
+        const audios = Array.isArray(dash.audio) ? dash.audio : []
+        const pickUrl = (stream: any) => String(stream?.baseUrl || stream?.backup_url?.[0] || '').replace(/^http:\/\//i, 'https://')
+        const video = videos.find((item: any) => Number(item.id) === Number(p.data.quality)) || videos[0]
+        const audio = audios[0]
+        if (video && audio && pickUrl(video) && pickUrl(audio)) {
+          biliHigh = {
+            videoUrl: pickUrl(video),
+            audioUrl: pickUrl(audio),
+            quality: Number(p.data.quality) || 80,
+            label: QUALITY_NAME[p.data.quality] || `${p.data.quality}P`,
+          }
+        }
+      }
+    } catch { /* 高清候选失败不影响主流程 */ }
+  }
+
   return {
     platform: 'bilibili',
     title: d.title || '未命名视频',
@@ -84,6 +124,8 @@ async function resolveBilibili(url: string) {
     qualityLabel: QUALITY_NAME[quality] || `${quality}P`,
     duration: Math.round(d.duration || 0),
     watermarkFree: true,
+    /* high 高清档信息：解析页「保存到图片库」时随任务提交，服务端下载双流 + ffmpeg 合并 */
+    high: biliHigh,
     media: [{
       url: durl.url,            // 上游无水印直链（展示用）
       width: 0, height: 0,      // B站流不直接返回宽高
@@ -522,7 +564,8 @@ export function pickUpstreamHeaders(target: string, ref: string): Record<string,
   return headers
 }
 
-export function registerParseApi(app: FastifyInstance) {
+export function registerParseApi(app: FastifyInstance, options?: ParseServerDeps) {
+  if (options) deps = options
   app.post('/api/parse', async (request, reply) => {
     const input: any = request.body ?? {}
     const out = await resolveAll(input.url || input.share || '')

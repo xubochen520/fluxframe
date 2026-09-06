@@ -46,6 +46,8 @@ interface ParseTask {
   resLabel: string
   duration: number
   media: { url: string; src?: string; referer?: string; w: number; h: number; dur: number; size: number; type: string }
+  /** B站高清 DASH 双流（配置了登录 Cookie 且服务端 ffmpeg 就绪时返回） */
+  high?: { videoUrl: string; audioUrl: string; quality?: number; label?: string }
 }
 interface HistoryItem { url: string; plat: string; title: string; time: number }
 
@@ -192,6 +194,9 @@ async function runParse(url: string) {
       coverSrc: typeof d.coverSrc === 'string' ? d.coverSrc : '',
       resLabel: d.qualityLabel || (media.width && media.height ? `${media.width}×${media.height} · 无水印` : '无水印直链'),
       duration: Number(media.duration || d.duration || 0),
+      high: d.high?.videoUrl && d.high.audioUrl
+        ? { videoUrl: String(d.high.videoUrl), audioUrl: String(d.high.audioUrl), quality: Number(d.high.quality) || undefined, label: String(d.high.label || '高清') }
+        : undefined,
       media: {
         url: String(media.url || d.url || ''),
         src: media.src ? String(media.src) : undefined,
@@ -283,7 +288,7 @@ function confirmSave() {
   const opts: SaveTaskOpts = {
     name,
     video: saveVideo.value && t.media.url
-      ? { url: videoSrc, ref: t.media.referer, name, kind: 'video' }
+      ? { url: videoSrc, ref: t.media.referer, name, kind: 'video', high: t.high }
       : null,
     cover: saveCover.value && t.cover
       ? { url: coverSrc, ref: t.media.referer, name: `${name}-封面`, kind: 'cover' }
@@ -378,6 +383,7 @@ function confirmSave() {
         <label class="field-label">入库名称<input v-model="saveName" class="modal-input" maxlength="80" /></label>
         <div class="pw-save-opts">
           <label><input v-model="saveVideo" type="checkbox" /><span><b>无水印视频</b><small>自动带「视频」标签 · {{ task?.resLabel }} · {{ task?.media.size ? fmtSize(task.media.size) : '' }}</small></span></label>
+          <p v-if="task?.high" class="pw-save-high"><Sparkles :size="12" />已就绪：可保存 {{ task.high.label }} 高清版（服务端下载双流并用 ffmpeg 合并，需 B站登录态已配置）</p>
           <label v-if="task?.cover"><input v-model="saveCover" type="checkbox" /><span><b>封面图</b><small>与视频一起保存，无附加标签</small></span></label>
           <label><input v-model="savePlatTag" type="checkbox" /><span><b>附带来源标签「{{ task?.platName }}」</b><small>便于按平台检索</small></span></label>
         </div>
@@ -524,6 +530,14 @@ function confirmSave() {
   color: #fda4af; background: rgba(248, 113, 113, .1);
   border: 1px solid rgba(248, 113, 113, .25);
 }
+.pw-save-high {
+  display: flex; align-items: flex-start; gap: 6px;
+  margin: 10px 0 4px; padding: 8px 11px; border-radius: 8px;
+  font-size: 11px; line-height: 1.55;
+  color: #a5f3c9; background: rgba(74, 222, 128, .08);
+  border: 1px solid rgba(74, 222, 128, .22);
+}
+.pw-save-high svg { flex: none; margin-top: 1px; color: #4ade80; }
 .pw-save-opts { margin-top: 6px; }
 .pw-save-opts label {
   display: flex; align-items: flex-start; gap: 10px; cursor: pointer;

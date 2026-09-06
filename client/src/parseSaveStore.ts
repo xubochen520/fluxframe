@@ -14,6 +14,8 @@ export interface SaveFileOpts {
   /** 入库名称 */
   name: string
   kind: 'video' | 'cover'
+  /** B站高清 DASH 双流（可选）：服务端下载后用 ffmpeg 合并成单文件再入库 */
+  high?: { videoUrl: string; audioUrl: string; quality?: number; label?: string }
 }
 
 export interface SaveTaskOpts {
@@ -61,6 +63,9 @@ async function createImportJob(file: SaveFileOpts, platTag: string | null): Prom
       name: file.name,
       kind: file.kind,
       platTag: file.kind === 'video' ? platTag || undefined : undefined,
+      high: file.kind === 'video' && file.high?.videoUrl && file.high.audioUrl
+        ? { videoUrl: file.high.videoUrl, audioUrl: file.high.audioUrl, quality: file.high.quality, label: file.high.label }
+        : undefined,
     }),
     credentials: 'include',
   })

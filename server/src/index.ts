@@ -8,12 +8,14 @@ import argon2 from 'argon2'
 import { PrismaClient, type Prisma } from '@prisma/client'
 import sharp from 'sharp'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { createReadStream, createWriteStream } from 'node:fs'
 import { mkdir, readFile, readdir, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { z } from 'zod'
 import { downloadAiStack, getAiStatus, startAiServer, stopAiServer } from './ai-manager.js'
-import { registerParseApi, pickUpstreamHeaders } from './parse-server.js'
+import { registerParseApi, pickUpstreamHeaders, type ParseServerDeps } from './parse-server.js'
+import { locateFfmpeg, downloadFfmpeg, getFfmpegStatus } from './ffmpeg-manager.js'
 
 const prisma = new PrismaClient()
 const app = Fastify({
@@ -799,14 +801,35 @@ app.get('/api/settings', async (request, reply) => {
   const rows = await prisma.systemSetting.findMany()
   const settings: Record<string, unknown> = { ...defaultSettings, ...Object.fromEntries(rows.map((row) => [row.key, row.value])), fluidSpeed: fixedFluidSpeed }
   delete settings.aiApiKey
+  /* B站 Cookie 不回显明文，只给状态 */
+  const hasBiliSession = typeof settings.biliSessdata === 'string' && String(settings.biliSessdata).trim().length > 0
+  delete settings.biliSessdata
   const aiConfig = await getAiConfig()
-  return { ...settings, aiEnabled: aiConfig.enabled, aiBaseUrl: aiConfig.baseUrl, aiModel: aiConfig.model, aiConfigured: Boolean(aiConfig.apiKey) }
+  /* ffmpeg 状态（B站高清合并引擎） */
+  const ffmpeg = await locateFfmpeg(typeof settings.ffmpegPath === 'string' ? String(settings.ffmpegPath) : undefined)
+  return {
+    ...settings,
+    aiEnabled: aiConfig.enabled, aiBaseUrl: aiConfig.baseUrl, aiModel: aiConfig.model, aiConfigured: Boolean(aiConfig.apiKey),
+    biliSessdataConfigured: hasBiliSession || Boolean(process.env.BILI_SESSDATA),
+    ffmpeg: {
+      found: Boolean(ffmpeg),
+      path: ffmpeg?.exe || null,
+      version: ffmpeg?.version || null,
+      busy: getFfmpegStatus().busy,
+      progress: getFfmpegStatus().progress,
+    },
+  }
 })
 app.patch('/api/settings', async (request, reply) => {
   const user = await requireAdmin(request as AuthenticatedRequest, reply)
   if (!user) return
   const body: Record<string, unknown> = { ...z.record(z.unknown()).parse(request.body), fluidSpeed: fixedFluidSpeed }
   if (typeof body.aiApiKey === 'string' && !body.aiApiKey.trim()) delete body.aiApiKey
+  /* B站 Cookie：留空 = 清除配置（空串照常入库，读取端按空处理） */
+  if (typeof body.biliSessdata === 'string') {
+    body.biliSessdata = body.biliSessdata.trim()
+    if (body.biliSessdata && !/^[A-Za-z0-9%_-]{20,200}$/.test(String(body.biliSessdata))) return reply.code(400).send({ message: 'B站 Cookie 格式不正确（应粘贴 SESSDATA 的值）' })
+  }
   if (body.port !== undefined && (!Number.isInteger(Number(body.port)) || Number(body.port) < 1024 || Number(body.port) > 65535)) return reply.code(400).send({ message: '端口必须在 1024-65535 之间' })
   if (body.uploadLimitMb !== undefined && (!Number.isFinite(Number(body.uploadLimitMb)) || Number(body.uploadLimitMb) < 1 || Number(body.uploadLimitMb) > 2048)) return reply.code(400).send({ message: '上传限制必须在 1-2048 MB 之间' })
   if (body.recycleRetentionDays !== undefined && (!Number.isFinite(Number(body.recycleRetentionDays)) || Number(body.recycleRetentionDays) < 0 || Number(body.recycleRetentionDays) > 3650)) return reply.code(400).send({ message: '回收站保留天数不正确' })
@@ -814,8 +837,24 @@ app.patch('/api/settings', async (request, reply) => {
   await recordAudit(request, '修改系统设置', user.id, Object.keys(body).join(', '))
   const safeBody = { ...body }
   delete safeBody.aiApiKey
+  delete safeBody.biliSessdata
   const aiConfig = await getAiConfig()
   return { ...defaultSettings, ...safeBody, fluidSpeed: fixedFluidSpeed, aiEnabled: aiConfig.enabled, aiBaseUrl: aiConfig.baseUrl, aiModel: aiConfig.model, aiConfigured: Boolean(aiConfig.apiKey) }
+})
+
+// ---------- ffmpeg 引擎（B站高清 DASH 合并） ----------
+app.get('/api/ffmpeg/status', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const ffmpeg = await locateFfmpeg(await getSavedFfmpegPath())
+  return { found: Boolean(ffmpeg), path: ffmpeg?.exe ?? null, version: ffmpeg?.version ?? null, ...getFfmpegStatus() }
+})
+app.post('/api/ffmpeg/download', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  void downloadFfmpeg().then((result) => { if (!result.ok) app.log.warn(`ffmpeg 下载失败：${result.error}`) })
+  await recordAudit(request, 'ffmpeg 下载', user.id, '开始')
+  return { ok: true }
 })
 
 // ---------- AI 引擎自动管理（llama.cpp 检测 / 下载 / 启动） ----------
@@ -860,8 +899,15 @@ type ParseImportJob = {
   duplicate: boolean
   error: string
   cancel: boolean
+  /** 实际保存的高清档位（如 1080P），用于完成提示 */
+  highLabel?: string
+  /** 高清流程备注（如回退默认清晰度的原因） */
+  highNote?: string
 }
 const parseImportJobs = new Map<string, ParseImportJob>()
+
+/** 导入任务输入：单文件直链（常规路径）+ 可选 B站高清 DASH 双流 */
+type ParseImportInput = { url: string; ref?: string; name: string; platTag?: string; high?: { videoUrl: string; audioUrl: string; quality?: number; label?: string } }
 
 function fmtBytes(n: number) {
   if (n <= 0) return '0 B'
@@ -871,78 +917,238 @@ function fmtBytes(n: number) {
   return `${(n / 1073741824).toFixed(2)} GB`
 }
 
-async function runParseImportJob(job: ParseImportJob, request: FastifyRequest, input: { url: string; ref?: string; name: string; platTag?: string }) {
-  let tempKey = ''
-  try {
-    /* 1. 直连上游（UA/Referer 防盗链头），45s 连接超时（CDN 对同 URL 并发会排队） */
-    const headers = pickUpstreamHeaders(input.url, input.ref || '')
-    const controller = new AbortController()
-    const connectTimer = setTimeout(() => controller.abort(), 45_000)
-    let res: Response
-    try {
-      res = await fetch(input.url, { headers, redirect: 'follow', signal: controller.signal })
-    } catch {
-      clearTimeout(connectTimer)
-      throw new Error('片源响应超时（平台 CDN 排队或网络问题），请稍后重试')
-    }
-    clearTimeout(connectTimer)
-    if (!res.ok) throw new Error(`片源返回 HTTP ${res.status}`)
-    const ct = res.headers.get('content-type') || ''
-    if (job.kind === 'video' && !/video|octet-stream/i.test(ct)) throw new Error(`片源不是可识别的视频格式（${ct}）`)
-    if (job.kind === 'cover' && !/^image\//i.test(ct)) throw new Error('封面不是可识别的图片格式')
-    if (!res.body) throw new Error('片源流不可用')
+/* ---------- B站高清（DASH 双流 + ffmpeg 无损合并）辅助 ---------- */
 
-    /* 2. 流式写临时文件（背压感知 + sha256 + 真实进度上报） */
-    const total = Number(res.headers.get('content-length')) || 0
-    const ext = job.kind === 'video'
-      ? (/\bwebm\b/i.test(ct) ? '.webm' : '.mp4')
-      : (/\bwebp\b/i.test(ct) ? '.webp' : /\bpng\b/i.test(ct) ? '.png' : '.jpg')
-    tempKey = `temp/parse-import/${job.id}${ext}`
-    await mkdir(path.dirname(safeStoragePath(tempKey)), { recursive: true })
-    const ws = createWriteStream(safeStoragePath(tempKey))
-    const hash = createHash('sha256')
-    const reader = res.body.getReader()
-    let received = 0
-    let lastTick = 0
-    let idleSince = Date.now()
-    const watchdog = setInterval(() => {
-      if (Date.now() - idleSince > 90_000) { try { void reader.cancel().catch(() => undefined) } catch { /* 已结束 */ } }
-    }, 15_000)
-    try {
-      for (;;) {
-        if (job.cancel) throw new Error('已取消')
-        const { done, value } = await reader.read()
-        if (done) break
-        if (value && value.length) {
-          idleSince = Date.now()
-          received += value.length
-          hash.update(value)
-          if (!ws.write(value)) await new Promise<void>((r) => ws.once('drain', r))
-          const now = Date.now()
-          if (now - lastTick > 200) {
-            lastTick = now
-            job.progress = total ? Math.min(1, received / total) : null
-            job.message = `下载片源中 ${fmtBytes(received)}${total ? ' / ' + fmtBytes(total) : ''}`
-          }
+/** 读取系统设置中的 ffmpeg 路径（可自定义），无则 undefined */
+async function getSavedFfmpegPath(): Promise<string | undefined> {
+  const row = await prisma.systemSetting.findUnique({ where: { key: 'ffmpegPath' } })
+  return typeof row?.value === 'string' && row.value.trim() ? row.value.trim() : undefined
+}
+/** 读取 B站登录 Cookie（SESSDATA）：系统设置优先，环境变量兜底 */
+async function getBiliSession(): Promise<string> {
+  const row = await prisma.systemSetting.findUnique({ where: { key: 'biliSessdata' } })
+  const saved = typeof row?.value === 'string' ? row.value.trim() : ''
+  return saved || String(process.env.BILI_SESSDATA || '').trim()
+}
+/** 定位 ffmpeg：设置路径 → FFMPEG_PATH → models\ffmpeg → PATH 等（供 parse-server 注入） */
+async function findFfmpegForParse(): Promise<string | null> {
+  const found = await locateFfmpeg(await getSavedFfmpegPath())
+  return found?.exe ?? null
+}
+
+/** 流式下载单路 DASH 分片到文件（取消/空闲看门狗/进度映射到 job.progress 的 [from,to] 区间） */
+async function streamPartToFile(job: ParseImportJob, url: string, headers: Record<string, string>, destPath: string, from: number, to: number, phaseText: string) {
+  const controller = new AbortController()
+  const connectTimer = setTimeout(() => controller.abort(), 45_000)
+  let res: Response
+  try {
+    res = await fetch(url, { headers, redirect: 'follow', signal: controller.signal })
+  } catch {
+    clearTimeout(connectTimer)
+    throw new Error('片源响应超时（平台 CDN 排队或网络问题），请稍后重试')
+  }
+  clearTimeout(connectTimer)
+  if (!res.ok) throw new Error(`片源返回 HTTP ${res.status}`)
+  if (!res.body) throw new Error('片源流不可用')
+  const total = Number(res.headers.get('content-length')) || 0
+  const ws = createWriteStream(destPath)
+  const reader = res.body.getReader()
+  let received = 0
+  let lastTick = 0
+  let idleSince = Date.now()
+  const watchdog = setInterval(() => {
+    if (Date.now() - idleSince > 90_000) { try { void reader.cancel().catch(() => undefined) } catch { /* 已结束 */ } }
+  }, 15_000)
+  try {
+    for (;;) {
+      if (job.cancel) throw new Error('已取消')
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value && value.length) {
+        idleSince = Date.now()
+        received += value.length
+        if (!ws.write(value)) await new Promise<void>((r) => ws.once('drain', r))
+        const now = Date.now()
+        if (now - lastTick > 200) {
+          lastTick = now
+          job.progress = total ? Math.min(to, from + (received / total) * (to - from)) : from
+          job.message = `${phaseText} ${fmtBytes(received)}${total ? ' / ' + fmtBytes(total) : ''}`
         }
       }
-      ws.end()
-      await new Promise<void>((resolve, reject) => {
-        ws.once('error', reject)
-        ws.once('finish', resolve)
-      })
-    } finally {
-      clearInterval(watchdog)
     }
-    if (job.cancel) throw new Error('已取消')
-    const sha = hash.digest('hex')
-    const size = received
+    ws.end()
+    await new Promise<void>((resolve, reject) => {
+      ws.once('error', reject)
+      ws.once('finish', resolve)
+    })
+  } finally {
+    clearInterval(watchdog)
+  }
+  return received
+}
+
+/** 计算文件 sha256（流式，避免大文件占内存） */
+async function sha256File(filePath: string): Promise<string> {
+  const hash = createHash('sha256')
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(filePath)
+    stream.on('data', (chunk) => hash.update(chunk))
+    stream.on('error', reject)
+    stream.on('end', resolve)
+  })
+  return hash.digest('hex')
+}
+
+/** ffmpeg 无损合并（-c copy 不重编码，速度接近磁盘上限） */
+async function mergeFfmpeg(exe: string, videoPath: string, audioPath: string, outPath: string) {
+  const proc = spawn(exe, ['-y', '-loglevel', 'error', '-i', videoPath, '-i', audioPath, '-c', 'copy', '-movflags', '+faststart', outPath], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  let errText = ''
+  proc.stderr?.on('data', (c) => (errText += c))
+  const code = await new Promise<number>((resolve) => proc.on('close', resolve))
+  if (code !== 0) throw new Error(`ffmpeg 合并失败（退出码 ${code}）：${errText.trim().slice(-180) || '未知错误'}`)
+}
+
+/**
+ * 尝试 B站高清保存：下载 DASH 视频流 + 音频流 → ffmpeg 无损合并为单文件 mp4。
+ * 返回 { ok: true, key/mimeType/ext/size/sha }；
+ * ok:false + reason 'no-ffmpeg' 表示环境缺 ffmpeg（调用方回落普通 720P）；
+ * reason 'failed' 表示合并过程失败（也回落普通路径，message 记录原因）。
+ * job.cancel 时抛「已取消」交由外层收尾。
+ */
+async function tryFetchBiliHigh(job: ParseImportJob, high: { videoUrl: string; audioUrl: string; quality?: number; label?: string }): Promise<{ ok: true; key: string; mimeType: string; ext: string; size: number; sha: string } | { ok: false; reason: 'no-ffmpeg' | 'failed'; message: string }> {
+  const ffmpeg = await locateFfmpeg(await getSavedFfmpegPath())
+  if (!ffmpeg) return { ok: false, reason: 'no-ffmpeg', message: '未检测到 ffmpeg' }
+  const sessdata = await getBiliSession()
+  const headers: Record<string, string> = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
+    Referer: 'https://www.bilibili.com/',
+  }
+  if (sessdata) headers.Cookie = `SESSDATA=${sessdata}`
+  const label = high.label || `${high.quality || 0}P`
+  const base = `temp/parse-import/${job.id}`
+  const videoPart = `${base}-v.mp4`
+  const audioPart = `${base}-a.m4a`
+  const mergedPart = `${base}-merged.mp4`
+  const finalKey = `${base}.mp4`
+  await mkdir(path.dirname(safeStoragePath(base)), { recursive: true })
+  try {
+    job.progress = 0.05
+    job.message = `正在下载 ${label} 高清视频流…`
+    await streamPartToFile(job, high.videoUrl, headers, safeStoragePath(videoPart), 0.05, 0.7, `下载 ${label} 高清视频流中`)
+    job.message = '正在下载高清音频流…'
+    await streamPartToFile(job, high.audioUrl, headers, safeStoragePath(audioPart), 0.7, 0.88, '下载高清音频流中')
+    job.progress = 0.9
+    job.message = `正在用 ffmpeg 合并 ${label} 高清音视频…`
+    await mergeFfmpeg(ffmpeg.exe, safeStoragePath(videoPart), safeStoragePath(audioPart), safeStoragePath(mergedPart))
+    const [size, sha] = await Promise.all([stat(safeStoragePath(mergedPart)).then((s) => s.size), sha256File(safeStoragePath(mergedPart))])
+    await rename(safeStoragePath(mergedPart), safeStoragePath(finalKey))
+    await rm(safeStoragePath(videoPart), { force: true }).catch(() => undefined)
+    await rm(safeStoragePath(audioPart), { force: true }).catch(() => undefined)
+    return { ok: true, key: finalKey, mimeType: 'video/mp4', ext: '.mp4', size, sha }
+  } catch (error: any) {
+    await Promise.all([rm(safeStoragePath(videoPart), { force: true }), rm(safeStoragePath(audioPart), { force: true }), rm(safeStoragePath(mergedPart), { force: true })]).catch(() => undefined)
+    if (job.cancel || error?.message === '已取消') throw error
+    return { ok: false, reason: 'failed', message: error?.message || '高清合并失败' }
+  }
+}
+
+async function runParseImportJob(job: ParseImportJob, request: FastifyRequest, input: ParseImportInput) {
+  let tempKey = ''
+  let savedMime = ''
+  let savedSize = 0
+  let savedSha = ''
+  let savedExt = ''
+  try {
+    /* 0. B站高清路径：登录 Cookie + ffmpeg 就绪时下载 DASH 双流并合并（失败自动回落常规路径） */
+    if (job.kind === 'video' && input.high?.videoUrl && input.high.audioUrl) {
+      const high = await tryFetchBiliHigh(job, input.high)
+      if (high.ok) {
+        tempKey = high.key
+        savedMime = high.mimeType
+        savedSize = high.size
+        savedSha = high.sha
+        savedExt = high.ext
+        job.highLabel = input.high.label || '高清'
+      } else if (high.reason === 'no-ffmpeg') {
+        job.highNote = '未检测到 ffmpeg（可在系统设置一键下载），已按默认清晰度保存'
+      } else {
+        job.highNote = `高清流合并失败（${high.message}），已按默认清晰度保存`
+      }
+    }
+
+    /* 1. 常规单流直连（UA/Referer 防盗链头），45s 连接超时（CDN 对同 URL 并发会排队） */
+    if (!tempKey) {
+      const headers = pickUpstreamHeaders(input.url, input.ref || '')
+      const controller = new AbortController()
+      const connectTimer = setTimeout(() => controller.abort(), 45_000)
+      let res: Response
+      try {
+        res = await fetch(input.url, { headers, redirect: 'follow', signal: controller.signal })
+      } catch {
+        clearTimeout(connectTimer)
+        throw new Error('片源响应超时（平台 CDN 排队或网络问题），请稍后重试')
+      }
+      clearTimeout(connectTimer)
+      if (!res.ok) throw new Error(`片源返回 HTTP ${res.status}`)
+      const ct = res.headers.get('content-type') || ''
+      if (job.kind === 'video' && !/video|octet-stream/i.test(ct)) throw new Error(`片源不是可识别的视频格式（${ct}）`)
+      if (job.kind === 'cover' && !/^image\//i.test(ct)) throw new Error('封面不是可识别的图片格式')
+      if (!res.body) throw new Error('片源流不可用')
+
+      /* 2. 流式写临时文件（背压感知 + sha256 + 真实进度上报） */
+      const total = Number(res.headers.get('content-length')) || 0
+      const ext = job.kind === 'video'
+        ? (/\bwebm\b/i.test(ct) ? '.webm' : '.mp4')
+        : (/\bwebp\b/i.test(ct) ? '.webp' : /\bpng\b/i.test(ct) ? '.png' : '.jpg')
+      tempKey = `temp/parse-import/${job.id}${ext}`
+      await mkdir(path.dirname(safeStoragePath(tempKey)), { recursive: true })
+      const ws = createWriteStream(safeStoragePath(tempKey))
+      const hash = createHash('sha256')
+      const reader = res.body.getReader()
+      let received = 0
+      let lastTick = 0
+      let idleSince = Date.now()
+      const watchdog = setInterval(() => {
+        if (Date.now() - idleSince > 90_000) { try { void reader.cancel().catch(() => undefined) } catch { /* 已结束 */ } }
+      }, 15_000)
+      try {
+        for (;;) {
+          if (job.cancel) throw new Error('已取消')
+          const { done, value } = await reader.read()
+          if (done) break
+          if (value && value.length) {
+            idleSince = Date.now()
+            received += value.length
+            hash.update(value)
+            if (!ws.write(value)) await new Promise<void>((r) => ws.once('drain', r))
+            const now = Date.now()
+            if (now - lastTick > 200) {
+              lastTick = now
+              job.progress = total ? Math.min(1, received / total) : null
+              job.message = `下载片源中 ${fmtBytes(received)}${total ? ' / ' + fmtBytes(total) : ''}`
+            }
+          }
+        }
+        ws.end()
+        await new Promise<void>((resolve, reject) => {
+          ws.once('error', reject)
+          ws.once('finish', resolve)
+        })
+      } finally {
+        clearInterval(watchdog)
+      }
+      if (job.cancel) throw new Error('已取消')
+      savedSha = hash.digest('hex')
+      savedSize = received
+      savedMime = ct
+      savedExt = ext
+    }
 
     /* 3. 大小限制 / 查重 / 入库（复用正式上传收尾：缩略图、标签、审计） */
     const limitRow = await prisma.systemSetting.findUnique({ where: { key: 'uploadLimitMb' } })
     const limitMb = typeof limitRow?.value === 'number' ? limitRow.value : defaultSettings.uploadLimitMb
-    if (size > limitMb * 1024 * 1024) throw new Error(`文件 ${fmtBytes(size)} 超过上传上限 ${limitMb} MB，可在「系统设置→服务配置」调大后重试`)
-    const dup = await prisma.image.findUnique({ where: { sha256: sha }, select: { id: true, name: true, originalKey: true } })
+    if (savedSize > limitMb * 1024 * 1024) throw new Error(`文件 ${fmtBytes(savedSize)} 超过上传上限 ${limitMb} MB，可在「系统设置→服务配置」调大后重试`)
+    const dup = await prisma.image.findUnique({ where: { sha256: savedSha }, select: { id: true, name: true, originalKey: true } })
     if (dup) {
       /* 自愈：记录存在但原文件缺失（曾被外部删除等）→ 清掉孤儿记录后重新入库，
          避免「去重锁死」导致内容永远无法保存 */
@@ -963,23 +1169,29 @@ async function runParseImportJob(job: ParseImportJob, request: FastifyRequest, i
     }
     if (!job.duplicate && tempKey) {
       const imageMeta = job.kind === 'cover' ? await sharp(safeStoragePath(tempKey)).metadata().catch(() => null) : null
-      const fileName = `${input.name.replace(/\.[^.]+$/, '')}${ext}`
+      const fileName = `${input.name.replace(/\.[^.]+$/, '')}${savedExt}`
       const pending: PendingUpload = {
         userId: job.userId, tempId: job.id, tempKey,
-        fileName, mimeType: ct || (job.kind === 'video' ? 'video/mp4' : 'image/jpeg'),
-        size, width: imageMeta?.width, height: imageMeta?.height,
-        sha256: sha, createdAt: Date.now(),
+        fileName, mimeType: savedMime || (job.kind === 'video' ? 'video/mp4' : 'image/jpeg'),
+        size: savedSize, width: imageMeta?.width, height: imageMeta?.height,
+        sha256: savedSha, createdAt: Date.now(),
       }
       const tags = normalizeUploadTags([...(job.kind === 'video' ? ['视频'] : []), ...(input.platTag ? [input.platTag] : [])])
       const dto = await finalizePendingUpload(request, { id: job.userId }, pending, input.name, tags)
       job.items.push(dto)
       tempKey = ''
-      /* 「视频提取」入库审计：视频 → 提取视频，封面 → 提取封面 */
-      await recordAudit(request, job.kind === 'video' ? '提取视频' : '提取封面', job.userId, dto.name)
+      /* 「视频提取」入库审计：视频 → 提取视频，封面 → 提取封面（高清档位标注在目标上） */
+      await recordAudit(request, job.kind === 'video' ? '提取视频' : '提取封面', job.userId, `${dto.name}${job.highLabel ? `（${job.highLabel}）` : ''}`)
     }
     job.status = 'done'
     job.progress = 1
-    job.message = job.duplicate ? '已在图片库中（内容相同，自动去重）' : `已保存 ${job.items.length} 个文件到图片库 ✓`
+    if (job.duplicate) {
+      job.message = '已在图片库中（内容相同，自动去重）'
+    } else if (job.highLabel) {
+      job.message = `已保存 ${job.highLabel} 高清视频到图片库 ✓${job.highNote ? `（${job.highNote}）` : ''}`
+    } else {
+      job.message = `已保存 ${job.items.length} 个文件到图片库 ✓${job.highNote ? `（${job.highNote}）` : ''}`
+    }
   } catch (e: any) {
     if (job.cancel) {
       if (tempKey) await rm(safeStoragePath(tempKey), { force: true }).catch(() => undefined)
@@ -1002,6 +1214,13 @@ app.post('/api/parse/import', async (request, reply) => {
     name: z.string().trim().min(1).max(200),
     kind: z.enum(['video', 'cover']),
     platTag: z.string().trim().max(40).optional(),
+    /* B站高清 DASH 双流（可选）：保存时由服务端下载并用 ffmpeg 合并 */
+    high: z.object({
+      videoUrl: z.string().url(),
+      audioUrl: z.string().url(),
+      quality: z.number().int().min(1).max(127).optional(),
+      label: z.string().trim().max(20).optional(),
+    }).optional(),
   }).parse(request.body)
   if (!/^https?:\/\//i.test(body.url)) return reply.code(400).send({ message: '片源地址无效' })
   const job: ParseImportJob = {
@@ -1038,7 +1257,12 @@ app.delete('/api/parse/import/:id', async (request, reply) => {
 })
 
 // ---------- 视频解析引擎（纯享解析 PureParse）：/api/parse /api/stream /api/ping ----------
-registerParseApi(app)
+/* 注入 B站 Cookie 与 ffmpeg 定位，供解析/保存时获取 B站高清（DASH 合并）能力 */
+const parseServerDeps: ParseServerDeps = {
+  getBiliSession: async () => getBiliSession(),
+  findFfmpeg: async () => findFfmpegForParse(),
+}
+registerParseApi(app, parseServerDeps)
 
 async function start() {
   await prisma.$connect()
