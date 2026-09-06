@@ -61,6 +61,7 @@ export const api = {
   completeUpload: (items: Array<{ tempId: string; name: string; tags: string[] }>) => request<{ items: ImageItem[] }>('/api/images/upload/complete', { method: 'POST', body: JSON.stringify({ items }) }),
   cancelUpload: (tempId: string) => request<{ ok: true }>(`/api/images/upload/pending/${tempId}`, { method: 'DELETE' }),
   deleteImage: (id: string) => request<{ ok: true }>(`/api/images/${id}`, { method: 'DELETE' }),
+  renameImage: (id: string, name: string) => request<{ ok: true; name: string }>(`/api/images/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
   restoreImage: (id: string) => request<{ ok: true }>(`/api/images/${id}/restore`, { method: 'POST', body: '{}' }),
   permanentDelete: (id: string) => request<{ ok: true }>(`/api/images/${id}/permanent`, { method: 'DELETE' }),
   tags: () => request<{ items: TagItem[] }>('/api/tags'),

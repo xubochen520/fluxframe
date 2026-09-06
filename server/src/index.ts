@@ -69,6 +69,14 @@ async function recordAudit(request: FastifyRequest, action: string, userId?: str
   const source = sourceInfo(request)
   await prisma.auditLog.create({ data: { action, target, userId, ip: source.ip, scope: source.scope, userAgent: request.headers['user-agent'] } })
 }
+/* 访问日志展示用色阶（总览与日志页共用；注意删除优先于标签，与历史行为一致） */
+function auditTone(action: string) {
+  if (action.includes('删除')) return 'red'
+  if (action.includes('标签')) return 'violet'
+  if (action.includes('登录') || action.includes('上传')) return 'green'
+  if (action.includes('下载') || action.includes('提取')) return 'orange'
+  return 'blue'
+}
 async function cleanupOldAuditLogs() {
   const cutoff = new Date(Date.now() - auditRetentionDays * 24 * 60 * 60 * 1000)
   const result = await prisma.auditLog.deleteMany({ where: { createdAt: { lt: cutoff } } })
@@ -389,7 +397,7 @@ app.get('/api/dashboard', async (request, reply) => {
     prisma.auditLog.findMany({ orderBy: { createdAt: 'desc' }, take: 5, include: { user: true } }),
     storageUsage(),
   ])
-  return { stats: { imageCount, tagCount, userCount, totalViews: views._sum.viewCount || 0, storage: byteSize(disk.usedBytes), storageCapacity: byteSize(disk.capacityBytes), storagePercent: Number(disk.percent.toFixed(2)), databaseImageBytes: byteSize(storage._sum.size || 0n) }, top: top.map(imageDto), recent: recent.map(imageDto), logs: logs.map((log) => ({ id: log.id, action: log.action, target: log.target, user: log.user?.username || '系统', ip: log.ip, scope: log.scope === 'INTERNAL' ? '内网' : '外网', time: log.createdAt.toISOString(), tone: log.action.includes('删除') ? 'red' : log.action.includes('标签') ? 'violet' : 'blue' })) }
+  return { stats: { imageCount, tagCount, userCount, totalViews: views._sum.viewCount || 0, storage: byteSize(disk.usedBytes), storageCapacity: byteSize(disk.capacityBytes), storagePercent: Number(disk.percent.toFixed(2)), databaseImageBytes: byteSize(storage._sum.size || 0n) }, top: top.map(imageDto), recent: recent.map(imageDto), logs: logs.map((log) => ({ id: log.id, action: log.action, target: log.target, user: log.user?.username || '系统', ip: log.ip, scope: log.scope === 'INTERNAL' ? '内网' : '外网', time: log.createdAt.toISOString(), tone: auditTone(log.action) })) }
 })
 
 app.get('/api/images', async (request, reply) => {
@@ -434,7 +442,8 @@ async function finalizePendingUpload(request: FastifyRequest, user: { id: string
       return tx.image.findUnique({ where: { id: created.id }, include: { tags: { include: { tag: true } }, variants: true } })
     })
     if (!image) throw new Error('图片入库失败')
-    if (tagNames.length) await recordAudit(request, '添加标签', user.id, `${name} → ${tagNames.join('、')}`)
+    // 入库自带的标签（如自动「视频」标签）不单独记「添加标签」，避免刷屏；
+    // 上传/提取行为由各调用方按媒体类型记审计（上传图片/上传视频/提取视频/提取封面）
     return imageDto(image)
   } catch (error) {
     /* 数据安全优先：一旦文件已 rename 进 originals（或缩略图已生成），出错时也不再删除 ——
@@ -504,7 +513,11 @@ app.post('/api/images/upload/complete', async (request, reply) => {
     saved.push(image)
     pendingUploads.delete(upload.tempId)
   }
-  await recordAudit(request, '上传媒体', user.id, `${saved.length} 个文件`)
+  /* 按媒体类型逐条记审计，访问日志可区分「上传图片」/「上传视频」 */
+  for (const item of saved) {
+    const isVideo = String(item.mimeType || '').startsWith('video/')
+    await recordAudit(request, isVideo ? '上传视频' : '上传图片', user.id, item.name)
+  }
   return reply.code(201).send({ items: saved })
 })
 
@@ -557,7 +570,11 @@ app.post('/api/images/upload', async (request, reply) => {
     })
     if (image) saved.push(imageDto(image))
   }
-  await recordAudit(request, '上传媒体', user.id, `${saved.length} 个文件`)
+  /* 按媒体类型逐条记审计（兼容旧客户端直传路径） */
+  for (const item of saved) {
+    const isVideo = String(item.mimeType || '').startsWith('video/')
+    await recordAudit(request, isVideo ? '上传视频' : '上传图片', user.id, item.name)
+  }
   return reply.code(201).send({ items: saved })
 })
 
@@ -569,7 +586,8 @@ app.post('/api/images/:id/view', async (request, reply) => {
   if (!user.r18Mode && r18Check) return reply.code(404).send({ message: '图片不存在' })
   const image = await prisma.image.update({ where: { id }, data: { viewCount: { increment: 1 }, lastViewed: new Date() } }).catch(() => null)
   if (!image) return reply.code(404).send({ message: '图片不存在' })
-  await recordAudit(request, '查看图片', user.id, image.name)
+  /* 视频与图片分开记账：查看视频 / 查看图片 */
+  await recordAudit(request, String(image.mimeType).startsWith('video/') ? '查看视频' : '查看图片', user.id, image.name)
   return { ok: true, views: image.viewCount }
 })
 
@@ -605,6 +623,31 @@ async function sendImageFile(request: AuthenticatedRequest, reply: FastifyReply,
 app.get('/api/images/:id/file', async (request, reply) => sendImageFile(request as AuthenticatedRequest, reply))
 app.get('/api/images/:id/variant/:width', async (request, reply) => sendImageFile(request as AuthenticatedRequest, reply, Number((request.params as { width: string }).width)))
 
+/* 下载原文件（浏览器 / APK 原生下载器共用）：带附件响应头并记「下载图片 / 下载视频」审计。
+   与 /file（播放/内联展示）分开，避免把看图、看视频的请求误记为下载。 */
+app.get('/api/images/:id/download', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const image = await imageWithRelations((request.params as { id: string }).id)
+  if (!image || image.deletedAt) return reply.code(404).send({ message: '图片不存在' })
+  if (!user.r18Mode && isImageR18(image)) return reply.code(404).send({ message: '图片不存在' })
+  const filePath = safeStoragePath(image.originalKey)
+  let fileInfo
+  try {
+    fileInfo = await stat(filePath)
+  } catch {
+    return reply.code(404).send({ message: '媒体文件缺失（可能在入库后被外部删除），请重新上传或在「视频提取」中重新保存' })
+  }
+  const base = image.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/^[.\s]+|[.\s]+$/g, '') || '媒体文件'
+  const filename = `${base}${path.extname(image.originalKey).toLowerCase()}`
+  await recordAudit(request, String(image.mimeType).startsWith('video/') ? '下载视频' : '下载图片', user.id, filename)
+  return reply.type(image.mimeType).headers({
+    'Content-Length': fileInfo.size,
+    'Content-Disposition': `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    'Cache-Control': 'private, max-age=3600',
+  }).send(createReadStream(filePath))
+})
+
 app.delete('/api/images/:id', async (request, reply) => {
   const user = await requireUser(request as AuthenticatedRequest, reply)
   if (!user) return
@@ -633,6 +676,34 @@ app.delete('/api/images/:id/permanent', async (request, reply) => {
   await Promise.all([rm(safeStoragePath(image.originalKey), { force: true }), ...image.variants.map((variant) => rm(safeStoragePath(variant.key), { force: true }))])
   await recordAudit(request, '永久删除图片', user.id, image.name)
   return { ok: true }
+})
+
+/* 修改文件（图片/视频）名称：只改展示名，物理文件与缩略图不受影响。
+   与上传规则一致，入库名不带扩展名 —— 输入带扩展名时（与真实文件或常见媒体扩展名一致）
+   自动剥掉，避免下载时出现「xx.jpg.jpg」双扩展名。 */
+app.patch('/api/images/:id', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const body = z.object({ name: z.string().trim().min(1).max(200) }).parse(request.body)
+  const id = (request.params as { id: string }).id
+  const image = await imageWithRelations(id)
+  if (!image || image.deletedAt) return reply.code(404).send({ message: '图片不存在' })
+  if (!user.r18Mode && isImageR18(image)) return reply.code(404).send({ message: '图片不存在' })
+  const fileExt = path.extname(image.originalKey).toLowerCase()
+  const commonExts = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic', '.heif', '.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi', '.mpg', '.mpeg', '.ts', '.3gp'])
+  let clean = body.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').replace(/^[.\s]+|[.\s]+$/g, '')
+  const lower = clean.toLowerCase()
+  if (fileExt && lower.endsWith(fileExt)) clean = clean.slice(0, -fileExt.length)
+  else {
+    const trailing = /\.([a-z0-9]{1,5})$/i.exec(clean)?.[0].toLowerCase() || ''
+    if (trailing && commonExts.has(trailing)) clean = clean.slice(0, -trailing.length)
+  }
+  const name = clean.replace(/[.\s]+$/, '')
+  if (!name) return reply.code(400).send({ message: '文件名不能为空' })
+  const updated = await prisma.image.update({ where: { id }, data: { name } }).catch(() => null)
+  if (!updated) return reply.code(404).send({ message: '图片不存在' })
+  await recordAudit(request, '修改名称', user.id, `${image.name} → ${name}`)
+  return { ok: true, name: updated.name }
 })
 
 app.get('/api/tags', async (request, reply) => {
@@ -719,7 +790,7 @@ app.get('/api/audit-logs', async (request, reply) => {
   const user = await requireAdmin(request as AuthenticatedRequest, reply)
   if (!user) return
   const logs = await prisma.auditLog.findMany({ orderBy: { createdAt: 'desc' }, take: 500, include: { user: true } })
-  return { items: logs.map((log) => ({ id: log.id, action: log.action, target: log.target || '', user: log.user?.username || '系统', ip: log.ip, scope: log.scope === 'INTERNAL' ? '内网' : '外网', time: log.createdAt.toISOString(), tone: log.action.includes('删除') ? 'red' : log.action.includes('标签') ? 'violet' : log.action.includes('登录') ? 'green' : 'blue' })) }
+  return { items: logs.map((log) => ({ id: log.id, action: log.action, target: log.target || '', user: log.user?.username || '系统', ip: log.ip, scope: log.scope === 'INTERNAL' ? '内网' : '外网', time: log.createdAt.toISOString(), tone: auditTone(log.action) })) }
 })
 
 app.get('/api/settings', async (request, reply) => {
@@ -903,6 +974,8 @@ async function runParseImportJob(job: ParseImportJob, request: FastifyRequest, i
       const dto = await finalizePendingUpload(request, { id: job.userId }, pending, input.name, tags)
       job.items.push(dto)
       tempKey = ''
+      /* 「视频提取」入库审计：视频 → 提取视频，封面 → 提取封面 */
+      await recordAudit(request, job.kind === 'video' ? '提取视频' : '提取封面', job.userId, dto.name)
     }
     job.status = 'done'
     job.progress = 1

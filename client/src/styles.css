@@ -200,3 +200,12 @@
 .new-tag-r18 input{accent-color:#fb7185;width:14px;height:14px;flex:none;margin:0}
 .new-tag-r18 span{font-weight:600}
 .new-tag-r18 small{display:block;color:#a3797f;font-size:9px;margin-top:2px}
+
+/* ---- 访问日志增强（类别筛选 / 空态 / 目标省略号） ---- */
+.log-filter-pills { margin: -6px 0 13px; }
+.log-filter-pills .pill { padding: 6px 11px; }
+.log-empty { padding: 30px 16px; text-align: center; color: #7c87a0; font-size: 11px; }
+.log-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rename-hint { display: block; margin: 8px 0 0; color: #78839e; font-size: 10px; line-height: 1.6; }
+/* 图片卡片长按唤起菜单：避免长按时选中文字 / 弹出系统选择 */
+.image-card, .popular-item { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
