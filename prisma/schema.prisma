@@ -77,6 +77,8 @@ model Tag {
   name      String     @unique
   color     String     @default("#a78bfa")
   r18       Boolean    @default(false)
+  /// 人物组标签：人名索引，前端以绿色圆点区分，可展开查看该人物的全部关联标签
+  person    Boolean    @default(false)
   createdAt DateTime   @default(now())
   images    ImageTag[]
 }

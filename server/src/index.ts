@@ -96,6 +96,13 @@ async function cleanupExpiredPendingUploads() {
 async function ensureSpecialTags() {
   await prisma.tag.upsert({ where: { name: 'R-18' }, create: { name: 'R-18', color: '#ef4444', r18: true }, update: { color: '#ef4444', r18: true } })
 }
+/** 人物组标签统一用绿色圆点（前端「标签左侧圆点」与图片库人名标记同色） */
+const PERSON_TAG_COLOR = '#22c55e'
+const DEFAULT_TAG_COLOR = '#a78bfa'
+function tagDto(tag: { id: string; name: string; color: string; r18?: boolean; person?: boolean }, count: number) {
+  const person = tag.person === true
+  return { id: tag.id, name: tag.name, color: person ? PERSON_TAG_COLOR : tag.color, r18: isTagR18(tag), person, count }
+}
 function isTagR18(tag: { name: string; r18?: boolean }) { return tag.name === 'R-18' || tag.r18 === true }
 function isImageR18(image: { tags?: Array<{ tag: { name: string; r18?: boolean } }> }) { return (image.tags || []).some((item) => isTagR18(item.tag)) }
 const r18HiddenTagsFilter: Prisma.TagWhereInput = { NOT: { OR: [{ name: 'R-18' }, { r18: true }] } }
@@ -713,32 +720,64 @@ app.get('/api/tags', async (request, reply) => {
   const user = await requireUser(request as AuthenticatedRequest, reply)
   if (!user) return
   const tags = await prisma.tag.findMany({ where: user.r18Mode ? undefined : r18HiddenTagsFilter, orderBy: { name: 'asc' }, include: { _count: { select: { images: true } } } })
-  return { items: tags.map((tag) => ({ id: tag.id, name: tag.name, color: tag.color, r18: isTagR18(tag), count: tag._count.images })) }
+  return { items: tags.map((tag) => tagDto(tag, tag._count.images)) }
 })
 app.post('/api/tags', async (request, reply) => {
   const user = await requireUser(request as AuthenticatedRequest, reply)
   if (!user) return
-  const body = z.object({ name: z.string().trim().min(1).max(40), color: z.string().default('#a78bfa'), r18: z.boolean().default(false) }).parse(request.body)
-  const tagData = body.name.toUpperCase() === 'R-18' ? { name: 'R-18', color: '#ef4444', r18: true } : body
+  const body = z.object({ name: z.string().trim().min(1).max(40), color: z.string().default(DEFAULT_TAG_COLOR), r18: z.boolean().default(false), person: z.boolean().default(false) }).parse(request.body)
+  const tagData = body.name.toUpperCase() === 'R-18'
+    ? { name: 'R-18', color: '#ef4444', r18: true, person: false }
+    : { name: body.name, color: body.person ? PERSON_TAG_COLOR : body.color, r18: body.r18, person: body.person }
   const tag = await prisma.tag.create({ data: tagData }).catch(() => null)
   if (!tag) return reply.code(409).send({ message: '标签已存在' })
-  await recordAudit(request, '创建标签', user.id, tag.name)
-  return reply.code(201).send({ id: tag.id, name: tag.name, color: tag.color, r18: isTagR18(tag), count: 0 })
+  await recordAudit(request, tag.person ? '新建人物' : '创建标签', user.id, tag.name)
+  return reply.code(201).send(tagDto(tag, 0))
 })
 app.patch('/api/tags/:id', async (request, reply) => {
   const user = await requireUser(request as AuthenticatedRequest, reply)
   if (!user) return
-  const body = z.object({ r18: z.boolean().optional(), color: z.string().optional() }).parse(request.body)
+  const body = z.object({ r18: z.boolean().optional(), color: z.string().optional(), person: z.boolean().optional() }).parse(request.body)
   const tag = await prisma.tag.findUnique({ where: { id: (request.params as { id: string }).id } })
   if (!tag) return reply.code(404).send({ message: '标签不存在' })
-  const data: { r18?: boolean; color?: string } = {}
+  const data: { r18?: boolean; color?: string; person?: boolean } = {}
   if (body.color !== undefined) data.color = body.color
   if (body.r18 !== undefined && !isTagR18(tag)) data.r18 = body.r18
+  /* 放入人物组 → 圆点变绿；移出人物组 → 恢复默认紫色（除非用户自定义过颜色） */
+  if (body.person !== undefined && body.person !== tag.person) {
+    data.person = body.person
+    if (body.person) data.color = PERSON_TAG_COLOR
+    else if (tag.color === PERSON_TAG_COLOR || body.color === undefined) data.color = DEFAULT_TAG_COLOR
+  }
   const updated = await prisma.tag.update({ where: { id: tag.id }, data }).catch(() => null)
   if (!updated) return reply.code(409).send({ message: '标签更新失败' })
-  await recordAudit(request, '更新标签', user.id, `${updated.name}${data.r18 !== undefined ? (data.r18 ? ' → R18' : ' → 普通') : ''}`)
+  const action = data.person === undefined ? '更新标签' : (data.person ? '放入人物组' : '移出人物组')
+  await recordAudit(request, action, user.id, updated.name)
   const count = await prisma.imageTag.count({ where: { tagId: updated.id } })
-  return { id: updated.id, name: updated.name, color: updated.color, r18: isTagR18(updated), count }
+  return tagDto(updated, count)
+})
+/* 人物详情：该人名标签下全部图片的「全部标签」聚合（按共同出现次数排序） */
+app.get('/api/tags/:id/person', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const tagId = (request.params as { id: string }).id
+  const tag = await prisma.tag.findUnique({ where: { id: tagId } })
+  if (!tag) return reply.code(404).send({ message: '标签不存在' })
+  if (!user.r18Mode && isTagR18(tag)) return reply.code(403).send({ message: '需要开启 R18 模式才能查看该人物' })
+  const links = await prisma.imageTag.findMany({ where: { tagId, image: { deletedAt: null } }, select: { imageId: true } })
+  const imageIds = links.map((item) => item.imageId)
+  let related: Array<{ id: string; name: string; color: string; r18: boolean; person: boolean; count: number }> = []
+  let latest: Array<{ id: string; name: string; thumb: string }> = []
+  if (imageIds.length) {
+    const grouped = await prisma.imageTag.groupBy({ by: ['tagId'], where: { imageId: { in: imageIds }, tagId: { not: tagId } }, _count: { tagId: true } })
+    const relatedTags = await prisma.tag.findMany({ where: { id: { in: grouped.map((item) => item.tagId) }, ...(user.r18Mode ? {} : r18HiddenTagsFilter) } })
+    const countMap = new Map(grouped.map((item) => [item.tagId, item._count.tagId]))
+    related = relatedTags.map((item) => tagDto(item, countMap.get(item.id) || 0)).filter((item) => !item.r18 || user.r18Mode).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    const previews = await prisma.image.findMany({ where: { id: { in: imageIds } }, orderBy: { uploadedAt: 'desc' }, take: 8, include: { variants: true } })
+    latest = previews.map((image) => ({ id: image.id, name: image.name, thumb: image.variants?.length ? `/api/images/${image.id}/variant/320` : `/api/images/${image.id}/file` }))
+  }
+  await recordAudit(request, '查看人物', user.id, `${tag.name}（${imageIds.length} 张图片 / ${related.length} 个标签）`)
+  return { ...tagDto(tag, imageIds.length), imageCount: imageIds.length, related, latest }
 })
 app.delete('/api/tags/:id', async (request, reply) => {
   const user = await requireAdmin(request as AuthenticatedRequest, reply)

@@ -64,14 +64,15 @@ function toggleTagPicker(item: ReviewItem) {
   tagPickerOpen.value = tagPickerOpen.value[item.tempId] ? {} : { [item.tempId]: true }
 }
 function closeTagPicker(item: ReviewItem) { if (!item.tempId) return; tagPickerOpen.value = {} }
-function addTagValue(item: ReviewItem, value: string) {
+function addTagValue(item: ReviewItem, value: string, keepPickerOpen = false) {
   if (!item.tempId || !value) return
   if (!props.r18Mode && isTagR18(value)) return
   if (!item.tags.includes(value)) item.tags.push(value)
   tagInputs.value[item.tempId] = ''
-  tagPickerOpen.value = {}
+  /* 从下拉里选标签时保持展开，方便连续多选；手动回车提交新标签时才收起 */
+  if (!keepPickerOpen) tagPickerOpen.value = {}
 }
-function pickTag(item: ReviewItem, name: string) { addTagValue(item, name) }
+function pickTag(item: ReviewItem, name: string) { addTagValue(item, name, true) }
 function submitTagInput(item: ReviewItem) {
   const value = (tagInputs.value[item.tempId!] || '').trim().replace(/^#/, '')
   if (!value) return

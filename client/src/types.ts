@@ -25,7 +25,17 @@ export interface TagItem {
   name: string
   color: string
   r18?: boolean
+  /** 人物组标签：人名索引，前端绿色圆点 + 可展开查看该人物的全部标签 */
+  person?: boolean
   count: number
+}
+
+export interface PersonRelatedTag extends TagItem {}
+
+export interface PersonDetail extends TagItem {
+  imageCount: number
+  related: PersonRelatedTag[]
+  latest: Array<{ id: string; name: string; thumb: string }>
 }
 
 export interface AuditLog {

@@ -1,4 +1,4 @@
-import type { AuditLog, ImageItem, TagItem } from './types'
+import type { AuditLog, ImageItem, PersonDetail, TagItem } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -74,8 +74,9 @@ export const api = {
   restoreImage: (id: string) => request<{ ok: true }>(`/api/images/${id}/restore`, { method: 'POST', body: '{}' }),
   permanentDelete: (id: string) => request<{ ok: true }>(`/api/images/${id}/permanent`, { method: 'DELETE' }),
   tags: () => request<{ items: TagItem[] }>('/api/tags'),
-  createTag: (name: string, color = '#a78bfa', r18 = false) => request<TagItem>('/api/tags', { method: 'POST', body: JSON.stringify({ name, color, r18 }) }),
-  updateTag: (id: string, patch: { r18?: boolean; color?: string }) => request<TagItem>(`/api/tags/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  createTag: (name: string, color = '#a78bfa', r18 = false, person = false) => request<TagItem>('/api/tags', { method: 'POST', body: JSON.stringify({ name, color, r18, person }) }),
+  updateTag: (id: string, patch: { r18?: boolean; color?: string; person?: boolean }) => request<TagItem>(`/api/tags/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  personDetail: (id: string) => request<PersonDetail>(`/api/tags/${id}/person`),
   deleteTag: (id: string) => request<{ ok: true }>(`/api/tags/${id}`, { method: 'DELETE' }),
   addImagesToTag: (tagId: string, imageIds: string[]) => request<{ ok: true; added: number }>(`/api/tags/${tagId}/images`, { method: 'POST', body: JSON.stringify({ imageIds }) }),
   addTag: (imageId: string, name: string) => request<{ ok: true }>(`/api/images/${imageId}/tags`, { method: 'POST', body: JSON.stringify({ name }) }),
