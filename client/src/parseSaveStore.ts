@@ -13,7 +13,8 @@ export interface SaveFileOpts {
   ref?: string
   /** 入库名称 */
   name: string
-  kind: 'video' | 'cover'
+  /** video=无水印视频 / cover=视频封面 / image=图文作品的单张图片 */
+  kind: 'video' | 'cover' | 'image'
   /** B站高清 DASH 双流（可选）：服务端下载后用 ffmpeg 合并成单文件再入库 */
   high?: { videoUrl: string; audioUrl: string; quality?: number; label?: string }
 }
@@ -22,6 +23,8 @@ export interface SaveTaskOpts {
   name: string
   video: SaveFileOpts | null
   cover: SaveFileOpts | null
+  /** 图文作品：整组图片逐张入库（一个任务内顺序下载） */
+  images?: SaveFileOpts[]
   /** 附带来源标签（如 抖音/哔哩哔哩），null 则不加 */
   platTag: string | null
 }
@@ -62,7 +65,7 @@ async function createImportJob(file: SaveFileOpts, platTag: string | null): Prom
       ref: file.ref || undefined,
       name: file.name,
       kind: file.kind,
-      platTag: file.kind === 'video' ? platTag || undefined : undefined,
+      platTag: file.kind === 'cover' ? undefined : platTag || undefined,
       high: file.kind === 'video' && file.high?.videoUrl && file.high.audioUrl
         ? { videoUrl: file.high.videoUrl, audioUrl: file.high.audioUrl, quality: file.high.quality, label: file.high.label }
         : undefined,
@@ -106,17 +109,29 @@ export function startSaveTask(opts: SaveTaskOpts): number {
 }
 
 async function run(task: SaveTask, signal: AbortSignal) {
-  const files = [task.opts.video, task.opts.cover].filter((f): f is SaveFileOpts => !!f)
+  const images = task.opts.images || []
+  const files = [task.opts.video, task.opts.cover, ...images].filter((f): f is SaveFileOpts => !!f)
+  /* 图片在列表中的序号偏移（视频/封面各占一位） */
+  const imgBase = (task.opts.video ? 1 : 0) + (task.opts.cover ? 1 : 0)
+  const onlyImages = files.length > 0 && files.every((f) => f.kind === 'image')
   let savedCount = 0
   let duplicate = false
   try {
     if (!files.length) throw new Error('没有可保存的内容')
+    let index = 0
     for (const file of files) {
+      index++
       if (signal.aborted) return
       task.unknown = true
       task.pct = 0
-      task.stageText = file.kind === 'video' ? '正在后台下载无水印视频…' : '正在后台下载封面…'
-      const label = file.kind === 'video' ? '视频' : '封面'
+      const imgNo = index - imgBase
+      const stage = file.kind === 'video'
+        ? '正在后台下载无水印视频…'
+        : file.kind === 'image'
+          ? `正在后台下载第 ${imgNo}/${images.length} 张图片…`
+          : '正在后台下载封面…'
+      task.stageText = stage
+      const label = file.kind === 'video' ? '视频' : file.kind === 'image' ? `第 ${imgNo} 张图片` : '封面'
       let jobId: string
       try {
         jobId = await createImportJob(file, task.opts.platTag)
@@ -157,7 +172,11 @@ async function run(task: SaveTask, signal: AbortSignal) {
       task.stageText = '已在图片库中（内容相同，自动去重）'
     } else {
       const tagHint = task.opts.platTag ? ` · 已附「${task.opts.platTag}」` : ''
-      task.stageText = `已保存 ${savedCount} 个文件到图片库 ✓（视频自动带「视频」标签${tagHint}）`
+      const noun = onlyImages ? '张图片' : '个文件'
+      const videoHint = onlyImages ? '' : '（视频自动带「视频」标签'
+      task.stageText = onlyImages
+        ? `已保存 ${savedCount} ${noun}到图片库 ✓${tagHint}`
+        : `已保存 ${savedCount} ${noun}到图片库 ✓${videoHint}${tagHint}）`
     }
   } catch (err: any) {
     if (signal.aborted) return

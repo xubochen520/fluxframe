@@ -33,6 +33,8 @@ interface ParseTask {
   platName: string
   platChar: string
   platBg: string
+  /** video=视频作品 / images=图文作品（图片集） */
+  kind: 'video' | 'images'
   title: string
   authorName: string
   authorHandle: string
@@ -43,9 +45,13 @@ interface ParseTask {
   view: number
   cover: string
   coverSrc: string
+  /** 上游防盗链 Referer（图文图片导入用） */
+  referer: string
   resLabel: string
   duration: number
   media: { url: string; src?: string; referer?: string; w: number; h: number; dur: number; size: number; type: string }
+  /** 图文作品：整组图片（url 为同源代理预览地址，src 为上游原址） */
+  images: { url: string; src?: string; w: number; h: number }[]
   /** B站高清 DASH 双流（配置了登录 Cookie 且服务端 ffmpeg 就绪时返回） */
   high?: { videoUrl: string; audioUrl: string; quality?: number; label?: string }
 }
@@ -61,6 +67,7 @@ const detectedPlat = ref<{ name: string; color: string; tag: string } | null>(nu
 const showSave = ref(false)
 const saveName = ref('')
 const saveVideo = ref(true)
+const saveImages = ref(true)
 const saveCover = ref(true)
 const savePlatTag = ref(true)
 const saveHint = ref('')
@@ -178,11 +185,17 @@ async function runParse(url: string) {
     const author = d.author || {}
     const stats = d.stats || {}
     const info = PLATFORMS[String(d.platform || platId)] || plat
+    /* 图文作品（抖音图片集等）：media 为空、images 有内容 */
+    const images = (Array.isArray(d.images) ? d.images : [])
+      .map((im: any) => ({ url: String(im?.url || ''), src: im?.src ? String(im.src) : undefined, w: Number(im?.width) || 0, h: Number(im?.height) || 0 }))
+      .filter((im: { url: string }) => !!im.url)
+    const isImages = String(d.kind || '') === 'images' || (!media.url && images.length > 0)
     task.value = {
       platName: info.name,
       platChar: info.char,
       platBg: info.bg,
-      title: d.title || '未命名视频',
+      kind: isImages ? 'images' : 'video',
+      title: d.title || (isImages ? '未命名图文' : '未命名视频'),
       authorName: author.name || '未知作者',
       authorHandle: author.handle ? '@' + String(author.handle).replace(/^@/, '') : '',
       verified: !!author.verified,
@@ -192,8 +205,10 @@ async function runParse(url: string) {
       view: Number(stats.view) || 0,
       cover: typeof d.cover === 'string' ? d.cover : '',
       coverSrc: typeof d.coverSrc === 'string' ? d.coverSrc : '',
-      resLabel: d.qualityLabel || (media.width && media.height ? `${media.width}×${media.height} · 无水印` : '无水印直链'),
+      referer: String(d.referer || media.referer || ''),
+      resLabel: d.qualityLabel || (media.width && media.height ? `${media.width}×${media.height} · 无水印` : isImages ? `${images.length} 张图片` : '无水印直链'),
       duration: Number(media.duration || d.duration || 0),
+      images,
       high: d.high?.videoUrl && d.high.audioUrl
         ? { videoUrl: String(d.high.videoUrl), audioUrl: String(d.high.audioUrl), quality: Number(d.high.quality) || undefined, label: String(d.high.label || '高清') }
         : undefined,
@@ -258,13 +273,30 @@ async function downloadCover() {
   const msg = await grabAndDownload(task.value.cover, `${base}-封面.jpg`)
   if (msg) error.value = `封面下载失败：${msg}`
 }
+/** 图文作品：逐张下载整组图片（APK 端进原生下载任务坞） */
+async function downloadAllImages() {
+  const t = task.value
+  if (!t?.images.length) return
+  error.value = ''
+  const base = cleanName(t.title)
+  const total = t.images.length
+  for (const [i, im] of t.images.entries()) {
+    const msg = await grabAndDownload(im.url, `${base}-${String(i + 1).padStart(2, '0')}.jpg`)
+    if (msg) {
+      error.value = `第 ${i + 1}/${total} 张图片下载失败：${msg}`
+      return
+    }
+  }
+}
 
 /* ---------- 保存到图片库（后台任务） ---------- */
 function openSave() {
   if (!task.value) return
+  const isImages = task.value.kind === 'images'
   saveName.value = cleanName(task.value.title)
-  saveVideo.value = true
-  saveCover.value = !!task.value.cover
+  saveVideo.value = !isImages
+  saveImages.value = isImages
+  saveCover.value = !isImages && !!task.value.cover
   savePlatTag.value = true
   saveHint.value = ''
   showSave.value = true
@@ -275,6 +307,26 @@ function confirmSave() {
   const t = task.value
   if (!t) return
   const name = cleanName(saveName.value)
+  const platTag = savePlatTag.value && !/未知|未内置/.test(t.platName) ? t.platName : null
+
+  /* 图文作品：整组图片一次任务顺序入库（每张一个导入任务，进度合并显示） */
+  if (t.kind === 'images') {
+    if (!saveImages.value) {
+      saveHint.value = '请勾选要保存的图片'
+      return
+    }
+    const list = t.images
+      .filter((im) => /^https?:/i.test(im.src || ''))
+      .map((im, i) => ({ url: String(im.src), ref: t.referer || undefined, name: `${name}-${String(i + 1).padStart(2, '0')}`, kind: 'image' as const }))
+    if (!list.length) {
+      saveHint.value = '图片直链不可用，请重新解析后再试'
+      return
+    }
+    startSaveTask({ name, video: null, cover: null, images: list, platTag })
+    showSave.value = false
+    return
+  }
+
   const videoSrc = t.media.src || ''
   const coverSrc = t.coverSrc || (t.cover && !String(t.cover).startsWith('/api/stream') ? t.cover : '')
   if (saveVideo.value && !/^https?:/i.test(videoSrc)) {
@@ -293,7 +345,7 @@ function confirmSave() {
     cover: saveCover.value && t.cover
       ? { url: coverSrc, ref: t.media.referer, name: `${name}-封面`, kind: 'cover' }
       : null,
-    platTag: savePlatTag.value && !/未知|未内置/.test(t.platName) ? t.platName : null,
+    platTag,
   }
   if (!opts.video && !opts.cover) {
     saveHint.value = '请至少勾选一项要保存的内容'
@@ -346,12 +398,18 @@ function confirmSave() {
     <!-- 解析结果 -->
     <div v-if="task" class="pw-result">
       <div class="pw-player panel">
-        <video :key="task.media.url" :src="task.media.url" :poster="task.cover || undefined" controls playsinline preload="metadata" />
+        <video v-if="task.kind === 'video'" :key="task.media.url" :src="task.media.url" :poster="task.cover || undefined" controls playsinline preload="metadata" />
+        <div v-else class="pw-gallery">
+          <a v-for="(im, i) in task.images" :key="i" class="pw-gallery-item" :href="im.url" target="_blank" rel="noopener noreferrer" :title="`查看原图 ${i + 1}`">
+            <img :src="im.url" loading="lazy" :alt="`图片 ${i + 1}`" />
+            <span>{{ i + 1 }}</span>
+          </a>
+        </div>
         <div class="pw-player-meta">
-          <span class="pw-badge-plat"><i :style="{ background: task.platBg }">{{ task.platChar }}</i>{{ task.platName }} · 无水印</span>
+          <span class="pw-badge-plat"><i :style="{ background: task.platBg }">{{ task.platChar }}</i>{{ task.platName }} · {{ task.kind === 'images' ? '图文作品' : '无水印' }}</span>
           <span class="pw-badge-res">{{ task.resLabel }}</span>
-          <span class="pw-badge-size">{{ fmtSize(task.media.size) }}</span>
-          <span class="pw-badge-size">{{ fmtTime(task.duration) }}</span>
+          <span v-if="task.kind === 'video'" class="pw-badge-size">{{ fmtSize(task.media.size) }}</span>
+          <span v-if="task.kind === 'video'" class="pw-badge-size">{{ fmtTime(task.duration) }}</span>
         </div>
       </div>
       <div class="panel pw-info">
@@ -364,9 +422,10 @@ function confirmSave() {
           <span><Share2 :size="13" />{{ fmtNum(task.share) }}</span>
         </div>
         <div class="pw-actions">
-          <button class="primary-button" @click="openSave"><Save :size="15" />保存到图片库</button>
-          <button class="filter-button" @click="downloadMedia"><Download :size="14" />下载视频</button>
-          <button v-if="task.cover" class="filter-button" @click="downloadCover"><Images :size="14" />封面</button>
+          <button class="primary-button" @click="openSave"><Save :size="15" />{{ task.kind === 'images' ? '保存全部图片' : '保存到图片库' }}</button>
+          <button v-if="task.kind === 'video'" class="filter-button" @click="downloadMedia"><Download :size="14" />下载视频</button>
+          <button v-else class="filter-button" @click="downloadAllImages"><Download :size="14" />下载全部 {{ task.images.length }} 张</button>
+          <button v-if="task.kind === 'video' && task.cover" class="filter-button" @click="downloadCover"><Images :size="14" />封面</button>
           <button class="filter-button" @click="runParse(lastUrl)"><RotateCcw :size="14" />重新解析</button>
         </div>
         <p class="pw-tip"><Save :size="12" /> 保存走服务端后台导入：不占手机流量，左下角实时显示下载进度，可随时取消或继续解析其它链接。</p>
@@ -382,9 +441,10 @@ function confirmSave() {
         <p>由服务器后台下载并入库（左下角显示实时进度），无需占用本机流量，可继续解析其它链接。</p>
         <label class="field-label">入库名称<input v-model="saveName" class="modal-input" maxlength="80" /></label>
         <div class="pw-save-opts">
-          <label><input v-model="saveVideo" type="checkbox" /><span><b>无水印视频</b><small>自动带「视频」标签 · {{ task?.resLabel }} · {{ task?.media.size ? fmtSize(task.media.size) : '' }}</small></span></label>
+          <label v-if="task?.kind === 'images'"><input v-model="saveImages" type="checkbox" /><span><b>全部图片（{{ task?.images.length }} 张）</b><small>{{ task?.resLabel }} · 逐张入库，自动去重</small></span></label>
+          <label v-else><input v-model="saveVideo" type="checkbox" /><span><b>无水印视频</b><small>自动带「视频」标签 · {{ task?.resLabel }} · {{ task?.media.size ? fmtSize(task.media.size) : '' }}</small></span></label>
           <p v-if="task?.high" class="pw-save-high"><Sparkles :size="12" />已就绪：可保存 {{ task.high.label }} 高清版（服务端下载双流并用 ffmpeg 合并，需 B站登录态已配置）</p>
-          <label v-if="task?.cover"><input v-model="saveCover" type="checkbox" /><span><b>封面图</b><small>与视频一起保存，无附加标签</small></span></label>
+          <label v-if="task?.kind === 'video' && task?.cover"><input v-model="saveCover" type="checkbox" /><span><b>封面图</b><small>与视频一起保存，无附加标签</small></span></label>
           <label><input v-model="savePlatTag" type="checkbox" /><span><b>附带来源标签「{{ task?.platName }}」</b><small>便于按平台检索</small></span></label>
         </div>
         <p v-if="saveHint" class="pw-save-hint">{{ saveHint }}</p>
@@ -475,6 +535,25 @@ function confirmSave() {
   width: 100%; aspect-ratio: 16 / 9; max-height: 58vh;
   border-radius: 10px; background: #000; object-fit: contain; outline: 0;
 }
+/* 图文作品：图片网格（点击看原图） */
+.pw-gallery {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 8px; max-height: 58vh; overflow-y: auto; padding-right: 2px;
+}
+.pw-gallery-item {
+  position: relative; display: block; border-radius: 9px; overflow: hidden;
+  border: 1px solid var(--line); background: rgba(255, 255, 255, .03);
+  transition: border-color .18s, transform .18s;
+}
+.pw-gallery-item img { display: block; width: 100%; aspect-ratio: 3 / 4; object-fit: cover; background: #0b0e16; }
+.pw-gallery-item span {
+  position: absolute; left: 6px; bottom: 6px;
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: 10px 'DM Mono'; color: #e7ebf5;
+  background: rgba(10, 13, 22, .68);
+}
+.pw-gallery-item:hover { border-color: rgba(167, 139, 250, .45); transform: translateY(-1px); }
 .pw-player-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 2px; }
 .pw-badge-plat, .pw-badge-res, .pw-badge-size {
   display: inline-flex; align-items: center; gap: 6px;
@@ -565,6 +644,7 @@ function confirmSave() {
   .pw-stats { grid-template-columns: repeat(2, 1fr); row-gap: 9px; }
   .pw-info { padding: 16px 15px; }
   .pw-history-chip { max-width: 170px; }
+  .pw-gallery { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); max-height: 46vh; }
   .pw-actions .primary-button { min-width: 0; }
 }
 </style>

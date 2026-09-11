@@ -250,9 +250,10 @@ async function dyDetailOnce(awemeId: string, ttwid: string) {
   }
 }
 
-/** 验证直链可播并取真实总大小 */
+/** 验证直链可播并取真实总大小；失败时带上响应摘要（便于定位是风控、图文还是音频流） */
 async function probeDyMedia(url: string) {
-  for (let i = 0; i < 3; i++) {
+  let note = ''
+  for (let i = 0; i < 2; i++) {
     try {
       const res = await fetch(url, {
         headers: { 'User-Agent': DY_UA, Referer: DY_REF, Range: 'bytes=0-0', Accept: '*/*' },
@@ -264,15 +265,28 @@ async function probeDyMedia(url: string) {
       const cl = res.headers.get('content-length')
       if ((res.status === 200 || res.status === 206) && /video|octet-stream/i.test(ct)) {
         const total = cr ? Number(cr.split('/')[1]) || 0 : Number(cl) || 0
-        return { ok: true, type: ct, size: total }
+        return { ok: true, type: ct, size: total, note: '' }
       }
-      await new Promise((r) => setTimeout(r, 600))
-    } catch {
-      await new Promise((r) => setTimeout(r, 600))
+      note = `HTTP ${res.status}${ct ? ' ' + ct.split(';')[0] : ''}`
+      res.body?.cancel().catch(() => undefined)
+      await new Promise((r) => setTimeout(r, 500))
+    } catch (e: any) {
+      note = e?.name === 'TimeoutError' ? '请求超时' : (e?.message || '网络错误')
+      await new Promise((r) => setTimeout(r, 500))
     }
   }
-  return { ok: false }
+  return { ok: false, note }
 }
+
+/** 图文作品的图片直链：优先 url_list 中的非 webp 原图（无水印）；download_url_list 带水印不用 */
+function dyPickImage(img: any): string {
+  const list: string[] = Array.isArray(img?.url_list) ? img.url_list.filter((u: any) => typeof u === 'string' && /^https?:/i.test(u)) : []
+  if (!list.length) return ''
+  return list.find((u) => /\.(jpe?g|png|heic)($|\?)/i.test(u)) || list[0]
+}
+
+/** DASH 分片/网关地址（视频轨或音轨单独一路）：优先取合流 mp4，避免保存出无声视频 */
+const dyIsDashPart = (u: string) => /\/media-(video|audio)-/i.test(u) || /\/aweme\/v1\/play\/dash\//i.test(u)
 
 async function resolveDouyin(url: string) {
   if (!signerReady()) return fail('抖音签名器加载失败：' + (signerError() || '未知错误'))
@@ -311,62 +325,107 @@ async function resolveDouyin(url: string) {
   }
 
   const v = detail.video
-  if (!v?.play_addr?.url_list?.length) return fail('该抖音作品为图文/其他类型，不含可提取的视频流')
+  const author = detail.author || {}
+  const stats = detail.statistics || {}
+  const authorDto = {
+    name: author.nickname || '未知作者',
+    handle: author.unique_id || author.short_id || '',
+    verified: !!(author.verified || (author.custom_verify && !/^$/.test(author.custom_verify))),
+    tag: '抖音创作者',
+  }
+  const statsDto = {
+    like: stats.digg_count || 0,
+    comment: stats.comment_count || 0,
+    share: stats.share_count || 0,
+    view: stats.play_count || 0,
+  }
+
+  /* 图文作品（aweme_type=68 / media_type=2）：images 才是内容本体；此时的 video.play_addr
+     指向的只是配乐（audio/mp4），探测必然失败 —— 旧版会误报「直链不可达」。改为返回图片列表，
+     由前端预览并可一键保存整组图片到图片库。 */
+  const noteImages = (Array.isArray(detail.images) ? detail.images : [])
+    .map((im: any) => ({ url: dyPickImage(im), width: Number(im?.width) || 0, height: Number(im?.height) || 0 }))
+    .filter((im: { url: string }) => !!im.url)
+  if (noteImages.length) {
+    return {
+      platform: 'douyin',
+      kind: 'images',
+      pageUrl: `https://www.douyin.com/note/${awemeId}`,
+      title: detail.desc || '抖音图文',
+      author: authorDto,
+      stats: statsDto,
+      cover: noteImages[0].url,
+      referer: DY_REF,
+      qualityLabel: `图文作品 · ${noteImages.length} 张图片`,
+      duration: 0,
+      watermarkFree: true,
+      images: noteImages,
+      media: [],
+    }
+  }
+
+  if (!v?.play_addr?.url_list?.length) return fail('该抖音作品不含视频流（可能是图文/音乐作品），无法提取视频')
 
   /* 播放直链选择：官方按风控动态下发放流档位（play_addr 可能是 480P/1080P 等），
-     bit_rate[] 内含全档位（4K/2K/1080P…）。从最高档开始探测可播源，取实际最优档 */
+     bit_rate[] 内含全档位（4K/2K/1080P…）。从最高档开始探测可播源，取实际最优档。
+     分轨（media-video- 前缀、play/dash 网关）单路无音轨，仅作为兜底。 */
   const urlOf = (u: string) => (/^https?:/i.test(u) ? u : '')
+  type DyCand = { url: string; w: number; h: number; size: number; gear: string }
   const gears = (v.bit_rate || []).slice().sort((a: any, b: any) => ((b.play_addr?.height || 0) - (a.play_addr?.height || 0)) || ((b.bit_rate || 0) - (a.bit_rate || 0)))
-  const cands: Array<{ url: string; w: number; h: number; size: number; gear: string }> = []
+  const cands: DyCand[] = []
+  const dashCands: DyCand[] = []
+  const seen = new Set<string>()
+  const pushCand = (url: string, w: number, h: number, size: number, gear: string) => {
+    if (!url || seen.has(url)) return
+    seen.add(url)
+    ;(dyIsDashPart(url) ? dashCands : cands).push({ url, w, h, size, gear })
+  }
   for (const g of gears) {
     const pa = g?.play_addr
     if (!pa) continue
-    for (const u of pa.url_list || []) {
-      const s = urlOf(u)
-      if (s) cands.push({ url: s, w: pa.width || 0, h: pa.height || 0, size: pa.data_size || 0, gear: g.gear_name || '' })
-    }
+    for (const u of pa.url_list || []) pushCand(urlOf(u), pa.width || 0, pa.height || 0, pa.data_size || 0, g.gear_name || '')
     if (cands.length >= 6) break // 探测预算：最多 6 条
   }
   for (const u of v.play_addr.url_list || []) {
-    const s = urlOf(u)
-    if (s) cands.push({ url: s, w: v.play_addr.width || v.width || 0, h: v.play_addr.height || v.height || 0, size: v.play_addr.data_size || 0, gear: 'play_addr' })
+    pushCand(urlOf(u), v.play_addr.width || v.width || 0, v.play_addr.height || v.height || 0, v.play_addr.data_size || 0, 'play_addr')
   }
 
-  let chosen: any = null
-  for (const c of cands) {
-    const probe = await probeDyMedia(c.url)
-    if (probe.ok) {
-      chosen = { ...c, probe }
-      break
+  /* 逐条探测（合流优先，分轨兜底），记录失败摘要用于精确报错 */
+  const failNotes: string[] = []
+  const probeList = async (list: DyCand[]) => {
+    for (const c of list.slice(0, 8)) {
+      const probe = await probeDyMedia(c.url)
+      if (probe.ok) return { ...c, probe }
+      if (probe.note) failNotes.push(probe.note)
     }
+    return null
   }
-  if (!chosen) return fail('抖音视频流验证失败（直链不可达，多为临时限流），请稍后重试')
+  let chosen: any = await probeList(cands)
+  let silentOnly = false
+  if (!chosen) {
+    chosen = await probeList(dashCands)
+    silentOnly = !!chosen
+  }
+  if (!chosen) {
+    return fail(`抖音视频流验证失败（直链不可达，多为临时限流），请稍后重试${failNotes.length ? `［${failNotes.slice(0, 2).join('；')}］` : ''}`)
+  }
 
-  const author = detail.author || {}
   /* 尺寸/体积以实际选中档位为准（避免母版 4K 与下发 1080P 不一致的误导） */
   const w = Number(chosen.w) || 0
   const h = Number(chosen.h) || 0
   const hh = h
-  const qLabel = hh >= 2000 ? '4K' : hh >= 1400 ? '2K' : hh >= 1000 ? '1080P' : hh >= 700 ? '720P' : hh >= 480 ? '480P' : hh ? `${hh}P` : '高清'
-  const stats = detail.statistics || {}
+  const baseLabel = hh >= 2000 ? '4K' : hh >= 1400 ? '2K' : hh >= 1000 ? '1080P' : hh >= 700 ? '720P' : hh >= 480 ? '480P' : hh ? `${hh}P` : '高清'
+  const qLabel = silentOnly ? `${baseLabel}（单轨流）` : baseLabel
 
   return {
     platform: 'douyin',
+    kind: 'video',
     pageUrl: `https://www.douyin.com/video/${awemeId}`,
     title: detail.desc || '抖音视频',
-    author: {
-      name: author.nickname || '未知作者',
-      handle: author.unique_id || author.short_id || '',
-      verified: !!(author.verified || (author.custom_verify && !/^$/.test(author.custom_verify))),
-      tag: '抖音创作者',
-    },
-    stats: {
-      like: stats.digg_count || 0,
-      comment: stats.comment_count || 0,
-      share: stats.share_count || 0,
-      view: stats.play_count || 0,
-    },
+    author: authorDto,
+    stats: statsDto,
     cover: v.origin_cover?.url_list?.[0] || v.cover?.url_list?.[0] || '',
+    referer: DY_REF,
     qualityLabel: qLabel,
     duration: Math.round((Number(v.duration) || 0) / 1000),
     watermarkFree: true,
@@ -572,10 +631,19 @@ export function registerParseApi(app: FastifyInstance, options?: ParseServerDeps
     /* 媒体直链改写成同源代理流地址（播放/下载不受防盗链与 CORS 限制）；
        src / coverSrc 保留上游原始地址（服务端导入保存用） */
     if (out.ok) {
-      const referer = out.data.media?.[0]?.referer || ''
+      const referer = out.data.media?.[0]?.referer || out.data.referer || ''
       if (out.data.media?.[0]?.url) {
         out.data.media[0].src = out.data.media[0].url
         out.data.media[0].url = `/api/stream?url=${encodeURIComponent(out.data.media[0].url)}${referer ? '&ref=' + encodeURIComponent(referer) : ''}`
+      }
+      /* 图文作品：每张图片同样改写为同源代理（预览/下载不受防盗链与 CORS 限制），src 保留上游原址 */
+      if (Array.isArray(out.data.images) && out.data.images.length) {
+        const imgRef = referer || 'https://www.douyin.com/'
+        out.data.images = out.data.images.map((im: any) => ({
+          ...im,
+          src: im.url,
+          url: `/api/stream?url=${encodeURIComponent(im.url)}&ref=${encodeURIComponent(imgRef)}&disposition=inline`,
+        }))
       }
       if (out.data.cover && /^https?:/i.test(out.data.cover)) {
         out.data.coverSrc = out.data.cover

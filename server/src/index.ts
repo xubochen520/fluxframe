@@ -916,7 +916,8 @@ app.post('/api/bili/qr/poll', async (request, reply) => {
 type ParseImportJob = {
   id: string
   userId: string
-  kind: 'video' | 'cover'
+  /** video=无水印视频 / cover=视频封面 / image=图文作品的单张图片 */
+  kind: 'video' | 'cover' | 'image'
   status: 'working' | 'done' | 'error'
   progress: number | null // 0..1；null 表示不确定进度
   message: string
@@ -1117,7 +1118,7 @@ async function runParseImportJob(job: ParseImportJob, request: FastifyRequest, i
       if (!res.ok) throw new Error(`片源返回 HTTP ${res.status}`)
       const ct = res.headers.get('content-type') || ''
       if (job.kind === 'video' && !/video|octet-stream/i.test(ct)) throw new Error(`片源不是可识别的视频格式（${ct}）`)
-      if (job.kind === 'cover' && !/^image\//i.test(ct)) throw new Error('封面不是可识别的图片格式')
+      if (job.kind !== 'video' && !/^image\//i.test(ct)) throw new Error(`${job.kind === 'cover' ? '封面' : '图片'}不是可识别的图片格式（${ct}）`)
       if (!res.body) throw new Error('片源流不可用')
 
       /* 2. 流式写临时文件（背压感知 + sha256 + 真实进度上报） */
@@ -1193,7 +1194,7 @@ async function runParseImportJob(job: ParseImportJob, request: FastifyRequest, i
       }
     }
     if (!job.duplicate && tempKey) {
-      const imageMeta = job.kind === 'cover' ? await sharp(safeStoragePath(tempKey)).metadata().catch(() => null) : null
+      const imageMeta = job.kind !== 'video' ? await sharp(safeStoragePath(tempKey)).metadata().catch(() => null) : null
       const fileName = `${input.name.replace(/\.[^.]+$/, '')}${savedExt}`
       const pending: PendingUpload = {
         userId: job.userId, tempId: job.id, tempKey,
@@ -1205,8 +1206,8 @@ async function runParseImportJob(job: ParseImportJob, request: FastifyRequest, i
       const dto = await finalizePendingUpload(request, { id: job.userId }, pending, input.name, tags)
       job.items.push(dto)
       tempKey = ''
-      /* 「视频提取」入库审计：视频 → 提取视频，封面 → 提取封面（高清档位标注在目标上） */
-      await recordAudit(request, job.kind === 'video' ? '提取视频' : '提取封面', job.userId, `${dto.name}${job.highLabel ? `（${job.highLabel}）` : ''}`)
+      /* 「视频提取」入库审计：视频 → 提取视频，图文图片 → 提取图片，封面 → 提取封面（高清档位标注在目标上） */
+      await recordAudit(request, job.kind === 'video' ? '提取视频' : job.kind === 'image' ? '提取图片' : '提取封面', job.userId, `${dto.name}${job.highLabel ? `（${job.highLabel}）` : ''}`)
     }
     job.status = 'done'
     job.progress = 1
@@ -1215,7 +1216,7 @@ async function runParseImportJob(job: ParseImportJob, request: FastifyRequest, i
     } else if (job.highLabel) {
       job.message = `已保存 ${job.highLabel} 高清视频到图片库 ✓${job.highNote ? `（${job.highNote}）` : ''}`
     } else {
-      job.message = `已保存 ${job.items.length} 个文件到图片库 ✓${job.highNote ? `（${job.highNote}）` : ''}`
+      job.message = `已保存 ${job.items.length} ${job.kind === 'image' ? '张图片' : '个文件'}到图片库 ✓${job.highNote ? `（${job.highNote}）` : ''}`
     }
   } catch (e: any) {
     if (job.cancel) {
@@ -1237,7 +1238,7 @@ app.post('/api/parse/import', async (request, reply) => {
     url: z.string().url(),
     ref: z.string().max(500).optional(),
     name: z.string().trim().min(1).max(200),
-    kind: z.enum(['video', 'cover']),
+    kind: z.enum(['video', 'cover', 'image']),
     platTag: z.string().trim().max(40).optional(),
     /* B站高清 DASH 双流（可选）：保存时由服务端下载并用 ffmpeg 合并 */
     high: z.object({
