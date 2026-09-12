@@ -122,3 +122,55 @@ model SystemSetting {
   value     Json
   updatedAt DateTime @updatedAt
 }
+
+/// DeepSeek 记账：本地保存的 API KEY（余额取自 /user/balance）
+model DeepseekKey {
+  id              String    @id @default(cuid())
+  name            String
+  apiKey          String
+  /// 账户备注：填写相同名称的多个 KEY 视为同一 DeepSeek 账户（共用一份余额，只记一次账）
+  accountName     String    @default("")
+  /// 绑定的平台 KEY（platform.deepseek.com 用量接口返回的 tracking_id）
+  platformKeyId   String    @default("")
+  enabled         Boolean   @default(true)
+  currency        String?
+  balance         Float?
+  grantedBalance  Float?
+  toppedUpBalance Float?
+  isAvailable     Boolean?
+  lastObservedAt  DateTime?
+  lastError       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  @@index([accountName])
+}
+
+/// DeepSeek 每日用量：记账（余额差值）与平台真实用量（金额 + Tokens）都落在这里
+model DeepseekUsageDaily {
+  id              String   @id @default(cuid())
+  /// 本地日期 YYYY-MM-DD（服务器时区）
+  day             String
+  /// 记账行的所属 KEY（余额差值记账）
+  keyId           String   @default("")
+  /// 平台行的所属平台 KEY（tracking_id，按 KEY 维度统计）
+  platformKeyId   String   @default("")
+  platformKeyName String   @default("")
+  currency        String   @default("CNY")
+  /// 已用金额：记账行=余额差值累计，平台行=平台真实费用
+  amount          Float    @default(0)
+  /// 当日充值（记账行：余额上升的差值）
+  refill          Float    @default(0)
+  tokensHit       Float    @default(0)
+  tokensMiss      Float    @default(0)
+  tokensOut       Float    @default(0)
+  requests        Float    @default(0)
+  /// 按模型拆分的用量 {model: {tokens, cost}}
+  models          Json?
+  /// ledger=余额差值记账 / platform=平台用量接口
+  source          String   @default("ledger")
+  updatedAt       DateTime @updatedAt
+  @@unique([day, keyId, platformKeyId])
+  @@index([day])
+  @@index([keyId])
+  @@index([platformKeyId])
+}

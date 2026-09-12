@@ -48,3 +48,107 @@ export interface AuditLog {
   time: string
   tone: 'blue' | 'violet' | 'orange' | 'red' | 'green'
 }
+
+/* ---- DeepSeek 余额 / 用量记账（总览横向长条） ---- */
+export interface DeepseekPlatformUsage {
+  today: number
+  month: number
+  tokensToday: number
+  tokensMonth: number
+  requestsMonth: number
+  cacheHitRate: number | null
+  models: Record<string, { tokens: number; cost: number }>
+}
+
+export interface DeepseekKeyItem {
+  id: string
+  name: string
+  accountName: string
+  accountNameResolved: string
+  masked: string
+  enabled: boolean
+  platformKeyId: string
+  platformKeyName: string
+  currency: string | null
+  balance: number | null
+  grantedBalance: number | null
+  toppedUpBalance: number | null
+  isAvailable: boolean | null
+  isAccountOwner: boolean
+  lastObservedAt: string | null
+  lastError: string | null
+  todayAmount: number | null
+  monthAmount: number | null
+  platform: DeepseekPlatformUsage | null
+}
+
+export interface DeepseekAccountItem {
+  name: string
+  keyIds: string[]
+  currency: string
+  balance: number
+  granted: number
+  toppedUp: number
+  today: number
+  month: number
+  isAvailable: boolean
+}
+
+export interface DeepseekChartPoint {
+  day: string
+  amount: number
+  tokens: number
+  source: string
+}
+
+export interface DeepseekSummary {
+  configured: boolean
+  enabled: boolean
+  refreshSeconds: number
+  updatedAt: string | null
+  refreshing: boolean
+  error: string
+  platform: {
+    configured: boolean
+    perKey: boolean
+    syncedAt: string | null
+    error: string
+    hasData: boolean
+    unboundCount: number
+    keys: Array<{
+      id: string
+      name: string
+      today: number
+      month: number
+      tokensToday: number
+      tokensMonth: number
+      requestsMonth: number
+      cacheHitRate: number | null
+      models: Record<string, { tokens: number; cost: number }>
+      boundKeyId: string
+    }>
+  }
+  stats: {
+    balance: number
+    granted: number
+    toppedUp: number
+    currency: string
+    accountCount: number
+    today: number
+    month: number
+    ledgerToday: number
+    ledgerMonth: number
+    monthRefill: number
+    source: 'ledger' | 'platform'
+    tokensToday: number
+    tokensMonth: number
+    cacheHitRate: number | null
+    requestsMonth: number
+    keyCount: number
+  }
+  accounts: DeepseekAccountItem[]
+  mergeHints: Array<{ keyIds: string[]; names: string[]; balance: number; currency: string }>
+  keys: DeepseekKeyItem[]
+  chart: DeepseekChartPoint[]
+  balance: { ok: boolean; message: string }
+}

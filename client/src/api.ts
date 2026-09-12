@@ -1,4 +1,4 @@
-import type { AuditLog, ImageItem, PersonDetail, TagItem } from './types'
+import type { AuditLog, DeepseekSummary, ImageItem, PersonDetail, TagItem } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -92,4 +92,12 @@ export const api = {
   ffmpegDownload: () => request<{ ok: boolean }>('/api/ffmpeg/download', { method: 'POST', body: '{}' }),
   biliQrCreate: () => request<BiliQrCreatePayload>('/api/bili/qr/create', { method: 'POST', body: '{}' }),
   biliQrPoll: (qrcodeKey: string) => request<BiliQrPollPayload>('/api/bili/qr/poll', { method: 'POST', body: JSON.stringify({ qrcodeKey }) }),
+  /* ---- DeepSeek 余额 / 用量记账 ---- */
+  deepseekSummary: () => request<DeepseekSummary>('/api/deepseek/summary'),
+  deepseekRefresh: () => request<DeepseekSummary>('/api/deepseek/refresh', { method: 'POST', body: '{}' }),
+  deepseekAddKey: (payload: { name: string; apiKey: string; accountName?: string; enabled?: boolean }) => request<{ probe: { ok: boolean; error?: string; currency?: string; total?: number }; summary: DeepseekSummary }>('/api/deepseek/keys', { method: 'POST', body: JSON.stringify(payload) }),
+  deepseekUpdateKey: (id: string, patch: { name?: string; apiKey?: string; accountName?: string; platformKeyId?: string; enabled?: boolean }) => request<DeepseekSummary>(`/api/deepseek/keys/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deepseekDeleteKey: (id: string) => request<DeepseekSummary>(`/api/deepseek/keys/${id}`, { method: 'DELETE' }),
+  deepseekMerge: (payload: { keyIds: string[]; name?: string }) => request<DeepseekSummary>('/api/deepseek/merge', { method: 'POST', body: JSON.stringify(payload) }),
+  deepseekSaveConfig: (patch: { enabled?: boolean; refreshSeconds?: number; platformToken?: string }) => request<DeepseekSummary>('/api/deepseek/config', { method: 'PUT', body: JSON.stringify(patch) }),
 }

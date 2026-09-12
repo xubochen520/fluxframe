@@ -17,6 +17,7 @@ import { downloadAiStack, getAiStatus, startAiServer, stopAiServer } from './ai-
 import { registerParseApi, pickUpstreamHeaders, type ParseServerDeps } from './parse-server.js'
 import { locateFfmpeg, downloadFfmpeg, getFfmpegStatus } from './ffmpeg-manager.js'
 import { biliQrCreate, biliQrPoll, extractSessdata } from './bili-login.js'
+import { createDeepseekService, maskKey } from './deepseek.js'
 
 const prisma = new PrismaClient()
 const app = Fastify({
@@ -34,6 +35,8 @@ let storageDir = path.resolve(process.env.STORAGE_DIR || './storage')
 const sessionCookie = 'fluxframe_session'
 type PendingUpload = { userId: string; tempId: string; tempKey: string; fileName: string; mimeType: string; size: number; width?: number; height?: number; sha256: string; createdAt: number }
 const pendingUploads = new Map<string, PendingUpload>()
+/** DeepSeek 余额/用量记账服务（总览横向长条，后台按间隔轮询余额并落库） */
+const deepseek = createDeepseekService(prisma, app.log)
 
 const defaultSettings = {
   siteName: 'fluxframe',
@@ -841,6 +844,9 @@ app.get('/api/settings', async (request, reply) => {
   const rows = await prisma.systemSetting.findMany()
   const settings: Record<string, unknown> = { ...defaultSettings, ...Object.fromEntries(rows.map((row) => [row.key, row.value])), fluidSpeed: fixedFluidSpeed }
   delete settings.aiApiKey
+  /* DeepSeek 平台令牌（网页会话）不回显明文，只给状态 */
+  const deepseekConfig = await deepseek.readConfig()
+  delete settings.deepseekPlatformToken
   /* B站 Cookie 不回显明文，只给状态 */
   const hasBiliSession = typeof settings.biliSessdata === 'string' && String(settings.biliSessdata).trim().length > 0
   delete settings.biliSessdata
@@ -850,6 +856,7 @@ app.get('/api/settings', async (request, reply) => {
   return {
     ...settings,
     aiEnabled: aiConfig.enabled, aiBaseUrl: aiConfig.baseUrl, aiModel: aiConfig.model, aiConfigured: Boolean(aiConfig.apiKey),
+    deepseekEnabled: deepseekConfig.enabled, deepseekRefreshSeconds: deepseekConfig.refreshSeconds, deepseekPlatformConfigured: Boolean(deepseekConfig.platformToken),
     biliSessdataConfigured: hasBiliSession || Boolean(process.env.BILI_SESSDATA),
     ffmpeg: {
       found: Boolean(ffmpeg),
@@ -927,6 +934,94 @@ app.post('/api/ai/stop', async (request, reply) => {
   const result = await stopAiServer()
   await recordAudit(request, 'AI 引擎停止', user.id, 'llama.cpp')
   return result
+})
+
+// ---------- DeepSeek 余额 / 用量记账（总览横向长条） ----------
+app.get('/api/deepseek/summary', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  return await deepseek.getSummary()
+})
+app.post('/api/deepseek/refresh', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const result = await deepseek.refreshAll('manual')
+  const summary = await deepseek.getSummary()
+  return { ...summary, refresh: result }
+})
+app.post('/api/deepseek/keys', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const body = z.object({ name: z.string().trim().min(1).max(40), apiKey: z.string().trim().min(8).max(200), accountName: z.string().trim().max(40).default(''), enabled: z.boolean().default(true) }).parse(request.body)
+  const probe = await deepseek.probe(body.apiKey)
+  const key = await prisma.deepseekKey.create({ data: { name: body.name, apiKey: body.apiKey, accountName: body.accountName, enabled: body.enabled } })
+  await recordAudit(request, '添加 DeepSeek 密钥', user.id, `${body.name} · ${maskKey(body.apiKey)}${probe.ok ? ` · 余额 ${probe.currency} ${probe.total}` : ''}`)
+  const summary = await deepseek.refreshAll('add-key')
+  return { key: { id: key.id, name: key.name }, probe, summary: await deepseek.getSummary() }
+})
+app.patch('/api/deepseek/keys/:id', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const id = (request.params as { id: string }).id
+  const body = z.object({
+    name: z.string().trim().min(1).max(40).optional(),
+    apiKey: z.string().trim().min(8).max(200).optional(),
+    accountName: z.string().trim().max(40).optional(),
+    platformKeyId: z.string().trim().max(120).optional(),
+    enabled: z.boolean().optional(),
+  }).parse(request.body)
+  const existing = await prisma.deepseekKey.findUnique({ where: { id } })
+  if (!existing) return reply.code(404).send({ message: 'KEY 不存在' })
+  const data: Prisma.DeepseekKeyUpdateInput = { ...body }
+  if (body.apiKey) Object.assign(data, { balance: null, grantedBalance: null, toppedUpBalance: null, currency: null, lastError: null, lastObservedAt: null })
+  await prisma.deepseekKey.update({ where: { id }, data })
+  await recordAudit(request, '修改 DeepSeek 密钥', user.id, `${body.name || existing.name}${body.enabled !== undefined ? ` · ${body.enabled ? '启用' : '停用'}` : ''}${body.apiKey ? ' · 已更换 API KEY' : ''}`)
+  await deepseek.refreshAll('update-key')
+  return await deepseek.getSummary()
+})
+app.delete('/api/deepseek/keys/:id', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const id = (request.params as { id: string }).id
+  const existing = await prisma.deepseekKey.findUnique({ where: { id } })
+  if (!existing) return reply.code(404).send({ message: 'KEY 不存在' })
+  await prisma.deepseekKey.delete({ where: { id } })
+  await prisma.deepseekUsageDaily.deleteMany({ where: { keyId: id } })
+  await recordAudit(request, '删除 DeepSeek 密钥', user.id, `${existing.name} · ${maskKey(existing.apiKey)}`)
+  return await deepseek.getSummary()
+})
+app.post('/api/deepseek/merge', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const body = z.object({ keyIds: z.array(z.string().min(1)).min(2).max(20), name: z.string().trim().max(40).optional() }).parse(request.body)
+  const keys = await prisma.deepseekKey.findMany({ where: { id: { in: body.keyIds } } })
+  if (keys.length < 2) return reply.code(400).send({ message: '至少需要两个 KEY' })
+  const result = await deepseek.mergeAccounts(body.keyIds, body.name || '')
+  await recordAudit(request, '合并 DeepSeek 账户', user.id, `${keys.map((key) => key.name).join(' + ')} → ${result.label}`)
+  await deepseek.refreshAll('merge')
+  return await deepseek.getSummary()
+})
+app.put('/api/deepseek/config', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const body = z.object({
+    enabled: z.boolean().optional(),
+    refreshSeconds: z.number().int().min(30).max(3600).optional(),
+    /* 平台会话令牌：留空字符串 = 清除；支持整段「Bearer xxx」粘贴 */
+    platformToken: z.string().max(4000).optional(),
+  }).parse(request.body)
+  const patch: { enabled?: boolean; refreshSeconds?: number; platformToken?: string } = {}
+  if (body.enabled !== undefined) patch.enabled = body.enabled
+  if (body.refreshSeconds !== undefined) patch.refreshSeconds = body.refreshSeconds
+  if (body.platformToken !== undefined) patch.platformToken = body.platformToken.replace(/^Bearer\s+/i, '').trim()
+  const config = await deepseek.saveConfig(patch)
+  await recordAudit(request, '修改 DeepSeek 记账设置', user.id, [
+    patch.enabled !== undefined ? `自动记账${patch.enabled ? '开启' : '关闭'}` : '',
+    patch.refreshSeconds !== undefined ? `刷新间隔 ${patch.refreshSeconds}s` : '',
+    patch.platformToken !== undefined ? (patch.platformToken ? '已设置平台令牌' : '已清除平台令牌') : '',
+  ].filter(Boolean).join(' · '))
+  if (patch.platformToken) await deepseek.refreshAll('config')
+  return await deepseek.getSummary()
 })
 
 // ---------- B站扫码登录（官方 passport 二维码，成功后自动保存 SESSDATA） ----------
@@ -1368,6 +1463,8 @@ async function start() {
     app.log.warn('client/dist not found — skip static hosting (dev mode uses Vite on 5173)')
   }
   await app.listen({ port: runtimePort, host: process.env.HOST || '0.0.0.0' })
+  /* DeepSeek 记账：启动后台轮询（余额差值记账 + 可选的平台用量同步） */
+  deepseek.start()
   // AI 已启用且本机文件就绪时，自动拉起 llama.cpp 服务（幂等：已在运行则直接复用）
   if ((await getAiConfig()).enabled) {
     void startAiServer().then((result) => { if (!result.ok) app.log.warn(`AI 服务自动启动失败：${result.error}`) }).catch((error) => app.log.warn(`AI 服务自动启动异常：${error}`))
