@@ -1,5 +1,7 @@
 package com.fluxframe.app
 
+import android.app.DownloadManager
+import com.fluxframe.app.core.download.MediaDownloader
 import com.fluxframe.app.core.net.ServerEndpoint
 import com.fluxframe.app.core.prefs.AppThemeStyle
 import com.fluxframe.app.core.util.formatBytes
@@ -150,6 +152,20 @@ class PureLogicTest {
         assertTrue(ImageItem(id = "3", name = "t", deletedAt = "2025-01-01T00:00:00.000Z").inTrash)
     }
 
+    @Test
+    fun `download file names keep extension and add collision suffix safely`() {
+        val item = ImageItem(id = "1", name = "封面:最终版", mimeType = "image/jpeg")
+        assertEquals("封面_最终版.jpg", MediaDownloader.buildFileName(item))
+        assertEquals("封面_最终版 (2).jpg", MediaDownloader.bumpFileName("封面_最终版.jpg", 2))
+        assertEquals("无扩展名 (1)", MediaDownloader.bumpFileName("无扩展名", 1))
+    }
+
+    @Test
+    fun `download failure reasons are readable`() {
+        assertEquals("手机存储空间不足", MediaDownloader.failureMessage(DownloadManager.ERROR_INSUFFICIENT_SPACE))
+        assertEquals("服务器返回 HTTP 401", MediaDownloader.failureMessage(401))
+    }
+
     /* ---------------------------- 日志分组 ---------------------------- */
 
     @Test
@@ -248,10 +264,12 @@ class PureLogicTest {
         assertEquals(AppThemeStyle.LIQUID_GLASS, AppThemeStyle.fromKey("LIQUID_GLASS"))
         assertEquals(AppThemeStyle.ACRYLIC, AppThemeStyle.fromKey("ACRYLIC"))
         assertEquals(AppThemeStyle.DEFAULT, AppThemeStyle.fromKey("DEFAULT"))
+        assertEquals(AppThemeStyle.FROSTED, AppThemeStyle.fromKey("FROSTED"))
+        assertEquals(AppThemeStyle.NEON, AppThemeStyle.fromKey("NEON"))
         // 未知/空值回落到液态玻璃（默认观感）
         assertEquals(AppThemeStyle.LIQUID_GLASS, AppThemeStyle.fromKey(null))
         assertEquals(AppThemeStyle.LIQUID_GLASS, AppThemeStyle.fromKey("nonsense"))
-        assertEquals(3, AppThemeStyle.entries.size)
+        assertEquals(5, AppThemeStyle.entries.size)
     }
 
     /* ---------------------------- 排序选项 ---------------------------- */

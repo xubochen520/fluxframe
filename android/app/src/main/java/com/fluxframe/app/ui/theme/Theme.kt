@@ -96,11 +96,20 @@ fun FluxFrameTheme(
     animationsEnabled: Boolean = true,
     noiseEnabled: Boolean = true,
     fluidColors: List<Color> = DefaultFluidColors,
+    backgroundImageUri: String? = null,
+    backgroundImageOpacity: Float = 0.72f,
     content: @Composable () -> Unit,
 ) {
-    val colorScheme = if (darkTheme) FluxDarkScheme else FluxLightScheme
     val tokens = remember(style, darkTheme, noiseEnabled) { glassTokensFor(style, darkTheme, noiseEnabled) }
     val colors = remember(fluidColors) { fluidColors.ifEmpty { DefaultFluidColors } }
+    val colorScheme = remember(darkTheme, colors) {
+        val base = if (darkTheme) FluxDarkScheme else FluxLightScheme
+        base.copy(
+            primary = colors.getOrElse(0) { base.primary },
+            secondary = colors.getOrElse(1) { base.secondary },
+            tertiary = colors.getOrElse(2) { base.tertiary },
+        )
+    }
 
     CompositionLocalProvider(
         LocalGlassTokens provides tokens,
@@ -117,6 +126,8 @@ fun FluxFrameTheme(
                 colors = colors,
                 darkTheme = darkTheme,
                 animationsEnabled = animationsEnabled,
+                backgroundImageUri = backgroundImageUri,
+                backgroundImageOpacity = backgroundImageOpacity,
                 content = content,
             )
         }

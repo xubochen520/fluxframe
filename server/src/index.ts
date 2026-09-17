@@ -43,6 +43,15 @@ const cookieSecure = process.env.COOKIE_SECURE !== undefined
   : process.env.NODE_ENV === 'production'
 type PendingUpload = { userId: string; tempId: string; tempKey: string; fileName: string; mimeType: string; size: number; width?: number; height?: number; sha256: string; createdAt: number }
 const pendingUploads = new Map<string, PendingUpload>()
+type DownloadPrincipal = { id: string; username: string; role: 'ADMIN' | 'USER'; r18Mode: boolean }
+type DownloadGrant = { user: DownloadPrincipal; expiresAt: number }
+/**
+ * Android 的 DownloadManager 在部分 ColorOS 版本上会丢弃自定义 Cookie 头，导致已经
+ * 登录的下载请求仍返回 401。这里签发只可用于下载接口的短期随机令牌；令牌只存哈希、
+ * 不具备调用其他 API 的权限，也不会暴露 30 天有效的主会话。
+ */
+const downloadGrants = new Map<string, DownloadGrant>()
+const downloadGrantTtlMs = 2 * 60 * 60 * 1000
 /** DeepSeek 余额/用量记账服务（总览横向长条，后台按间隔轮询余额并落库） */
 const deepseek = createDeepseekService(prisma, app.log)
 
@@ -265,6 +274,36 @@ async function requireUser(request: AuthenticatedRequest, reply: FastifyReply) {
   request.user = user
   return user
 }
+function cleanupDownloadGrants(now = Date.now()) {
+  for (const [tokenHash, grant] of downloadGrants) {
+    if (grant.expiresAt <= now) downloadGrants.delete(tokenHash)
+  }
+}
+async function requireDownloadUser(request: AuthenticatedRequest, reply: FastifyReply) {
+  const sessionUser = await currentUser(request)
+  if (sessionUser) {
+    request.user = sessionUser
+    return sessionUser
+  }
+  const queryToken = typeof (request.query as { token?: unknown } | undefined)?.token === 'string'
+    ? String((request.query as { token: string }).token)
+    : ''
+  // 兼容历史 APK：它会把 /api/download/session 返回值装进 fluxframe_session Cookie。
+  // 新版使用 query token；两者都只在本下载接口校验，不会取得普通 API 会话权限。
+  const rawToken = queryToken || request.cookies[sessionCookie] || ''
+  cleanupDownloadGrants()
+  if (!/^[a-f0-9]{64}$/.test(rawToken)) {
+    await reply.code(401).send({ message: '下载授权已失效，请重新下载' })
+    return null
+  }
+  const grant = downloadGrants.get(hashToken(rawToken))
+  if (!grant || grant.expiresAt <= Date.now()) {
+    await reply.code(401).send({ message: '下载授权已失效，请重新下载' })
+    return null
+  }
+  request.user = grant.user
+  return grant.user
+}
 async function requireAdmin(request: AuthenticatedRequest, reply: FastifyReply) {
   const user = await requireUser(request, reply)
   if (!user) return null
@@ -374,13 +413,18 @@ app.get('/api/me', async (request, reply) => {
   return { id: user.id, username: user.username, role: user.role, r18Mode: user.r18Mode }
 })
 
-/* APK 原生下载桥专用：系统 DownloadManager 不带 WebView Cookie，下载前由本页 JS
-   以已登录 Cookie 换取一次会话令牌，再以明文 Cookie 头交给系统下载器直连内网拉取。
-   令牌不出本机、不进 URL，仅在同一会话内使用。 */
+/* APK 原生下载桥专用：用已登录会话换取短期、仅限下载接口的随机授权。
+   新版 APK 放在 URL 查询参数中，历史 APK 放在 Cookie 中；均不能调用其他 API。 */
 app.get('/api/download/session', async (request, reply) => {
   const user = await requireUser(request as AuthenticatedRequest, reply)
   if (!user) return
-  return { token: request.cookies[sessionCookie] || '' }
+  cleanupDownloadGrants()
+  const token = randomBytes(32).toString('hex')
+  downloadGrants.set(hashToken(token), {
+    user: { id: user.id, username: user.username, role: user.role, r18Mode: user.r18Mode },
+    expiresAt: Date.now() + downloadGrantTtlMs,
+  })
+  return { token }
 })
 
 app.patch('/api/me/r18-mode', async (request, reply) => {
@@ -647,7 +691,7 @@ app.get('/api/images/:id/variant/:width', async (request, reply) => sendImageFil
 /* 下载原文件（浏览器 / APK 原生下载器共用）：带附件响应头并记「下载图片 / 下载视频」审计。
    与 /file（播放/内联展示）分开，避免把看图、看视频的请求误记为下载。 */
 app.get('/api/images/:id/download', async (request, reply) => {
-  const user = await requireUser(request as AuthenticatedRequest, reply)
+  const user = await requireDownloadUser(request as AuthenticatedRequest, reply)
   if (!user) return
   const image = await imageWithRelations((request.params as { id: string }).id)
   if (!image || image.deletedAt) return reply.code(404).send({ message: '图片不存在' })
@@ -662,11 +706,26 @@ app.get('/api/images/:id/download', async (request, reply) => {
   const base = image.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/^[.\s]+|[.\s]+$/g, '') || '媒体文件'
   const filename = `${base}${path.extname(image.originalKey).toLowerCase()}`
   await recordAudit(request, String(image.mimeType).startsWith('video/') ? '下载视频' : '下载图片', user.id, filename)
-  return reply.type(image.mimeType).headers({
-    'Content-Length': fileInfo.size,
+  const rangeHeader = request.headers.range
+  const downloadHeaders = {
+    'Accept-Ranges': 'bytes',
     'Content-Disposition': `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(filename)}`,
     'Cache-Control': 'private, max-age=3600',
-  }).send(createReadStream(filePath))
+  }
+  if (typeof rangeHeader === 'string') {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader)
+    if (!match) return reply.code(416).header('Content-Range', `bytes */${fileInfo.size}`).send()
+    const start = match[1] ? Number(match[1]) : Math.max(0, fileInfo.size - Number(match[2] || 0))
+    const requestedEnd = match[2] ? Number(match[2]) : fileInfo.size - 1
+    const end = Math.min(requestedEnd, fileInfo.size - 1)
+    if (start < 0 || start > end || start >= fileInfo.size) return reply.code(416).header('Content-Range', `bytes */${fileInfo.size}`).send()
+    return reply.code(206).type(image.mimeType).headers({
+      ...downloadHeaders,
+      'Content-Range': `bytes ${start}-${end}/${fileInfo.size}`,
+      'Content-Length': end - start + 1,
+    }).send(createReadStream(filePath, { start, end }))
+  }
+  return reply.type(image.mimeType).headers({ ...downloadHeaders, 'Content-Length': fileInfo.size }).send(createReadStream(filePath))
 })
 
 app.delete('/api/images/:id', async (request, reply) => {

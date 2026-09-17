@@ -5,8 +5,11 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.net.Uri
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -231,7 +234,9 @@ object FluidCloudNotifier {
     /** 低版本 / 提升不可用时的标准进度通知 */
     private fun buildCompatOngoing(context: Context, state: CapsuleState): Notification {
         val percent = state.progress?.let { (it.coerceIn(0f, 1f) * 100).toInt() }
-        val builder = NotificationCompat.Builder(context, CHANNEL_ONGOING)
+        // 始终使用实况专用渠道。ColorOS 15 等厂商系统也会按渠道重要性决定
+        // 是否把普通 ongoing 通知收进胶囊；旧的 LOW 渠道会直接失去资格。
+        val builder = NotificationCompat.Builder(context, CHANNEL_LIVE)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(state.title.ifBlank { "fluxframe 传输中" })
             .setContentText(state.subtitle.ifBlank { "正在处理…" })
@@ -239,7 +244,7 @@ object FluidCloudNotifier {
             .setOngoing(true)
             .setSilent(true)
             .setShowWhen(false)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
@@ -356,4 +361,26 @@ object FluidCloudNotifier {
         return ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
     }
+
+    /** 打开系统的“实况更新”开关；低版本或 ROM 不支持时退回应用通知设置。 */
+    fun openLiveUpdateSettings(context: Context): Boolean {
+        val packageUri = Uri.parse("package:${context.packageName}")
+        val liveIntent = Intent(ACTION_MANAGE_APP_PROMOTED_NOTIFICATIONS).apply {
+            data = packageUri
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val fallback = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+            putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val chosen = if (Build.VERSION.SDK_INT >= 36 && liveIntent.resolveActivity(context.packageManager) != null) {
+            liveIntent
+        } else {
+            fallback
+        }
+        return runCatching { context.startActivity(chosen); true }.getOrDefault(false)
+    }
+
+    private const val ACTION_MANAGE_APP_PROMOTED_NOTIFICATIONS =
+        "android.settings.MANAGE_APP_PROMOTED_NOTIFICATIONS"
 }

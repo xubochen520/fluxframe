@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Image
@@ -338,6 +339,7 @@ fun MediaCard(
     views: Int? = null,
     r18: Boolean = false,
     tags: List<String> = emptyList(),
+    selected: Boolean = false,
     onClick: () -> Unit = {},
     onLongClick: (() -> Unit)? = null,
     /** 视频封面：提供取帧所需的上下文（地址 + 缓存键），为空则退回渐变占位 */
@@ -474,6 +476,26 @@ fun MediaCard(
                         color = Color.White.copy(alpha = 0.78f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.22f))
+                        .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(tokens.cornerRadius)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.CheckCircle,
+                        contentDescription = "已选择",
+                        tint = Color.White,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary),
                     )
                 }
             }

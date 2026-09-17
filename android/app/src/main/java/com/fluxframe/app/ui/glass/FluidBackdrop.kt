@@ -15,16 +15,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.toSize
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import coil.compose.AsyncImage
 import com.fluxframe.app.ui.theme.DarkBackground
 import com.fluxframe.app.ui.theme.DefaultFluidColors
 import com.fluxframe.app.ui.theme.LightBackground
@@ -58,6 +61,8 @@ fun FluidBackgroundHost(
     colors: List<Color>,
     darkTheme: Boolean,
     animationsEnabled: Boolean,
+    backgroundImageUri: String? = null,
+    backgroundImageOpacity: Float = 0.72f,
     content: @Composable () -> Unit,
 ) {
     val phase = remember { mutableFloatStateOf(STATIC_FLUID_PHASE) }
@@ -93,6 +98,24 @@ fun FluidBackgroundHost(
             LocalFluidCanvasSize provides canvasSize,
         ) {
             FluidBackdrop(colors = palette, modifier = Modifier.matchParentSize())
+            if (!backgroundImageUri.isNullOrBlank()) {
+                AsyncImage(
+                    model = backgroundImageUri,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .matchParentSize()
+                        .graphicsLayer { alpha = backgroundImageOpacity.coerceIn(0.2f, 1f) },
+                )
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(
+                            if (darkTheme) Color.Black.copy(alpha = 0.26f)
+                            else Color.White.copy(alpha = 0.16f),
+                        ),
+                )
+            }
             content()
         }
     }

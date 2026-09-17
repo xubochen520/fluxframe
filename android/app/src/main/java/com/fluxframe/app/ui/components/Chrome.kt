@@ -11,6 +11,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,6 +48,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -164,12 +169,41 @@ fun FluxBottomBar(
     items: List<BottomNavItem>,
     selectedKey: String,
     onSelect: (String) -> Unit,
+    /** -1 = 去左侧页面，+1 = 去右侧页面 */
+    onSwipe: (Int) -> Unit = {},
+    hapticsEnabled: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val dark = LocalDarkTheme.current
+    val haptics = LocalHapticFeedback.current
+    var dragDistance by remember { mutableStateOf(0f) }
+    val swipeThreshold = with(LocalDensity.current) { 44.dp.toPx() }
     GlassSurface(
         modifier = modifier
             .fillMaxWidth()
+            .pointerInput(onSwipe, swipeThreshold) {
+                detectHorizontalDragGestures(
+                    onDragStart = { dragDistance = 0f },
+                    onHorizontalDrag = { change, amount ->
+                        change.consume()
+                        dragDistance += amount
+                    },
+                    onDragCancel = { dragDistance = 0f },
+                    onDragEnd = {
+                        when {
+                            dragDistance <= -swipeThreshold -> {
+                                if (hapticsEnabled) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onSwipe(1)
+                            }
+                            dragDistance >= swipeThreshold -> {
+                                if (hapticsEnabled) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onSwipe(-1)
+                            }
+                        }
+                        dragDistance = 0f
+                    },
+                )
+            }
             .padding(horizontal = 14.dp, vertical = 8.dp),
         shape = RoundedCornerShape(26.dp),
         backdrop = true,
@@ -198,7 +232,10 @@ fun FluxBottomBar(
                                 Color.Transparent
                             },
                         )
-                        .clickable { onSelect(item.key) }
+                        .clickable {
+                            if (hapticsEnabled) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onSelect(item.key)
+                        }
                         .padding(horizontal = if (selected) 14.dp else 12.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -728,4 +765,3 @@ fun ClickableRow(
         )
     }
 }
-

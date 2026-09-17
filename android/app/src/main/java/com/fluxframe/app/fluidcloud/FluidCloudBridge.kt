@@ -169,6 +169,21 @@ class FluidCloudBridge(
         _capsule.value = null
     }
 
+    /** 设置页的一键自检：真实走前台服务、通知与厂商通道，而不是只弹应用内动画。 */
+    fun runTest() {
+        begin(CapsuleKind.SYNC, "流体云测试", "正在验证实况进度", withForegroundService = true)
+        scope.launch {
+            delay(700)
+            update(0.35f, "正在提交实况通知")
+            delay(700)
+            update(0.72f, "正在验证状态栏胶囊")
+            delay(900)
+            finish("测试完成，请检查状态栏 / 流体云", CapsuleTone.SUCCESS)
+        }
+    }
+
+    fun openSystemSettings(): Boolean = FluidCloudNotifier.openLiveUpdateSettings(context)
+
     private fun publishAll(state: CapsuleState) {
         systemProvider.publish(state)
         oppoProvider.publish(state)

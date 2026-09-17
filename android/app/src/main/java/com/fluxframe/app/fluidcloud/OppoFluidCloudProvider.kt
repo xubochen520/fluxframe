@@ -54,6 +54,7 @@ class OppoFluidCloudProvider(private val context: Context) : FluidCloudProvider 
 
     private var serviceSwitchOn: Boolean? = null
     private var metaFluidCloudSupport: Boolean? = null
+    private var providerDetected: Boolean = false
 
     /** 从系统 metaData 自动读到的服务号；读不到就是空串 */
     private var serviceId: String = ""
@@ -74,6 +75,7 @@ class OppoFluidCloudProvider(private val context: Context) : FluidCloudProvider 
             return
         }
         readUmsMetadata()
+        providerDetected = detectIntentProvider()
         serviceSwitchOn = queryServiceSwitch()
         diagnostic = buildString {
             append("ColorOS 流体云：系统能力=")
@@ -93,6 +95,7 @@ class OppoFluidCloudProvider(private val context: Context) : FluidCloudProvider 
                 },
             )
             append(if (serviceId.isNotBlank()) "；已自动获取服务号" else "；将由系统按默认规则处理")
+            append(if (providerDetected) "；意图 Provider 可达" else "；未发现可投递的意图 Provider")
         }
         Log.i(TAG, diagnostic)
     }
@@ -133,8 +136,18 @@ class OppoFluidCloudProvider(private val context: Context) : FluidCloudProvider 
         }
     }.getOrNull()
 
+    private fun detectIntentProvider(): Boolean = AUTHORITIES.any { authority ->
+        runCatching {
+            val client = context.contentResolver.acquireUnstableContentProviderClient(
+                Uri.parse("content://$authority"),
+            ) ?: return@runCatching false
+            client.close()
+            true
+        }.getOrDefault(false)
+    }
+
     override fun isAvailable(): Boolean =
-        isOppoFamily() && serviceSwitchOn != false && metaFluidCloudSupport != false
+        isOppoFamily() && providerDetected && serviceSwitchOn != false && metaFluidCloudSupport != false
 
     /* ============================ 状态下发 ============================ */
 

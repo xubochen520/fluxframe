@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.DarkMode
@@ -39,6 +41,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,6 +52,9 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.fluxframe.app.data.store.MediaKind
 import com.fluxframe.app.data.store.UploadPhase
 import com.fluxframe.app.ui.components.BottomNavItem
@@ -70,6 +76,7 @@ import com.fluxframe.app.ui.screens.UploadReviewOverlay
 import com.fluxframe.app.ui.screens.ViewerOverlay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.withContext
 
 /** 应用内的路由。用一个轻量返回栈而不是 Navigation Compose：
@@ -89,6 +96,14 @@ enum class AppRoute(val title: String) {
 
 /** 悬浮底栏（含外边距）大约占这么高，浮动层要避开它 */
 private val BOTTOM_BAR_RESERVE = 88.dp
+
+private val PRIMARY_ROUTES = listOf(
+    AppRoute.OVERVIEW,
+    AppRoute.LIBRARY,
+    AppRoute.VIDEOS,
+    AppRoute.TAGS,
+    AppRoute.SETTINGS,
+)
 
 @Composable
 fun AppShell(
@@ -111,9 +126,14 @@ fun AppShell(
     val dark = uiPrefs.darkMode
     val stack = remember { mutableStateListOf(AppRoute.OVERVIEW) }
     val route = stack.last()
+    val lifecycleOwner = LocalLifecycleOwner.current
     var personTagId by remember { mutableStateOf<String?>(null) }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
     var toast by remember { mutableStateOf<String?>(null) }
+    val pagerState = rememberPagerState(
+        initialPage = PRIMARY_ROUTES.indexOf(route).coerceAtLeast(0),
+        pageCount = { PRIMARY_ROUTES.size },
+    )
 
     /* ------------------------- 顶栏随滚动自动收起 ------------------------- */
     val autoHideEnabled = uiPrefs.autoHideHeader
@@ -143,6 +163,53 @@ fun AppShell(
             onHeaderHiddenChange(false)
             onFullscreenChange(false)
         }
+    }
+
+    // 每次首次进入主界面、以及从后台重新回到 App，都重新取图库与 DeepSeek 实时余额。
+    // 图库走并发静默刷新，不把已有内容替换成加载页；余额走真实的官方接口刷新。
+    fun refreshForegroundData() {
+        scope.launch { container.mediaStore.silentRefreshAll() }
+        container.deepseekStore.forceRefresh()
+        if (session.user?.isAdmin == true) container.settingsStore.refresh()
+    }
+
+    LaunchedEffect(Unit) { refreshForegroundData() }
+    DisposableEffect(lifecycleOwner) {
+        var sawPause = false
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> sawPause = true
+                Lifecycle.Event.ON_RESUME -> if (sawPause) {
+                    sawPause = false
+                    refreshForegroundData()
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // 内容区直接左右拖动时，以分页器最终停下的位置作为新的主页面。
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.settledPage }
+            .distinctUntilChanged()
+            .collect { page ->
+                if (PRIMARY_ROUTES.contains(stack.last())) {
+                    val target = PRIMARY_ROUTES[page]
+                    if (stack.last() != target) {
+                        stack.clear()
+                        stack.add(target)
+                        headerState.reset()
+                    }
+                }
+            }
+    }
+
+    // 点击底栏或从卡片入口跳到另一个主页面时，按目标所在方向平滑滑动。
+    LaunchedEffect(route) {
+        val page = PRIMARY_ROUTES.indexOf(route)
+        if (page >= 0 && page != pagerState.currentPage) pagerState.animateScrollToPage(page)
     }
 
     fun push(target: AppRoute) {
@@ -205,6 +272,75 @@ fun AppShell(
         }
     }
 
+    val routeContent: @Composable (AppRoute) -> Unit = { displayedRoute ->
+        when (displayedRoute) {
+            AppRoute.OVERVIEW -> OverviewScreen(
+                onOpenLibrary = { push(AppRoute.LIBRARY) },
+                onOpenTags = { push(AppRoute.TAGS) },
+                onOpenDeepseek = { push(AppRoute.DEEPSEEK) },
+                onOpenParse = { push(AppRoute.PARSE) },
+                onOpenImage = { id ->
+                    val index = allMedia.indexOfFirst { it.id == id }
+                    if (index >= 0) viewerIndex = index
+                },
+                onUpload = { pickMedia.launch(visualMediaRequest) },
+                onToast = { showToast(it) },
+            )
+
+            AppRoute.LIBRARY -> LibraryScreen(
+                kind = MediaKind.IMAGE,
+                onOpenImage = { index -> viewerIndex = index },
+                onOpenTrash = { push(AppRoute.TRASH) },
+                onToast = { showToast(it) },
+            )
+
+            AppRoute.VIDEOS -> LibraryScreen(
+                kind = MediaKind.VIDEO,
+                onOpenImage = { index -> viewerIndex = index },
+                onOpenTrash = { push(AppRoute.TRASH) },
+                onToast = { showToast(it) },
+                onOpenParse = { push(AppRoute.PARSE) },
+            )
+
+            AppRoute.TRASH -> LibraryScreen(
+                kind = MediaKind.TRASH,
+                onOpenImage = { index -> viewerIndex = index },
+                onOpenTrash = { pop() },
+                onToast = { showToast(it) },
+            )
+
+            AppRoute.PARSE -> ParseScreen(onToast = { showToast(it) })
+
+            AppRoute.TAGS -> TagsScreen(
+                onOpenPerson = { tagId ->
+                    personTagId = tagId
+                    push(AppRoute.PERSON)
+                },
+                onOpenMediaLibrary = { kind ->
+                    push(if (kind == MediaKind.VIDEO) AppRoute.VIDEOS else AppRoute.LIBRARY)
+                },
+                onToast = { showToast(it) },
+            )
+
+            AppRoute.PERSON -> PersonDetailScreen(
+                tagId = personTagId.orEmpty(),
+                onOpenMediaLibrary = { kind ->
+                    push(if (kind == MediaKind.VIDEO) AppRoute.VIDEOS else AppRoute.LIBRARY)
+                },
+                onToast = { showToast(it) },
+            )
+
+            AppRoute.LOGS -> LogsScreen(onToast = { showToast(it) })
+            AppRoute.DEEPSEEK -> DeepseekScreen(onToast = { showToast(it) })
+            AppRoute.SETTINGS -> SettingsScreen(
+                onOpenLogs = { push(AppRoute.LOGS) },
+                onOpenDeepseek = { push(AppRoute.DEEPSEEK) },
+                onLoggedOut = { stack.clear(); stack.add(AppRoute.OVERVIEW) },
+                onToast = { showToast(it) },
+            )
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize().nestedScroll(scrollConnection)) {
             AnimatedVisibility(
@@ -258,74 +394,16 @@ fun AppShell(
             )
 
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                when (route) {
-                    AppRoute.OVERVIEW -> OverviewScreen(
-                        onOpenLibrary = { push(AppRoute.LIBRARY) },
-                        onOpenTags = { push(AppRoute.TAGS) },
-                        onOpenDeepseek = { push(AppRoute.DEEPSEEK) },
-                        onOpenParse = { push(AppRoute.PARSE) },
-                        onOpenImage = { id ->
-                            // 总览里的"最近/最热"图与视频混排，所以要在全量列表里找下标
-                            val index = allMedia.indexOfFirst { it.id == id }
-                            if (index >= 0) viewerIndex = index
-                        },
-                        onUpload = { pickMedia.launch(visualMediaRequest) },
-                        onToast = { showToast(it) },
-                    )
-
-                    AppRoute.LIBRARY -> LibraryScreen(
-                        kind = MediaKind.IMAGE,
-                        onOpenImage = { index -> viewerIndex = index },
-                        onOpenTrash = { push(AppRoute.TRASH) },
-                        onToast = { showToast(it) },
-                    )
-
-                    AppRoute.VIDEOS -> LibraryScreen(
-                        kind = MediaKind.VIDEO,
-                        onOpenImage = { index -> viewerIndex = index },
-                        onOpenTrash = { push(AppRoute.TRASH) },
-                        onToast = { showToast(it) },
-                        onOpenParse = { push(AppRoute.PARSE) },
-                    )
-
-                    AppRoute.TRASH -> LibraryScreen(
-                        kind = MediaKind.TRASH,
-                        onOpenImage = { index -> viewerIndex = index },
-                        onOpenTrash = { pop() },
-                        onToast = { showToast(it) },
-                    )
-
-                    AppRoute.PARSE -> ParseScreen(onToast = { showToast(it) })
-
-                    AppRoute.TAGS -> TagsScreen(
-                        onOpenPerson = { tagId ->
-                            personTagId = tagId
-                            push(AppRoute.PERSON)
-                        },
-                        onOpenMediaLibrary = { kind ->
-                            push(if (kind == MediaKind.VIDEO) AppRoute.VIDEOS else AppRoute.LIBRARY)
-                        },
-                        onToast = { showToast(it) },
-                    )
-
-                    AppRoute.PERSON -> PersonDetailScreen(
-                        tagId = personTagId.orEmpty(),
-                        onOpenMediaLibrary = { kind ->
-                            push(if (kind == MediaKind.VIDEO) AppRoute.VIDEOS else AppRoute.LIBRARY)
-                        },
-                        onToast = { showToast(it) },
-                    )
-
-                    AppRoute.LOGS -> LogsScreen(onToast = { showToast(it) })
-
-                    AppRoute.DEEPSEEK -> DeepseekScreen(onToast = { showToast(it) })
-
-                    AppRoute.SETTINGS -> SettingsScreen(
-                        onOpenLogs = { push(AppRoute.LOGS) },
-                        onOpenDeepseek = { push(AppRoute.DEEPSEEK) },
-                        onLoggedOut = { stack.clear(); stack.add(AppRoute.OVERVIEW) },
-                        onToast = { showToast(it) },
-                    )
+                if (PRIMARY_ROUTES.contains(route)) {
+                    HorizontalPager(
+                        state = pagerState,
+                        key = { PRIMARY_ROUTES[it].name },
+                        modifier = Modifier.fillMaxSize(),
+                    ) { page ->
+                        routeContent(PRIMARY_ROUTES[page])
+                    }
+                } else {
+                    routeContent(route)
                 }
             }
 
@@ -358,6 +436,18 @@ fun AppShell(
                     stack.add(target)
                     headerState.reset()
                 },
+                onSwipe = { direction ->
+                    val current = PRIMARY_ROUTES.indexOf(route).takeIf { it >= 0 }
+                        ?: pagerState.currentPage
+                    val targetPage = (current + direction).coerceIn(0, PRIMARY_ROUTES.lastIndex)
+                    if (targetPage != current) {
+                        val target = PRIMARY_ROUTES[targetPage]
+                        stack.clear()
+                        stack.add(target)
+                        headerState.reset()
+                    }
+                },
+                hapticsEnabled = uiPrefs.bottomBarHapticsEnabled,
                 modifier = Modifier.navigationBarsPadding(),
             )
         }

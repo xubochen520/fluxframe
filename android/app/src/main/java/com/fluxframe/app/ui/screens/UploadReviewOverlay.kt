@@ -227,6 +227,7 @@ fun UploadReviewOverlay(
 
                         // 标签区
                         androidx.compose.foundation.layout.FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {

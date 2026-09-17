@@ -146,7 +146,7 @@ fun MediaActionDialog(
                     }
                     ClickableRow(
                         title = "下载原文件",
-                        description = "交给系统下载器，可在通知栏看进度",
+                        description = "系统下载器 + 流体云实时进度",
                         icon = Icons.Filled.Download,
                         onClick = {
                             scope.launch {
@@ -358,54 +358,25 @@ fun TagPickerDialog(
                         modifier = Modifier.padding(vertical = 12.dp),
                     )
                 } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp),
+                    androidx.compose.foundation.layout.FlowRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(candidates, key = { it.id }) { tag ->
+                        candidates.forEach { tag ->
                             val selected = picked.any { it.id == tag.id }
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable {
-                                        if (selected) picked.removeAll { it.id == tag.id } else picked.add(tag)
-                                    }
-                                    .padding(vertical = 6.dp, horizontal = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(18.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            if (selected) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                onGlassColor(dark, emphasis = false).copy(alpha = 0.2f)
-                                            },
-                                        ),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    if (selected) {
-                                        Icon(
-                                            Icons.Filled.Check,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(12.dp),
-                                        )
-                                    }
-                                }
-                                TagChip(name = tag.name, colorHex = tag.color, count = tag.count)
-                                if (tag.r18) {
-                                    Text(
-                                        text = "R18",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Color(0xFFEF4444),
-                                    )
-                                }
-                            }
+                            TagChip(
+                                name = if (tag.r18) "${tag.name} · R18" else tag.name,
+                                colorHex = tag.color,
+                                selected = selected,
+                                count = tag.count,
+                                onClick = {
+                                    if (selected) picked.removeAll { it.id == tag.id } else picked.add(tag)
+                                },
+                            )
                         }
                     }
                 }

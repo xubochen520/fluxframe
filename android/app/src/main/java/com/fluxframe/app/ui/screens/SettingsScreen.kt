@@ -1,9 +1,11 @@
 package com.fluxframe.app.ui.screens
 
+import android.content.Intent
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +36,7 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Waves
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -47,11 +50,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fluxframe.app.core.prefs.AppThemeStyle
+import com.fluxframe.app.core.prefs.AppColorPalette
 import com.fluxframe.app.core.util.formatBytes
 import com.fluxframe.app.data.model.AiStatus
 import com.fluxframe.app.data.model.EngineStatus
@@ -88,6 +93,7 @@ fun SettingsScreen(
     onToast: (String?) -> Unit,
 ) {
     val container = LocalAppContainer.current
+    val context = LocalContext.current
     val uiPrefs by container.prefs.ui.collectAsStateWithLifecycle()
     val server by container.prefs.server.collectAsStateWithLifecycle()
     val session by container.sessionStore.state.collectAsStateWithLifecycle()
@@ -108,6 +114,18 @@ fun SettingsScreen(
     var platformTokenInput by remember { mutableStateOf("") }
     // 视频缩略帧位置（秒）。用户输入即生效，非法输入不覆盖已保存的值
     var posterSecondsInput by remember { mutableStateOf(uiPrefs.videoPosterSeconds.toString()) }
+
+    val backgroundPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            container.prefs.updateUi { it.copy(backgroundImageUri = uri.toString()) }
+            onToast("背景图片已应用")
+        }
+    }
 
     // 通知权限：Android 13+ 必须显式授予，否则实况更新/通知都发不出去
     val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -214,6 +232,75 @@ fun SettingsScreen(
                         }
                     }
                     com.fluxframe.app.ui.components.HairLine(modifier = Modifier.padding(vertical = 4.dp))
+                    Text(
+                        text = "配色",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = onGlassColor(dark, emphasis = true),
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(androidx.compose.foundation.rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    ) {
+                        AppColorPalette.entries.forEach { palette ->
+                            val selected = uiPrefs.colorPalette == palette
+                            Text(
+                                text = palette.label,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (selected) Color.White else onGlassColor(dark, emphasis = true),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(
+                                        if (selected) MaterialTheme.colorScheme.primary
+                                        else onGlassColor(dark, false).copy(alpha = 0.10f),
+                                    )
+                                    .clickable { container.prefs.updateUi { it.copy(colorPalette = palette) } }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                            )
+                        }
+                    }
+                    Text(
+                        text = uiPrefs.colorPalette.description,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = onGlassColor(dark, emphasis = false),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            SecondaryActionButton(
+                                text = if (uiPrefs.backgroundImageUri == null) "选择背景图片" else "更换背景图片",
+                                onClick = { backgroundPicker.launch(arrayOf("image/*")) },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        if (uiPrefs.backgroundImageUri != null) {
+                            Box(modifier = Modifier.weight(1f)) {
+                                SecondaryActionButton(
+                                    text = "移除背景",
+                                    onClick = {
+                                        container.prefs.updateUi { it.copy(backgroundImageUri = null) }
+                                        onToast("已恢复流体背景")
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                        }
+                    }
+                    if (uiPrefs.backgroundImageUri != null) {
+                        Text(
+                            text = "背景图片亮度 ${(uiPrefs.backgroundImageOpacity * 100).toInt()}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = onGlassColor(dark, emphasis = false),
+                        )
+                        Slider(
+                            value = uiPrefs.backgroundImageOpacity,
+                            onValueChange = { value ->
+                                container.prefs.updateUi { it.copy(backgroundImageOpacity = value) }
+                            },
+                            valueRange = 0.2f..1f,
+                        )
+                    }
+                    com.fluxframe.app.ui.components.HairLine(modifier = Modifier.padding(vertical = 4.dp))
                     SwitchRow(
                         title = "深色模式",
                         checked = uiPrefs.darkMode,
@@ -224,6 +311,14 @@ fun SettingsScreen(
                         description = "关闭可省电，背景停在静态构图",
                         checked = uiPrefs.animationsEnabled,
                         onCheckedChange = { value -> container.prefs.updateUi { it.copy(animationsEnabled = value) } },
+                    )
+                    SwitchRow(
+                        title = "底栏震动反馈",
+                        description = "点击底栏项目或按住横向切换时轻微震动",
+                        checked = uiPrefs.bottomBarHapticsEnabled,
+                        onCheckedChange = { value ->
+                            container.prefs.updateUi { it.copy(bottomBarHapticsEnabled = value) }
+                        },
                     )
                     SwitchRow(
                         title = "玻璃噪点纹理",
@@ -299,7 +394,7 @@ fun SettingsScreen(
                     }
                     SwitchRow(
                         title = "顶栏随滚动收起",
-                        description = "向下滑时把顶栏与状态栏一起收起，向上滑或回到顶部再出现",
+                        description = "滚动时收起应用顶栏；系统状态栏保持稳定，避免下拉黑闪",
                         checked = uiPrefs.autoHideHeader,
                         onCheckedChange = { value -> container.prefs.updateUi { it.copy(autoHideHeader = value) } },
                     )
@@ -357,6 +452,9 @@ fun SettingsScreen(
                         onCheckedChange = { value ->
                             container.prefs.updateUi { it.copy(fluidCloudEnabled = value) }
                             container.fluidCloud.enabled = value
+                            if (value && !container.fluidCloud.capability.notificationsAllowed) {
+                                askNotificationPermission()
+                            }
                         },
                     )
                     if (!container.fluidCloud.capability.notificationsAllowed) {
@@ -365,6 +463,35 @@ fun SettingsScreen(
                             onClick = { askNotificationPermission() },
                             modifier = Modifier.fillMaxWidth(),
                         )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            SecondaryActionButton(
+                                text = "发送测试",
+                                onClick = {
+                                    if (!container.fluidCloud.capability.notificationsAllowed) {
+                                        askNotificationPermission()
+                                    } else {
+                                        container.fluidCloud.enabled = true
+                                        if (!uiPrefs.fluidCloudEnabled) {
+                                            container.prefs.updateUi { it.copy(fluidCloudEnabled = true) }
+                                        }
+                                        container.fluidCloud.runTest()
+                                        onToast("已发送，请观察状态栏")
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        Box(modifier = Modifier.weight(1f)) {
+                            SecondaryActionButton(
+                                text = "系统通知设置",
+                                onClick = {
+                                    if (!container.fluidCloud.openSystemSettings()) onToast("无法打开系统设置")
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
                     }
                     Text(
                         text = "无需配置：应用会自动选用可用的链路 —— 优先按 Google 的实况更新（Live Updates）" +
@@ -768,7 +895,7 @@ fun SettingsScreen(
                     }
                     Text(
                         text = "原生 Android 客户端（Kotlin + Jetpack Compose），直接调用 fluxframe REST 接口，" +
-                            "不依赖网页前端。支持液态玻璃 / 亚克力 / 默认三套界面。",
+                            "不依赖网页前端。支持五种界面质感、自定义配色与背景图片。",
                         style = MaterialTheme.typography.labelSmall,
                         color = onGlassColor(dark, emphasis = false),
                         modifier = Modifier.padding(top = 6.dp),

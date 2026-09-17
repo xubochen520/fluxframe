@@ -27,6 +27,14 @@ data class UiPrefs(
     val videoPosterSeconds: Float = 0.5f,
     /** 顶栏随滚动自动收起（连同状态栏一起让位给内容） */
     val autoHideHeader: Boolean = true,
+    /** 背景/强调色预设；SERVER 表示跟随服务端 */
+    val colorPalette: AppColorPalette = AppColorPalette.SERVER,
+    /** 通过系统文档选择器持久授权的背景图片 URI */
+    val backgroundImageUri: String? = null,
+    /** 背景图片可见度 */
+    val backgroundImageOpacity: Float = 0.72f,
+    /** 点击或横拖底部导航时提供轻微触觉反馈 */
+    val bottomBarHapticsEnabled: Boolean = true,
 )
 
 /**
@@ -72,6 +80,10 @@ class AppPreferences(context: Context) {
             .putBoolean(KEY_VIDEO_POSTER, next.videoPosterEnabled)
             .putFloat(KEY_VIDEO_POSTER_SECONDS, next.videoPosterSeconds)
             .putBoolean(KEY_AUTO_HIDE_HEADER, next.autoHideHeader)
+            .putString(KEY_COLOR_PALETTE, next.colorPalette.name)
+            .putString(KEY_BACKGROUND_IMAGE, next.backgroundImageUri)
+            .putFloat(KEY_BACKGROUND_OPACITY, next.backgroundImageOpacity.coerceIn(0.2f, 1f))
+            .putBoolean(KEY_BOTTOM_BAR_HAPTICS, next.bottomBarHapticsEnabled)
             .apply()
         _ui.value = next
     }
@@ -93,6 +105,10 @@ class AppPreferences(context: Context) {
         videoPosterEnabled = prefs.getBoolean(KEY_VIDEO_POSTER, true),
         videoPosterSeconds = prefs.getFloat(KEY_VIDEO_POSTER_SECONDS, 0.5f).coerceIn(MIN_POSTER_SECONDS, MAX_POSTER_SECONDS),
         autoHideHeader = prefs.getBoolean(KEY_AUTO_HIDE_HEADER, true),
+        colorPalette = AppColorPalette.fromKey(prefs.getString(KEY_COLOR_PALETTE, null)),
+        backgroundImageUri = prefs.getString(KEY_BACKGROUND_IMAGE, null)?.takeIf { it.isNotBlank() },
+        backgroundImageOpacity = prefs.getFloat(KEY_BACKGROUND_OPACITY, 0.72f).coerceIn(0.2f, 1f),
+        bottomBarHapticsEnabled = prefs.getBoolean(KEY_BOTTOM_BAR_HAPTICS, true),
     )
 
     companion object {
@@ -110,6 +126,10 @@ class AppPreferences(context: Context) {
         const val KEY_VIDEO_POSTER = "video_poster"
         const val KEY_VIDEO_POSTER_SECONDS = "video_poster_seconds"
         const val KEY_AUTO_HIDE_HEADER = "auto_hide_header"
+        const val KEY_COLOR_PALETTE = "color_palette"
+        const val KEY_BACKGROUND_IMAGE = "background_image_uri"
+        const val KEY_BACKGROUND_OPACITY = "background_image_opacity"
+        const val KEY_BOTTOM_BAR_HAPTICS = "bottom_bar_haptics"
 
         /** 取帧位置的可选范围：0 秒（首帧）到 10 分钟 */
         const val MIN_POSTER_SECONDS = 0f

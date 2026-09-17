@@ -1,5 +1,6 @@
 package com.fluxframe.app.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,12 +22,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sort
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -35,6 +39,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,6 +65,7 @@ import com.fluxframe.app.ui.components.VideoPosterRequest
 import com.fluxframe.app.ui.theme.LocalDarkTheme
 import com.fluxframe.app.ui.theme.onGlassColor
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * 媒体库：图片库 / 视频库 / 回收站，三者共用一套实现。
@@ -106,9 +112,18 @@ fun LibraryScreen(
     var searchText by remember { mutableStateOf(filters.search) }
     var actionTarget by remember { mutableStateOf<ImageItem?>(null) }
     var sortExpanded by remember { mutableStateOf(false) }
+    var selectedIds by remember(kind) { mutableStateOf<Set<String>>(emptySet()) }
+    val scope = rememberCoroutineScope()
 
     val isTrash = kind == MediaKind.TRASH
     val selectedTags = filters.tags
+
+    BackHandler(enabled = selectedIds.isNotEmpty()) { selectedIds = emptySet() }
+
+    LaunchedEffect(items) {
+        val available = items.asSequence().map { it.id }.toSet()
+        selectedIds = selectedIds.intersect(available)
+    }
 
     // 输入防抖，避免每敲一个字都打一次接口
     LaunchedEffect(searchText) {
@@ -177,6 +192,63 @@ fun LibraryScreen(
                         if (isTrash) container.mediaStore.refreshTrash() else container.mediaStore.refreshImages()
                     },
                 )
+            }
+
+            if (!isTrash && selectedIds.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 4.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = if (dark) 0.18f else 0.10f))
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        text = "已选择 ${selectedIds.size} 项",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = onGlassColor(dark, emphasis = true),
+                        modifier = Modifier.weight(1f),
+                    )
+                    RoundIconAction(
+                        icon = Icons.Filled.SelectAll,
+                        description = if (selectedIds.size == items.size) "取消全选" else "全选",
+                        onClick = {
+                            selectedIds = if (selectedIds.size == items.size) emptySet() else items.map { it.id }.toSet()
+                        },
+                    )
+                    RoundIconAction(
+                        icon = Icons.Filled.Download,
+                        description = "下载所选",
+                        onClick = {
+                            val picked = items.filter { it.id in selectedIds }
+                            scope.launch {
+                                container.mediaDownloader.enqueueBatch(picked)
+                                    .onSuccess { count ->
+                                        onToast("已将 $count 个文件加入下载队列")
+                                        selectedIds = emptySet()
+                                    }
+                                    .onFailure { onToast(it.message) }
+                            }
+                        },
+                    )
+                    if (selectedIds.size == 1) {
+                        RoundIconAction(
+                            icon = Icons.Filled.MoreVert,
+                            description = "更多操作",
+                            onClick = {
+                                actionTarget = items.firstOrNull { it.id in selectedIds }
+                                selectedIds = emptySet()
+                            },
+                        )
+                    }
+                    RoundIconAction(
+                        icon = Icons.Filled.Close,
+                        description = "退出多选",
+                        onClick = { selectedIds = emptySet() },
+                    )
+                }
             }
 
             // ---- 两排标签：上排人名，下排其他标签；都可多选 ----
@@ -302,8 +374,21 @@ fun LibraryScreen(
                             views = if (isTrash) null else item.views,
                             r18 = item.r18,
                             tags = item.tags,
-                            onClick = { onOpenImage(index) },
-                            onLongClick = { actionTarget = item },
+                            selected = item.id in selectedIds,
+                            onClick = {
+                                if (selectedIds.isNotEmpty()) {
+                                    selectedIds = if (item.id in selectedIds) selectedIds - item.id else selectedIds + item.id
+                                } else {
+                                    onOpenImage(index)
+                                }
+                            },
+                            onLongClick = {
+                                if (isTrash) {
+                                    actionTarget = item
+                                } else {
+                                    selectedIds = if (item.id in selectedIds) selectedIds - item.id else selectedIds + item.id
+                                }
+                            },
                             poster = if (item.isVideo && uiPrefs.videoPosterEnabled) {
                                 VideoPosterRequest(item)
                             } else {

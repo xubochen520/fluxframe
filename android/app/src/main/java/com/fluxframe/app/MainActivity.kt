@@ -48,6 +48,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // 部分 ROM 在状态栏显隐切换时会先绘制一帧默认黑底。明确保持透明并关闭
+        // 系统自动对比色遮罩，避免下拉顶栏时的黑色闪帧。
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            window.isStatusBarContrastEnforced = false
+            window.isNavigationBarContrastEnforced = false
+        }
         val container = (application as FluxFrameApp).container
 
         setContent {
@@ -56,11 +64,13 @@ class MainActivity : ComponentActivity() {
             val settings by container.settingsStore.settings.collectAsStateWithLifecycle()
 
             // 流体背景配色优先用服务器设置（与网页端同色），拿不到时用内置品牌色
-            val fluidColors = remember(settings?.fluidColors) {
-                settings?.fluidColors
-                    ?.takeIf { it.isNotEmpty() }
-                    ?.map { parseColor(it) }
-                    ?: DefaultFluidColors
+            val fluidColors = remember(settings?.fluidColors, uiPrefs.colorPalette) {
+                val configured = if (uiPrefs.colorPalette.hexColors.isNotEmpty()) {
+                    uiPrefs.colorPalette.hexColors
+                } else {
+                    settings?.fluidColors.orEmpty()
+                }
+                configured.takeIf { it.isNotEmpty() }?.map { parseColor(it) } ?: DefaultFluidColors
             }
 
             LaunchedEffect(Unit) {
@@ -83,10 +93,14 @@ class MainActivity : ComponentActivity() {
                 animationsEnabled = uiPrefs.animationsEnabled,
                 noiseEnabled = uiPrefs.noiseEnabled,
                 fluidColors = fluidColors,
+                backgroundImageUri = uiPrefs.backgroundImageUri,
+                backgroundImageOpacity = uiPrefs.backgroundImageOpacity,
             ) {
                 SystemBarsEffect(
                     darkTheme = uiPrefs.darkMode,
-                    hideStatusBar = contentFullscreen || headerHidden,
+                    // 顶栏折叠时不再反复 hide/show 系统状态栏：这正是部分 ColorOS
+                    // 设备下拉时闪一帧黑色的来源。只有查看器等真正全屏场景才隐藏。
+                    hideStatusBar = contentFullscreen,
                     hideGestureBar = contentFullscreen || uiPrefs.immersiveMode,
                 )
                 CompositionLocalProvider(LocalAppContainer provides container) {

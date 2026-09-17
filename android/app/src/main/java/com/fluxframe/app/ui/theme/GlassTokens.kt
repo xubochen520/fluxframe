@@ -14,7 +14,7 @@ import com.fluxframe.app.core.prefs.AppThemeStyle
 
 /**
  * 一套风格的「玻璃参数」。
- * 三种风格只在参数上不同，组件代码完全共用 —— 这样切换风格是零成本的。
+ * 五种风格只在参数上不同，组件代码完全共用 —— 这样切换风格是零成本的。
  */
 @Immutable
 data class GlassTokens(
@@ -38,7 +38,7 @@ data class GlassTokens(
     val cornerRadius: Dp,
 ) {
     val drawsBackdrop: Boolean get() = style != AppThemeStyle.DEFAULT
-    val drawsSpecular: Boolean get() = style == AppThemeStyle.LIQUID_GLASS
+    val drawsSpecular: Boolean get() = style == AppThemeStyle.LIQUID_GLASS || style == AppThemeStyle.NEON
     val drawsNoise: Boolean get() = style != AppThemeStyle.DEFAULT && noiseAlpha > 0f
 }
 
@@ -75,6 +75,26 @@ fun glassTokensFor(
         noiseAlpha = if (noiseEnabled) 0.035f else 0f,
         specularAlpha = if (dark) 0.16f else 0.22f,
         cornerRadius = 24.dp,
+    )
+
+    AppThemeStyle.FROSTED -> GlassTokens(
+        style = style,
+        backdropSoftness = 0.42f,
+        tintAlpha = if (dark) 0.70f else 0.78f,
+        borderAlpha = if (dark) 0.18f else 0.12f,
+        noiseAlpha = if (noiseEnabled) 0.025f else 0f,
+        specularAlpha = 0f,
+        cornerRadius = 28.dp,
+    )
+
+    AppThemeStyle.NEON -> GlassTokens(
+        style = style,
+        backdropSoftness = 0.25f,
+        tintAlpha = if (dark) 0.46f else 0.62f,
+        borderAlpha = if (dark) 0.48f else 0.30f,
+        noiseAlpha = if (noiseEnabled) 0.02f else 0f,
+        specularAlpha = if (dark) 0.24f else 0.16f,
+        cornerRadius = 16.dp,
     )
 }
 

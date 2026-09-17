@@ -38,11 +38,12 @@ class PerformanceAndCloudTest {
         assertTrue("默认顶栏随滚动收起", prefs.autoHideHeader)
         assertTrue("默认视频缩略图取真实帧", prefs.videoPosterEnabled)
         assertTrue("默认开启背景动效（但已量化到 12fps）", prefs.animationsEnabled)
+        assertTrue("默认开启底栏触觉反馈", prefs.bottomBarHapticsEnabled)
         assertTrue("网格列数应落在 2..5", prefs.gridColumns in 2..5)
     }
 
     @Test
-    fun `玻璃参数在三套主题下都自洽`() {
+    fun `玻璃参数在全部主题下都自洽`() {
         AppThemeStyle.entries.forEach { style ->
             listOf(true, false).forEach { dark ->
                 val tokens = glassTokensFor(style, dark, noiseEnabled = true)
@@ -58,8 +59,8 @@ class PerformanceAndCloudTest {
                     assertFalse("默认风格不应绘制噪点", tokens.drawsNoise)
                     assertFalse("默认风格不应绘制高光扫过", tokens.drawsSpecular)
                 }
-                // 高光扫过只有液态玻璃才有
-                if (style != AppThemeStyle.LIQUID_GLASS) {
+                // 高光扫过只用于液态玻璃与霓虹风格
+                if (style != AppThemeStyle.LIQUID_GLASS && style != AppThemeStyle.NEON) {
                     assertFalse("$style 不应绘制高光扫过", tokens.drawsSpecular)
                 }
             }
