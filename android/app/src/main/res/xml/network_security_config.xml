@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 内网部署：后端为纯 HTTP（http://192.168.x.x:4311），需要放行明文流量。
+     这里仅对私有网段与 localhost 放行，公网域名仍强制 HTTPS。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

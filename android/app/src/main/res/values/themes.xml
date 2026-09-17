@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose 负责全部界面绘制，这里只作为启动窗口与系统栏的底座，避免冷启动白屏闪烁 -->
+    <style name="Theme.FluxFrame" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/brand_window_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>
