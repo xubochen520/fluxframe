@@ -334,19 +334,8 @@ fun AppShell(
                     BottomNavItem("overview", "总览", Icons.Filled.Dashboard),
                     // 注意：这里故意不给徽标。以前把"媒体总数"当成红点挂在图片库上，
                     // 于是只要库里有东西就永远亮着一个小红点 —— 那不是"有新内容"的意思。
-                    // 改成用库里的一张真实缩略图当图标（半透明），一眼就知道里面是什么。
-                    BottomNavItem(
-                        key = "library",
-                        label = "图片库",
-                        icon = Icons.Filled.Image,
-                        thumbnail = images.firstOrNull(),
-                    ),
-                    BottomNavItem(
-                        key = "videos",
-                        label = "视频库",
-                        icon = Icons.Filled.Movie,
-                        thumbnail = videos.firstOrNull(),
-                    ),
+                    BottomNavItem("library", "图片库", Icons.Filled.Image),
+                    BottomNavItem("videos", "视频库", Icons.Filled.Movie),
                     BottomNavItem("tags", "标签", Icons.Filled.Label),
                     BottomNavItem("settings", "设置", Icons.Filled.Settings),
                 ),

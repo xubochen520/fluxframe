@@ -284,7 +284,7 @@ app/src/main/java/com/fluxframe/app/
 | `:app:compileDebugKotlin` | ✅ 0 error |
 | `:app:assembleDebug` | ✅ `app-debug.apk` 21.86 MB |
 | `:app:assembleRelease` | ✅ `app-release.apk` 14.78 MB |
-| `aapt2 dump badging` | ✅ release = `com.fluxframe.app` v2.1.3(34) targetSdk 35 / launchable `MainActivity` / 标签「流体图库」 |
+| `aapt2 dump badging` | ✅ release = `com.fluxframe.app` v2.1.4(35) targetSdk 35 / launchable `MainActivity` / 标签「流体图库」 |
 | `aapt2 dump permissions` | ✅ 含 `POST_NOTIFICATIONS`、**`POST_PROMOTED_NOTIFICATIONS`**、`FOREGROUND_SERVICE_DATA_SYNC` |
 | 合并后的 Manifest | ✅ minSdk 26、`usesCleartextTraffic=true`、`foregroundServiceType=dataSync`、`<queries>` 含 com.oplus.pantanal.ums / com.oplus.metis / authority `IntelligentIntent`；**已移除 `largeHeap`**（见 §8.1） |
 
@@ -621,9 +621,9 @@ v2.1.1 改成自己取帧（`core/media/VideoPosterLoader`），按兼容性从�
 > `trashMode: Boolean`；查看器翻页用的列表与网格渲染的列表**来自同一个 StateFlow**，
 > 所以"看到的"和"滑到的"不会再对不上（以前搜索/筛选后翻页会串）。
 
-### 9.4 缩略帧可自定义、底栏用真实缩略图、人物方块用真实图片、双击按贝塞尔曲线放大点击点（v2.1.3）
+### 9.4 缩略帧可自定义、人物方块用真实图片、双击按贝塞尔曲线放大点击点（v2.1.3 / v2.1.4）
 
-**四项改动**：
+**四项改动**（其中第 2 项在 v2.1.4 已回退，见下）：
 
 1. **视频缩略帧位置可自定义**（设置 → 外观 → 视频缩略图取真实帧 下面）。
    默认 0.5 秒（避开片头黑场），可填 0–600 之间的任意秒数（支持小数），
@@ -632,10 +632,12 @@ v2.1.1 改成自己取帧（`core/media/VideoPosterLoader`），按兼容性从�
      界面上会提示"已保留上一次的值"，而不是把非法值偷偷存进去；
    - **缓存键里带上了秒数**（`fluxframe-poster:<秒>:<url>`），所以改了位置之后
      旧封面自动失效，不会继续显示过期帧；改完还会顺手清一次封面磁盘缓存。
-2. **底栏的「图片库 / 视频库」直接显示库里的内容**：
-   图标换成一枚 22dp 的圆角缩略图（图片用 320 变体，视频用同一套取帧＋缓存），
-   未选中时半透明（alpha 0.55）、选中时提亮到 0.95 —— 一眼就能看出里面是什么，
-   同时不抢当前页的注意力。库空着时自动退回原来的矢量图标，不会出现空洞。
+2. ~~**底栏的「图片库 / 视频库」直接显示库里的内容**~~ —— **v2.1.4 已改回矢量图标**。
+   试过把这两项换成 22dp 圆角缩略图（未选中 alpha 0.55、选中 0.95），
+   但实际观感有两个问题：五个图标里三个是线稿、两个是照片，**风格不统一**；
+   而且在深色磨砂底上照片会显得脏。底栏现在一律用矢量图标，
+   `BottomNavItem` 也去掉了 `thumbnail` 字段，不留"半吊子"的兼容分支。
+   （如需"图标 + 背后半透明缩略图"那种折中方案，重新加回一个字段即可。）
 3. **标签页的人物方块改用真实图片**（替换掉原来那个通用人脸 SVG）：
    取"该标签下第一个可见媒体"作为封面（在内存里按 `liveImages` 建一次映射，零额外请求）；
    该人物还没有可见媒体时才退回人脸占位。人物详情页的头像同样处理，优先用它最新的那张。
@@ -653,7 +655,7 @@ v2.1.1 改成自己取帧（`core/media/VideoPosterLoader`），按兼容性从�
 
 ## 10. 下一步（建议按顺序）
 
-1. **真机冒烟**：`adb install -r fluxframe-v2.1.3-native-debug.apk`，
+1. **真机冒烟**：`adb install -r fluxframe-v2.1.4-native-debug.apk`，
    重点看首屏、图片库滚动跟手程度、视频卡片是否出真实帧、全屏查看器、上传流程、
    顶栏收起/状态栏让位、隐藏小白条、以及退到后台时的胶囊/通知。
 2. **先看设置页那两行诊断**（v2.1.1 新增）：

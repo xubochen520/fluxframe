@@ -51,7 +51,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.fluxframe.app.core.prefs.AppThemeStyle
-import com.fluxframe.app.data.model.ImageItem
 import com.fluxframe.app.fluidcloud.CapsuleState
 import com.fluxframe.app.fluidcloud.CapsuleTone
 import com.fluxframe.app.ui.glass.GlassSurface
@@ -205,25 +204,15 @@ fun FluxBottomBar(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Box(contentAlignment = Alignment.TopEnd) {
-                        if (item.thumbnail != null) {
-                            // 半透明地露出库里的内容：选中时提亮，未选中时压低，
-                            // 既看得出"这是图片/视频"，又不会抢当前页的注意力
-                            MediaThumb(
-                                item = item.thumbnail,
-                                size = 22.dp,
-                                alpha = if (selected) 0.95f else 0.55f,
-                                shape = RoundedCornerShape(6.dp),
-                                placeholderIcon = item.icon,
-                                placeholderTint = contentColor,
-                            )
-                        } else {
-                            Icon(
-                                imageVector = item.icon,
-                                contentDescription = item.label,
-                                tint = contentColor,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
+                        // 底栏一律用矢量图标。曾经试过把图片库/视频库换成库里的缩略图，
+                        // 但那会让五个图标风格不一致（三个线稿 + 两个照片），
+                        // 而且在深色磨砂底上照片会显得很脏 —— 改回统一图标。
+                        Icon(
+                            imageVector = item.icon,
+                            contentDescription = item.label,
+                            tint = contentColor,
+                            modifier = Modifier.size(20.dp),
+                        )
                         if (item.badge != null && item.badge > 0) {
                             Box(
                                 modifier = Modifier
@@ -259,11 +248,6 @@ data class BottomNavItem(
     val label: String,
     val icon: ImageVector,
     val badge: Int? = null,
-    /**
-     * 用一张真实媒体缩略图代替矢量图标（图片库 / 视频库用）。
-     * 为空时退回 [icon]，所以库空着也不会出现一个空洞。
-     */
-    val thumbnail: ImageItem? = null,
 )
 
 /**

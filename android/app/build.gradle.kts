@@ -15,8 +15,8 @@ android {
         applicationId = "com.fluxframe.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 34
-        versionName = "2.1.3"
+        versionCode = 35
+        versionName = "2.1.4"
         resourceConfigurations += listOf("zh", "en")
     }
 
