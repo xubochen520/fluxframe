@@ -33,6 +33,14 @@ const maintenanceIntervalMs = 24 * 60 * 60 * 1000
 let runtimePort = defaultPort
 let storageDir = path.resolve(process.env.STORAGE_DIR || './storage')
 const sessionCookie = 'fluxframe_session'
+/**
+ * 会话 Cookie 是否只允许 HTTPS（Secure）。
+ * 默认跟随 NODE_ENV：production=true。但 Docker/内网用纯 HTTP 访问时，
+ * 浏览器会拒绝保存 Secure Cookie 导致无法登录，因此支持 COOKIE_SECURE=false 显式关闭。
+ */
+const cookieSecure = process.env.COOKIE_SECURE !== undefined
+  ? process.env.COOKIE_SECURE === 'true'
+  : process.env.NODE_ENV === 'production'
 type PendingUpload = { userId: string; tempId: string; tempKey: string; fileName: string; mimeType: string; size: number; width?: number; height?: number; sha256: string; createdAt: number }
 const pendingUploads = new Map<string, PendingUpload>()
 /** DeepSeek 余额/用量记账服务（总览横向长条，后台按间隔轮询余额并落库） */
@@ -346,7 +354,7 @@ app.post('/api/auth/login', async (request, reply) => {
   }
   const rawToken = randomBytes(32).toString('hex')
   await prisma.session.create({ data: { tokenHash: hashToken(rawToken), userId: user.id, expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 30) } })
-  reply.setCookie(sessionCookie, rawToken, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 60 * 60 * 24 * 30 })
+  reply.setCookie(sessionCookie, rawToken, { httpOnly: true, sameSite: 'lax', secure: cookieSecure, path: '/', maxAge: 60 * 60 * 24 * 30 })
   await recordAudit(request, '用户登录', user.id)
   return { user: { id: user.id, username: user.username, role: user.role, r18Mode: user.r18Mode } }
 })

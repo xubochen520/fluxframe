@@ -23,9 +23,13 @@ function resolveProjectDir() {
   return process.cwd()
 }
 
+/** 平台判断：Windows 用 .exe + PowerShell 解压，Linux 用无后缀可执行文件 + unzip */
+const isWin = process.platform === 'win32'
 const projectDir = resolveProjectDir()
-export const ffmpegModelsDir = path.join(projectDir, 'models', 'ffmpeg')
-export const ffmpegDefaultExe = path.join(ffmpegModelsDir, 'ffmpeg.exe')
+/** 模型目录可被 MODELS_DIR 覆盖（Docker 部署时挂载到 /data/models，避免容器重建丢文件） */
+const modelsRoot = process.env.MODELS_DIR?.trim() ? path.resolve(process.env.MODELS_DIR.trim()) : path.join(projectDir, 'models')
+export const ffmpegModelsDir = path.join(modelsRoot, 'ffmpeg')
+export const ffmpegDefaultExe = path.join(ffmpegModelsDir, isWin ? 'ffmpeg.exe' : 'ffmpeg')
 
 function getSystemProxy(): string | null {
   const fromEnv = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy
@@ -79,11 +83,13 @@ async function downloadFile(url: string, dest: string, onProgress: (done: number
 
 async function extractZip(zipPath: string, destDir: string) {
   await mkdir(destDir, { recursive: true })
-  const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force`], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = isWin
+    ? spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${destDir}' -Force`], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    : spawn('unzip', ['-o', '-q', zipPath, '-d', destDir], { stdio: ['ignore', 'pipe', 'pipe'] })
   let errOut = ''
-  ps.stderr?.on('data', (c) => (errOut += c))
-  const code = await new Promise<number>((resolve) => ps.on('close', resolve))
-  if (code !== 0) throw new Error(`解压 ffmpeg 失败：${errOut.slice(0, 200)}`)
+  child.stderr?.on('data', (c) => (errOut += c))
+  const code = await new Promise<number>((resolve) => child.on('close', resolve))
+  if (code !== 0) throw new Error(`解压 ffmpeg 失败：${errOut.slice(0, 200) || `退出码 ${code}`}`)
 }
 
 async function findFileRecursive(dir: string, name: string): Promise<string | null> {
@@ -110,18 +116,20 @@ export async function probeFfmpegVersion(exePath: string): Promise<string | null
   return null
 }
 
-/** 按优先级定位 ffmpeg：设置里的自定义路径 → FFMPEG_PATH → models\ffmpeg → PATH → 常见安装目录 */
+/** 按优先级定位 ffmpeg：设置里的自定义路径 → FFMPEG_PATH → models/ffmpeg → PATH → 常见安装目录 */
 export async function locateFfmpeg(configuredPath?: string): Promise<{ exe: string; version: string } | null> {
   const candidates: string[] = []
   if (configuredPath?.trim()) candidates.push(configuredPath.trim())
   if (process.env.FFMPEG_PATH?.trim()) candidates.push(process.env.FFMPEG_PATH.trim())
   candidates.push(ffmpegDefaultExe)
-  if (process.platform === 'win32') {
+  if (isWin) {
     const dirs = (process.env.PATH || '').split(';')
     for (const dir of dirs) if (dir.trim()) candidates.push(path.join(dir.trim(), 'ffmpeg.exe'))
     candidates.push('C:\\ffmpeg\\bin\\ffmpeg.exe', path.join(process.env.ProgramFiles || 'C:\\Program Files', 'ffmpeg', 'bin', 'ffmpeg.exe'))
   } else {
-    candidates.push('/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg')
+    const dirs = (process.env.PATH || '').split(':')
+    for (const dir of dirs) if (dir.trim()) candidates.push(path.join(dir.trim(), 'ffmpeg'))
+    candidates.push('/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/opt/ffmpeg/bin/ffmpeg', '/snap/bin/ffmpeg')
   }
   for (const exe of candidates) {
     if (!existsSync(exe)) continue
@@ -141,6 +149,12 @@ export async function downloadFfmpeg(): Promise<{ ok: boolean; error?: string }>
   if (busy) return { ok: false, error: '已有下载任务进行中，请稍候' }
   const existing = await locateFfmpeg()
   if (existing) return { ok: true }
+  // Linux：一审下载的是 Windows 构建，容器/服务器请用系统 ffmpeg（镜像里已预装 /usr/bin/ffmpeg）
+  if (!isWin) {
+    const error = '当前为 Linux 环境：请在系统设置中填写 ffmpeg 路径（默认 /usr/bin/ffmpeg），或用 apt install -y ffmpeg 安装后重试'
+    progress = { phase: 'error', done: 0, total: 0, error }
+    return { ok: false, error }
+  }
   busy = true
   cachedVersion = null
   progress = { phase: 'downloading', done: 0, total: 0 }

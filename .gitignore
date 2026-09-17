@@ -14,3 +14,24 @@ client/android/app/build/
 client/android/local.properties
 client/android/.idea/
 client/android/captures/
+deploy/out/
+deploy/data/
+
+# 原生 Android 客户端（android/）
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/captures/
+android/*.log
+android/*.log.txt
+android/build-log.txt
+
+# 仓库根目录误生成的 gradle wrapper：根目录没有任何 build 脚本，
+# 真正在用的是 android/ 与 client/android/ 各自的 wrapper。
+# 文件保留在磁盘上，但不进版本库。
+/gradlew
+/gradlew.bat
+/gradle-wrapper.jar
