@@ -48,9 +48,9 @@ ENV NODE_ENV=production \
     LOGS_DIR=/data/logs
 WORKDIR /app
 
-# ffmpeg：B 站高清 DASH 音视频合并；curl/unzip：AI 引擎与 ffmpeg 一键下载；tini：正确转发信号
+# ffmpeg：B 站高清 DASH 音视频合并；chromium：抖音同会话指纹解析；tini：正确转发信号
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates openssl ffmpeg curl unzip tini tzdata \
+      ca-certificates openssl ffmpeg chromium curl unzip tini tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/package.json ./package.json

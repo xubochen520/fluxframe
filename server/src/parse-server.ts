@@ -1,10 +1,10 @@
 /* ============================================================
    视频解析引擎（纯享解析 PureParse）—— 内嵌进 fluxframe Fastify 服务
    ------------------------------------------------------------
-   · POST /api/parse    真实解析：服务端直连平台官方接口（绕过浏览器 CORS）
+   · POST /api/parse    真实解析：服务端访问平台官方页面/API（绕过客户端 CORS）
                         B站/b23.tv  → 官方开放 API 全链真实解析
-                        抖音        → 网页版官方 API + a_bogus 动态签名直连
-                                      （开源签名算法 server/dyab，附 ttwid/uifid 会话，风控自动重试）
+                         抖音        → Chromium 同会话捕获官方详情 API
+                                       （保留开源 a_bogus 签名作为降级路径）
                         快手        → H5 分享页详情接口直解（免签名免 Cookie，2025 改版后
                                       手机页已无内嵌数据，页面直链/短链均可）
    · GET  /api/stream   媒体代理流：透传 UA/Referer/Range，供播放与下载（防防盗链+CORS）
@@ -13,7 +13,9 @@
    解析结果可一键「保存到图片库」。
    ============================================================ */
 import { Readable } from 'node:stream'
+import { existsSync } from 'node:fs'
 import type { FastifyInstance } from 'fastify'
+import { chromium, type Browser, type BrowserContext } from 'playwright-core'
 import { signDouyin, signerReady, signerError, DY_UA } from '../dyab/index.mjs'
 
 const UA_PC = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36'
@@ -160,21 +162,108 @@ async function resolveBilibili(url: string) {
   }
 }
 
-/* ---------- 抖音：网页版官方 API + a_bogus 签名直连 ----------
-   机制说明（实测于 2025-09，样本 aweme 7681199202382269706）：
-   · 官方详情接口 https://www.douyin.com/aweme/v1/web/aweme/detail/
-     需 a_bogus 签名（开源重构算法 server/dyab，Apache-2.0，V1.0.1.19-fix.01）
-   · 需会话 cookie：ttwid（ttwid.bytedance.com 注册接口真实签发）
-     + uifid（设备指纹位，Argus 风控要求存在；取与真实样本同格式的
-     384 位 hex 随机值，风控放行概率高）
-   · 返回 play_addr.url_list 即官方播放无水印直链（下载版才烧录水印）
-   · Argus 风控按请求频率动态收紧 → 每次尝试更换 uifid 并自动重试 */
+/* ---------- 抖音：浏览器同会话解析 + 原生签名降级 ----------
+   2026-09 起 Argus 会校验 UIFID、浏览器指纹和 x-secsdk-web-signature 是否来自
+   同一个会话。随机伪造 UIFID 即使格式正确，也只会从 “Uifid Not Found” 变成空响应。
+   主路径因此由 Chromium 打开作品页并捕获页面自身发出的官方详情响应；浏览器实例和
+   Cookie 上下文会复用，图片/视频/字体资源则拦截，避免额外流量。只有 Chromium 不可用
+   时才走内置 a_bogus 原生签名降级。 */
 const DY_REF = 'https://www.douyin.com/'
 const DY_DETAIL_API = 'https://www.douyin.com/aweme/v1/web/aweme/detail/'
 const DY_TTWID_API = 'https://ttwid.bytedance.com/ttwid/union/register/'
 let dySession: { ttwid: string; at: number } = { ttwid: '', at: 0 }
 
-function dyParams(awemeId: string) {
+let dyBrowser: Browser | null = null
+let dyBrowserContext: BrowserContext | null = null
+let dyBrowserLaunching: Promise<BrowserContext> | null = null
+
+function chromiumExecutable() {
+  const configured = String(process.env.CHROMIUM_PATH || '').trim()
+  const candidates = configured
+    ? [configured]
+    : process.platform === 'win32'
+      ? [
+          'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+          'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+          'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+        ]
+      : ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']
+  return candidates.find((file) => existsSync(file)) || ''
+}
+
+async function ensureDyBrowserContext() {
+  if (dyBrowserContext && dyBrowser?.isConnected()) return dyBrowserContext
+  if (dyBrowserLaunching) return dyBrowserLaunching
+  dyBrowserLaunching = (async () => {
+    const executablePath = chromiumExecutable()
+    if (!executablePath) throw new Error('Chromium 未安装')
+    const browser = await chromium.launch({
+      executablePath,
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
+    })
+    browser.on('disconnected', () => {
+      if (dyBrowser === browser) {
+        dyBrowser = null
+        dyBrowserContext = null
+      }
+    })
+    const context = await browser.newContext({
+      /* 必须保留 Chromium 自己的 UA。覆盖成其他版本/系统后，UA 与 Client Hints、
+         navigator.platform 不一致，Argus 会让详情请求返回空数据。 */
+      locale: 'zh-CN',
+      viewport: { width: 1920, height: 1080 },
+      screen: { width: 1920, height: 1080 },
+    })
+    dyBrowser = browser
+    dyBrowserContext = context
+    return context
+  })().finally(() => {
+    dyBrowserLaunching = null
+  })
+  return dyBrowserLaunching
+}
+
+/** 让抖音页面自己生成同会话指纹和签名，并捕获官方详情 JSON。 */
+async function dyDetailViaBrowser(awemeId: string) {
+  const context = await ensureDyBrowserContext()
+  const page = await context.newPage()
+  await page.route('**/*', (route) => {
+    const type = route.request().resourceType()
+    return ['image', 'media', 'font'].includes(type) ? route.abort() : route.continue()
+  })
+  try {
+    const detail = new Promise<any>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('浏览器等待抖音详情超时')), 30000)
+      page.on('response', async (response) => {
+        const responseUrl = response.url()
+        if (!responseUrl.includes('/aweme/v1/web/aweme/detail/')) return
+        try {
+          const requestId = new URL(responseUrl).searchParams.get('aweme_id')
+          if (requestId !== awemeId) return
+          const json = await response.json()
+          if (!json?.aweme_detail) return
+          clearTimeout(timer)
+          resolve(json.aweme_detail)
+        } catch {
+          /* 页面偶尔会重试详情接口，继续等待下一条有效 JSON。 */
+        }
+      })
+    })
+    const [, captured] = await Promise.all([
+      page.goto(`${DY_REF}video/${encodeURIComponent(awemeId)}`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000,
+      }),
+      detail,
+    ])
+    return captured
+  } finally {
+    await page.close().catch(() => undefined)
+  }
+}
+
+function dyParams(awemeId: string, uifid: string) {
   /* 参数顺序与浏览器请求一致（a_bogus 对查询串逐字签名） */
   return {
     device_platform: 'webapp',
@@ -202,6 +291,7 @@ function dyParams(awemeId: string) {
     downlink: '0.55',
     effective_type: '3g',
     round_trip_time: '500',
+    uifid,
     aweme_id: String(awemeId),
   }
 }
@@ -250,7 +340,8 @@ async function extractDouyinId(url: string) {
 
 /** 单次签名详情请求；返回 { json, blocked, empty } */
 async function dyDetailOnce(awemeId: string, ttwid: string) {
-  const q = dyQs(dyParams(awemeId))
+  const uifid = dyUifid()
+  const q = dyQs(dyParams(awemeId, uifid))
   const ab = signDouyin(q)
   if (!ab) return { blocked: true, reason: '签名生成失败' }
   const res = await fetch(`${DY_DETAIL_API}?${q}`, {
@@ -259,7 +350,7 @@ async function dyDetailOnce(awemeId: string, ttwid: string) {
       Accept: 'application/json, text/plain, */*',
       Referer: DY_REF,
       'a-bogus': ab,
-      Cookie: `ttwid=${ttwid}; uifid=${dyUifid()}`,
+      Cookie: `ttwid=${ttwid}; UIFID=${uifid}`,
     },
     signal: AbortSignal.timeout(12000),
   })
@@ -312,39 +403,47 @@ function dyPickImage(img: any): string {
 const dyIsDashPart = (u: string) => /\/media-(video|audio)-/i.test(u) || /\/aweme\/v1\/play\/dash\//i.test(u)
 
 async function resolveDouyin(url: string) {
-  if (!signerReady()) return fail('抖音签名器加载失败：' + (signerError() || '未知错误'))
-
   const awemeId = await extractDouyinId(url)
   if (!awemeId) return fail('未能识别抖音视频 ID（短链展开失败）')
 
-  /* 签名请求 + 风控重试（每次新 uifid/新签名，间隔抖动） */
   let detail: any = null
   let lastReason = ''
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const ttwid = await ensureDyTtwid(false)
-      const r: any = await dyDetailOnce(awemeId, ttwid)
-      if (r.json?.aweme_detail) {
-        detail = r.json.aweme_detail
-        break
-      }
-      if (r.blocked) lastReason = r.reason || '被风控拦截'
-      if (attempt === 1 && r.blocked) {
-        try {
-          await ensureDyTtwid(true)
-        } catch {
-          /* 沿用旧会话 */
+  try {
+    detail = await dyDetailViaBrowser(awemeId)
+  } catch (e: any) {
+    lastReason = e?.message || '浏览器会话解析失败'
+  }
+
+  /* Chromium 缺失或页面临时失败时，保留原生签名作为低成本降级路径。 */
+  if (!detail && signerReady()) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const ttwid = await ensureDyTtwid(false)
+        const r: any = await dyDetailOnce(awemeId, ttwid)
+        if (r.json?.aweme_detail) {
+          detail = r.json.aweme_detail
+          break
         }
+        if (r.blocked) lastReason = r.reason || '被风控拦截'
+        if (attempt === 1 && r.blocked) {
+          try {
+            await ensureDyTtwid(true)
+          } catch {
+            /* 沿用旧会话 */
+          }
+        }
+        if (r.json?.status_code != null) lastReason = `status_code=${r.json.status_code}`
+      } catch (e: any) {
+        lastReason = e.message || '网络错误'
       }
-      if (r.json?.status_code != null) lastReason = `status_code=${r.json.status_code}`
-    } catch (e: any) {
-      lastReason = e.message || '网络错误'
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 800 + Math.random() * 900))
     }
-    if (attempt < 3) await new Promise((r) => setTimeout(r, 800 + Math.random() * 900))
+  } else if (!detail && !signerReady()) {
+    lastReason ||= '签名器加载失败：' + (signerError() || '未知错误')
   }
   if (!detail) {
     const why = lastReason || '接口未返回数据'
-    return fail(`抖音暂未放行（${why}）——已内置开源 a_bogus 签名并自动重试 3 次，多为平台风控限流，10~30 秒后重试通常可恢复；也可用演示预览体验完整流程`)
+    return fail(`抖音解析失败（${why}）`)
   }
 
   const v = detail.video
