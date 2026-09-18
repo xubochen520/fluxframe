@@ -75,6 +75,7 @@ import com.fluxframe.app.ui.screens.TagsScreen
 import com.fluxframe.app.ui.screens.UploadReviewOverlay
 import com.fluxframe.app.ui.screens.ViewerOverlay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.withContext
@@ -134,6 +135,9 @@ fun AppShell(
         initialPage = PRIMARY_ROUTES.indexOf(route).coerceAtLeast(0),
         pageCount = { PRIMARY_ROUTES.size },
     )
+    // 底栏快速连点时，前一次 animateScrollToPage 会在半路被取消。
+    // 此时 settledPage 可能短暂停在中间页，不能把它误当成用户的最终选择。
+    var pendingPrimaryPage by remember { mutableStateOf<Int?>(null) }
 
     /* ------------------------- 顶栏随滚动自动收起 ------------------------- */
     val autoHideEnabled = uiPrefs.autoHideHeader
@@ -195,7 +199,8 @@ fun AppShell(
         snapshotFlow { pagerState.settledPage }
             .distinctUntilChanged()
             .collect { page ->
-                if (PRIMARY_ROUTES.contains(stack.last())) {
+                // 编程导航期间忽略中途 settledPage；只在用户直接滑动内容时反向同步路由。
+                if (pendingPrimaryPage == null && PRIMARY_ROUTES.contains(stack.last())) {
                     val target = PRIMARY_ROUTES[page]
                     if (stack.last() != target) {
                         stack.clear()
@@ -209,11 +214,29 @@ fun AppShell(
     // 点击底栏或从卡片入口跳到另一个主页面时，按目标所在方向平滑滑动。
     LaunchedEffect(route) {
         val page = PRIMARY_ROUTES.indexOf(route)
-        if (page >= 0 && page != pagerState.currentPage) pagerState.animateScrollToPage(page)
+        if (page >= 0) {
+            if (pagerState.settledPage == page && !pagerState.isScrollInProgress) {
+                pendingPrimaryPage = null
+            } else {
+                pendingPrimaryPage = page
+                try {
+                    pagerState.animateScrollToPage(page)
+                } finally {
+                    // 只允许最新的目标收尾；被后一次点击取消的旧协程不得改回路由。
+                    if (pendingPrimaryPage == page) {
+                        withContext(NonCancellable) {
+                            if (pagerState.settledPage != page) pagerState.scrollToPage(page)
+                            pendingPrimaryPage = null
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fun push(target: AppRoute) {
         if (stack.last() != target) {
+            PRIMARY_ROUTES.indexOf(target).takeIf { it >= 0 }?.let { pendingPrimaryPage = it }
             stack.add(target)
             headerState.reset()
         }
@@ -221,6 +244,8 @@ fun AppShell(
 
     fun pop(): Boolean {
         if (stack.size > 1) {
+            val next = stack[stack.lastIndex - 1]
+            PRIMARY_ROUTES.indexOf(next).takeIf { it >= 0 }?.let { pendingPrimaryPage = it }
             stack.removeAt(stack.size - 1)
             headerState.reset()
             return true
@@ -432,6 +457,7 @@ fun AppShell(
                         "tags" -> AppRoute.TAGS
                         else -> AppRoute.SETTINGS
                     }
+                    pendingPrimaryPage = PRIMARY_ROUTES.indexOf(target)
                     stack.clear()
                     stack.add(target)
                     headerState.reset()
@@ -442,6 +468,7 @@ fun AppShell(
                     val targetPage = (current + direction).coerceIn(0, PRIMARY_ROUTES.lastIndex)
                     if (targetPage != current) {
                         val target = PRIMARY_ROUTES[targetPage]
+                        pendingPrimaryPage = targetPage
                         stack.clear()
                         stack.add(target)
                         headerState.reset()

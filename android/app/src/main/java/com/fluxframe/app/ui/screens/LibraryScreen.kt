@@ -226,7 +226,7 @@ fun LibraryScreen(
                             scope.launch {
                                 container.mediaDownloader.enqueueBatch(picked)
                                     .onSuccess { count ->
-                                        onToast("已将 $count 个文件加入下载队列")
+                                        onToast("已开始下载 $count 个文件，完成后自动保存到图库")
                                         selectedIds = emptySet()
                                     }
                                     .onFailure { onToast(it.message) }

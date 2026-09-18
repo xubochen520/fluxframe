@@ -36,7 +36,7 @@ const jget = async (url: string, headers: Record<string, string> = {}, timeout =
 function detectPlatform(url: string) {
   try {
     const host = new URL(url).hostname.toLowerCase()
-    if (/bilibili\.com|b23\.tv|bilibili\.tv/.test(host)) return 'bilibili'
+    if (/bilibili\.com|b23\.tv|bili2233\.cn|bilibili\.tv/.test(host)) return 'bilibili'
     if (/douyin\.com|iesdouyin\.com/.test(host)) return 'douyin'
     if (/kuaishou\.com|chenzhongtech\.com|gifshow\.com/.test(host)) return 'kuaishou'
     if (/xiaohongshu\.com|xhslink\.com/.test(host)) return 'xiaohongshu'
@@ -62,7 +62,30 @@ async function resolveBilibili(url: string) {
   const sessdata = biliSession.trim()
   const cookieHeaders: Record<string, string> = { 'User-Agent': UA_PC, Referer: 'https://www.bilibili.com/' }
   if (sessdata) cookieHeaders.Cookie = `SESSDATA=${sessdata}`
-  const view = await jget('https://api.bilibili.com/x/web-interface/view?bvid=' + (url.match(/BV[0-9A-Za-z]{10}/) || [])[0], { 'User-Agent': UA_PC, Referer: 'https://www.bilibili.com/' })
+
+  /* b23.tv / bili2233.cn 真实分享链通常只有随机短码，URL 本身不含 BV 号。
+     旧实现直接把 undefined 传给 view API，所以手机上粘贴 B 站分享链会立即 400。
+     先展开短链，并同时兼容 BV / av 两种编号。 */
+  let resolvedUrl = url
+  let expandedBody = ''
+  const directId = /BV[0-9A-Za-z]{10}/i.test(url) || /(?:\/av|[?&]aid=)\d+/i.test(url)
+  if (!directId) {
+    try {
+      const expanded = await jget(url, { 'User-Agent': UA_MOBILE, Referer: 'https://www.bilibili.com/' }, 12_000)
+      resolvedUrl = expanded.finalUrl || url
+      expandedBody = expanded.buf.toString()
+    } catch {
+      return fail('B站分享短链展开失败，请检查链接或稍后重试')
+    }
+  }
+  const idSource = `${resolvedUrl}\n${expandedBody}`
+  const rawBvid = idSource.match(/BV[0-9A-Za-z]{10}/i)?.[0]
+  const bvid = rawBvid ? `BV${rawBvid.slice(2)}` : ''
+  const aid = idSource.match(/(?:\/av|[?&]aid=)(\d+)/i)?.[1] || ''
+  if (!bvid && !aid) return fail('B站链接中未找到 BV / av 视频编号（短链可能已失效）')
+
+  const viewQuery = bvid ? `bvid=${encodeURIComponent(bvid)}` : `aid=${encodeURIComponent(aid)}`
+  const view = await jget(`https://api.bilibili.com/x/web-interface/view?${viewQuery}`, { 'User-Agent': UA_PC, Referer: 'https://www.bilibili.com/' })
   let vj: any
   try {
     vj = JSON.parse(view.buf.toString())
@@ -650,6 +673,9 @@ export function registerParseApi(app: FastifyInstance, options?: ParseServerDeps
         const coverRef = referer || 'https://www.bilibili.com/'
         out.data.cover = `/api/stream?url=${encodeURIComponent(out.data.cover)}&ref=${encodeURIComponent(coverRef)}&disposition=inline`
       }
+    } else {
+      // 记录失败原因但不记录用户完整分享链，方便区分平台风控与客户端参数问题。
+      request.log.warn({ platform: detectPlatform(String(input.url || input.share || '')) || 'unknown', reason: out.msg }, 'video parse failed')
     }
     return reply.code(out.ok ? 200 : 400).type('application/json; charset=utf-8').send(out)
   })

@@ -146,12 +146,12 @@ fun MediaActionDialog(
                     }
                     ClickableRow(
                         title = "下载原文件",
-                        description = "系统下载器 + 流体云实时进度",
+                        description = "保存到系统图库 + 流体云实时进度",
                         icon = Icons.Filled.Download,
                         onClick = {
                             scope.launch {
                                 container.mediaDownloader.enqueue(item)
-                                    .onSuccess { onToast("已加入系统下载队列") }
+                                    .onSuccess { onToast("已开始下载，完成后自动保存到图库") }
                                     .onFailure { onToast(it.message) }
                             }
                             onDismiss()

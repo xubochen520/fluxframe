@@ -202,7 +202,7 @@ fun ViewerOverlay(
                         current?.let { item ->
                             scope.launch {
                                 container.mediaDownloader.enqueue(item)
-                                    .onSuccess { onToast("已加入系统下载队列") }
+                                    .onSuccess { onToast("已开始下载，完成后自动保存到图库") }
                                     .onFailure { onToast(it.message) }
                             }
                         }

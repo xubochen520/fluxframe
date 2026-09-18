@@ -75,15 +75,12 @@ class ParseRepository(private val container: AppContainer) {
     }
 
     companion object {
-        private val URL_REGEX = Regex("""https?://[^\s，。、）)】"'<>]+""", RegexOption.IGNORE_CASE)
+        private val URL_REGEX = Regex("""https?://[^\s，。、！!；;）)】}"'<>]+""", RegexOption.IGNORE_CASE)
 
         /** 从整段分享口令里抠出链接 */
         fun extractLink(input: String): String? {
             val trimmed = input.trim()
             if (trimmed.isEmpty()) return null
-            if (trimmed.startsWith("http://", true) || trimmed.startsWith("https://", true)) {
-                return trimmed.takeWhile { !it.isWhitespace() }
-            }
             return URL_REGEX.find(trimmed)?.value
         }
 

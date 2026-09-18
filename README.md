@@ -55,7 +55,7 @@ cd android
 # 产物：android\app\build\outputs\apk\{release,debug}\app-*.apk
 ```
 
-安装包也放在仓库根目录：`fluxframe-v2.2.2-native-release.apk`、`fluxframe-v2.2.2-native-debug.apk`。
+安装包也放在仓库根目录：`fluxframe-v2.2.3-native-release.apk`、`fluxframe-v2.2.3-native-debug.apk`。
 详细说明（三套主题实现原理、性能优化记录、流体云/实况通知接入与限制、架构、接口对接踩坑、构建排错、验证记录）见 [`android/README.md`](android/README.md)。
 
 - **安卓 App（APK，旧版 · Capacitor 壳）**：`client/android` 是历史实现（WebView + Capacitor），保留未动。App 启动时自动扫描局域网 4311/5173 端口并连接（多结果选择、地址记忆、手动输入备用）。构建 APK：

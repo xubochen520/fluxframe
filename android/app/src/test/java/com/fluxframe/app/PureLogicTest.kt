@@ -206,6 +206,10 @@ class PureLogicTest {
             "https://v.douyin.com/xyz/",
             ParseRepository.extractLink("https://v.douyin.com/xyz/"),
         )
+        assertEquals(
+            "https://b23.tv/AbCd1234",
+            ParseRepository.extractLink("https://b23.tv/AbCd1234！复制打开客户端"),
+        )
         assertNull(ParseRepository.extractLink("这段文字里没有链接"))
         assertNull(ParseRepository.extractLink("   "))
     }
