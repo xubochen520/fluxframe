@@ -1,6 +1,8 @@
 package com.fluxframe.app.ui.screens
 
+import android.view.ViewGroup
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,14 +14,18 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Link
@@ -28,6 +34,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,12 +49,24 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.fluxframe.app.core.util.formatCount
 import com.fluxframe.app.core.util.formatDuration
 import com.fluxframe.app.data.model.ParseData
+import com.fluxframe.app.data.model.ParseImage
 import com.fluxframe.app.data.repo.ParseRepository
 import com.fluxframe.app.ui.LocalAppContainer
 import com.fluxframe.app.ui.components.ErrorBar
@@ -82,6 +101,8 @@ fun ParseScreen(onToast: (String?) -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var savingCover by remember { mutableStateOf(false) }
     var savingVideo by remember { mutableStateOf(false) }
+    var selectedImages by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var previewImageIndex by remember { mutableStateOf<Int?>(null) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -123,10 +144,15 @@ fun ParseScreen(onToast: (String?) -> Unit) {
                         onClick = {
                             error = null
                             data = null
+                            selectedImages = emptySet()
+                            previewImageIndex = null
                             parsing = true
                             scope.launch {
                                 container.parseRepository.parse(link)
-                                    .onSuccess { data = it }
+                                    .onSuccess {
+                                        data = it
+                                        selectedImages = it.images.indices.toSet()
+                                    }
                                     .onFailure { error = it.message }
                                 parsing = false
                             }
@@ -141,7 +167,7 @@ fun ParseScreen(onToast: (String?) -> Unit) {
         }
 
         if (parsing) {
-            item { LoadingBox(text = "正在解析，抖音可能要多试几次…") }
+            item { LoadingBox(text = "正在建立平台会话并解析媒体…") }
         }
 
         // ---- 进行中的任务 ----
@@ -214,7 +240,37 @@ fun ParseScreen(onToast: (String?) -> Unit) {
             item {
                 GlassSurface(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(14.dp)) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        if (result.cover.isNotBlank()) {
+                        val video = result.primaryMedia
+                        if (video != null && video.url.isNotBlank()) {
+                            ParsedVideoPreview(
+                                url = container.parseRepository.absolute(video.url),
+                                ratio = if (video.width > 0 && video.height > 0) {
+                                    (video.width.toFloat() / video.height.toFloat()).coerceIn(0.65f, 2.2f)
+                                } else {
+                                    16f / 9f
+                                },
+                            )
+                            Text(
+                                text = "可直接播放预览，支持拖动进度和全屏",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = onGlassColor(dark, emphasis = false),
+                            )
+                        } else if (result.isImageCollection && result.images.isNotEmpty()) {
+                            ParsedImagePicker(
+                                images = result.images,
+                                selected = selectedImages,
+                                onToggle = { index ->
+                                    selectedImages = if (index in selectedImages) {
+                                        selectedImages - index
+                                    } else {
+                                        selectedImages + index
+                                    }
+                                },
+                                onPreview = { previewImageIndex = it },
+                                onSelectAll = { selectedImages = result.images.indices.toSet() },
+                                onClear = { selectedImages = emptySet() },
+                            )
+                        } else if (result.cover.isNotBlank()) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -312,16 +368,23 @@ fun ParseScreen(onToast: (String?) -> Unit) {
 
                         if (result.isImageCollection && result.images.isNotEmpty()) {
                             SecondaryActionButton(
-                                text = "保存全部 ${result.images.size} 张图片",
+                                text = if (selectedImages.isEmpty()) {
+                                    "请先选择要保存的图片"
+                                } else {
+                                    "保存所选 ${selectedImages.size} / ${result.images.size} 张图片"
+                                },
                                 icon = Icons.Filled.Download,
+                                enabled = selectedImages.isNotEmpty(),
                                 onClick = {
-                                    result.images.indices.forEach { index ->
+                                    var queued = 0
+                                    selectedImages.sorted().forEach { index ->
                                         val request = ParseRepository.imageImportOf(result, index, result.title)
                                         if (request != null) {
                                             container.taskStore.startImport(request, "${result.title}-${index + 1}")
+                                            queued++
                                         }
                                     }
-                                    onToast("已加入 ${result.images.size} 个提取任务")
+                                    onToast("已加入 $queued 个图片保存任务")
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                             )
@@ -342,7 +405,7 @@ fun ParseScreen(onToast: (String?) -> Unit) {
                         )
                         Text(
                             text = "· B站未登录时最高 720P；在「设置 → B站」扫码登录后可得 1080P+（需服务端装有 ffmpeg）。\n" +
-                                "· 抖音有风控，失败时等 10–30 秒再试通常可恢复。\n" +
+                                "· 抖音由服务端建立同会话浏览器指纹，首次解析可能需要数秒。\n" +
                                 "· 提取的视频会进入图片库并自动带「视频」标签。",
                             style = MaterialTheme.typography.labelSmall,
                             color = onGlassColor(dark, emphasis = false),
@@ -353,5 +416,260 @@ fun ParseScreen(onToast: (String?) -> Unit) {
         }
 
         item { Spacer(modifier = Modifier.height(6.dp)) }
+    }
+
+    val previewResult = data
+    val previewIndex = previewImageIndex
+    if (previewResult != null && previewIndex != null && previewResult.images.isNotEmpty()) {
+        ParsedImageViewer(
+            title = previewResult.title,
+            images = previewResult.images,
+            initialIndex = previewIndex,
+            selected = selectedImages,
+            onToggle = { index ->
+                selectedImages = if (index in selectedImages) selectedImages - index else selectedImages + index
+            },
+            onSaveOne = { index ->
+                ParseRepository.imageImportOf(previewResult, index, previewResult.title)?.let { request ->
+                    container.taskStore.startImport(request, "${previewResult.title}-${index + 1}")
+                    onToast("第 ${index + 1} 张图片已加入保存任务")
+                }
+            },
+            onClose = { previewImageIndex = null },
+        )
+    }
+}
+
+/** 解析结果里的视频直接用与图库一致的 OkHttp + ExoPlayer 播放，代理流可拖动 Range。 */
+@Composable
+private fun ParsedVideoPreview(url: String, ratio: Float) {
+    val container = LocalAppContainer.current
+    val context = LocalContext.current
+    val player = remember(url) {
+        val httpFactory = OkHttpDataSource.Factory(container.okHttp)
+        val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(ProgressiveMediaSource.Factory(dataSourceFactory))
+            .build()
+            .apply {
+                setMediaItem(MediaItem.fromUri(url))
+                playWhenReady = false
+                repeatMode = Player.REPEAT_MODE_OFF
+                prepare()
+            }
+    }
+    DisposableEffect(player) {
+        onDispose { player.release() }
+    }
+    AndroidView(
+        factory = { ctx ->
+            PlayerView(ctx).apply {
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
+                useController = true
+                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+                this.player = player
+            }
+        },
+        update = { it.player = player },
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(ratio)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.Black),
+    )
+}
+
+/** 原生图片选择网格：点缩略图预览，点右上角复选圆圈选择要保存的图片。 */
+@Composable
+private fun ParsedImagePicker(
+    images: List<ParseImage>,
+    selected: Set<Int>,
+    onToggle: (Int) -> Unit,
+    onPreview: (Int) -> Unit,
+    onSelectAll: () -> Unit,
+    onClear: () -> Unit,
+) {
+    val container = LocalAppContainer.current
+    val dark = LocalDarkTheme.current
+    Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = "已选 ${selected.size} / ${images.size} 张",
+                style = MaterialTheme.typography.labelMedium,
+                color = onGlassColor(dark, emphasis = true),
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "全选",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable { onSelectAll() }.padding(5.dp),
+            )
+            Text(
+                text = "清空",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.clickable { onClear() }.padding(5.dp),
+            )
+        }
+        images.indices.chunked(3).forEach { rowIndexes ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                rowIndexes.forEach { index ->
+                    val image = images[index]
+                    val picked = index in selected
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .aspectRatio(3f / 4f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .border(
+                                width = if (picked) 2.dp else 1.dp,
+                                color = if (picked) Color(0xFF34D399) else Color.White.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(12.dp),
+                            )
+                            .clickable { onPreview(index) },
+                    ) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(container.parseRepository.absolute(image.url))
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = "预览第 ${index + 1} 张图片",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(7.dp)
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(if (picked) Color(0xFF34D399) else Color.Black.copy(alpha = 0.58f))
+                                .border(1.dp, Color.White.copy(alpha = 0.8f), CircleShape)
+                                .clickable { onToggle(index) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (picked) Icon(Icons.Filled.Check, contentDescription = "已选择", tint = Color(0xFF052E1B), modifier = Modifier.size(17.dp))
+                        }
+                        Text(
+                            text = "${index + 1}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White,
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(7.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.58f))
+                                .padding(horizontal = 7.dp, vertical = 3.dp),
+                        )
+                    }
+                }
+                repeat(3 - rowIndexes.size) { Spacer(modifier = Modifier.weight(1f)) }
+            }
+        }
+        Text(
+            text = "点图片进入全屏预览并左右滑动；右上角勾选决定保存哪些图片",
+            style = MaterialTheme.typography.labelSmall,
+            color = onGlassColor(dark, emphasis = false),
+        )
+    }
+}
+
+/** 解析图集专用全屏查看器，不要求图片先入库。 */
+@Composable
+private fun ParsedImageViewer(
+    title: String,
+    images: List<ParseImage>,
+    initialIndex: Int,
+    selected: Set<Int>,
+    onToggle: (Int) -> Unit,
+    onSaveOne: (Int) -> Unit,
+    onClose: () -> Unit,
+) {
+    val container = LocalAppContainer.current
+    val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(0, images.lastIndex)) { images.size }
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(container.parseRepository.absolute(images[page].url))
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = "$title · 第 ${page + 1} 张",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize().padding(vertical = 72.dp),
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = "${pagerState.currentPage + 1} / ${images.size}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.7f),
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.12f))
+                        .clickable { onClose() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Filled.Close, contentDescription = "关闭预览", tint = Color.White)
+                }
+            }
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(14.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                val current = pagerState.currentPage
+                SecondaryActionButton(
+                    text = if (current in selected) "取消选择" else "选择这张",
+                    icon = Icons.Filled.Check,
+                    onClick = { onToggle(current) },
+                    modifier = Modifier.weight(1f),
+                )
+                PrimaryActionButton(
+                    text = "保存这张",
+                    icon = Icons.Filled.Download,
+                    onClick = { onSaveOne(current) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
     }
 }

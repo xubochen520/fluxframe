@@ -13,6 +13,7 @@ import com.fluxframe.app.core.util.formatRelative
 import com.fluxframe.app.core.util.hueFromKey
 import com.fluxframe.app.data.model.ImageItem
 import com.fluxframe.app.data.model.ParseData
+import com.fluxframe.app.data.model.ParseImage
 import com.fluxframe.app.data.model.ParseMedia
 import com.fluxframe.app.data.repo.MediaRepository
 import com.fluxframe.app.data.repo.ParseRepository
@@ -248,6 +249,27 @@ class PureLogicTest {
         val imagesOnly = ParseData(platform = "douyin", kind = "images", title = "图文")
         assertNull(ParseRepository.videoImportOf(imagesOnly, "图文", useHighQuality = true))
         assertNull(ParseRepository.coverImportOf(imagesOnly, "图文"))
+    }
+
+    @Test
+    fun `imageImportOf saves only the requested image`() {
+        val data = ParseData(
+            platform = "douyin",
+            kind = "images",
+            title = "图集",
+            referer = "https://www.douyin.com/",
+            images = listOf(
+                ParseImage(url = "/api/stream?url=one", src = "https://img.example/one.jpg"),
+                ParseImage(url = "/api/stream?url=two", src = "https://img.example/two.jpg"),
+            ),
+        )
+        val request = ParseRepository.imageImportOf(data, 1, "只存选中的")
+        assertNotNull(request)
+        assertEquals("https://img.example/two.jpg", request!!.url)
+        assertEquals("只存选中的-2", request.name)
+        assertEquals("image", request.kind)
+        assertEquals("抖音", request.platTag)
+        assertNull(ParseRepository.imageImportOf(data, 9, "越界"))
     }
 
     /* ---------------------------- 上传状态 ---------------------------- */
