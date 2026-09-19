@@ -2,6 +2,7 @@ package com.fluxframe.app.ui.screens
 
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
@@ -105,14 +106,27 @@ fun ViewerOverlay(
 ) {
     if (index == null || images.isEmpty()) return
     val container = LocalAppContainer.current
+    val uiPrefs by container.prefs.ui.collectAsStateWithLifecycle()
     val safeIndex = index.coerceIn(0, images.lastIndex)
     val pagerState = rememberPagerState(initialPage = safeIndex) { images.size }
     val scope = rememberCoroutineScope()
     var showActions by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
+    var backProgress by remember { mutableFloatStateOf(0f) }
     val current = images.getOrNull(pagerState.currentPage.coerceIn(0, images.lastIndex))
 
-    BackHandler { onClose() }
+    if (uiPrefs.predictiveBackEnabled) {
+        PredictiveBackHandler { progress ->
+            try {
+                progress.collect { event -> backProgress = event.progress }
+                onClose()
+            } finally {
+                backProgress = 0f
+            }
+        }
+    } else {
+        BackHandler { onClose() }
+    }
 
     LaunchedEffect(pagerState.currentPage) {
         onIndexChange(pagerState.currentPage)
@@ -133,7 +147,17 @@ fun ViewerOverlay(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                translationX = size.width * 0.28f * backProgress
+                scaleX = 1f - 0.06f * backProgress
+                scaleY = 1f - 0.06f * backProgress
+                alpha = 1f - 0.22f * backProgress
+            }
+            .background(Color.Black),
+    ) {
         HorizontalPager(
             state = pagerState,
             modifier = Modifier.fillMaxSize(),

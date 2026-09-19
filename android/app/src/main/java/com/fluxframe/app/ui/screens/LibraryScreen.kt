@@ -1,6 +1,7 @@
 package com.fluxframe.app.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -37,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -45,6 +47,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -113,12 +116,24 @@ fun LibraryScreen(
     var actionTarget by remember { mutableStateOf<ImageItem?>(null) }
     var sortExpanded by remember { mutableStateOf(false) }
     var selectedIds by remember(kind) { mutableStateOf<Set<String>>(emptySet()) }
+    var selectionBackProgress by remember { mutableFloatStateOf(0f) }
     val scope = rememberCoroutineScope()
 
     val isTrash = kind == MediaKind.TRASH
     val selectedTags = filters.tags
 
-    BackHandler(enabled = selectedIds.isNotEmpty()) { selectedIds = emptySet() }
+    if (uiPrefs.predictiveBackEnabled) {
+        PredictiveBackHandler(enabled = selectedIds.isNotEmpty()) { progress ->
+            try {
+                progress.collect { event -> selectionBackProgress = event.progress }
+                selectedIds = emptySet()
+            } finally {
+                selectionBackProgress = 0f
+            }
+        }
+    } else {
+        BackHandler(enabled = selectedIds.isNotEmpty()) { selectedIds = emptySet() }
+    }
 
     LaunchedEffect(items) {
         val available = items.asSequence().map { it.id }.toSet()
@@ -199,6 +214,10 @@ fun LibraryScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 14.dp, vertical = 4.dp)
+                        .graphicsLayer {
+                            translationX = size.width * 0.20f * selectionBackProgress
+                            alpha = 1f - selectionBackProgress
+                        }
                         .clip(RoundedCornerShape(16.dp))
                         .background(MaterialTheme.colorScheme.primary.copy(alpha = if (dark) 0.18f else 0.10f))
                         .padding(horizontal = 12.dp, vertical = 7.dp),

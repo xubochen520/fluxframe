@@ -285,11 +285,12 @@ fun AppShell(
         }
     }
 
-    val canHandleBack = viewerIndex != null || upload?.phase == UploadPhase.REVIEW || route != AppRoute.OVERVIEW
+    // 查看器拥有自己的预测返回处理；这里负责上传确认层与页面返回栈。
+    val canHandleBack = viewerIndex == null &&
+        (upload?.phase == UploadPhase.REVIEW || stack.size > 1)
     var predictiveBackProgress by remember { mutableFloatStateOf(0f) }
     fun performBack() {
         when {
-            viewerIndex != null -> viewerIndex = null
             upload?.phase == UploadPhase.REVIEW -> container.taskStore.dismissUpload()
             route == AppRoute.PERSON -> {
                 personTagId = null
@@ -403,16 +404,7 @@ fun AppShell(
         }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .graphicsLayer {
-                translationX = size.width * 0.07f * predictiveBackProgress
-                scaleX = 1f - 0.025f * predictiveBackProgress
-                scaleY = 1f - 0.025f * predictiveBackProgress
-                alpha = 1f - 0.08f * predictiveBackProgress
-            },
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize().nestedScroll(scrollConnection)) {
             AnimatedVisibility(
                 visible = !headerHidden,
@@ -465,16 +457,35 @@ fun AppShell(
             )
 
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (PRIMARY_ROUTES.contains(route)) {
-                    HorizontalPager(
-                        state = pagerState,
-                        key = { PRIMARY_ROUTES[it].name },
-                        modifier = Modifier.fillMaxSize(),
-                    ) { page ->
-                        routeContent(PRIMARY_ROUTES[page])
+                val previousRoute = stack.getOrNull(stack.lastIndex - 1)
+                val pageBackProgress = if (upload?.phase == UploadPhase.REVIEW) 0f else predictiveBackProgress
+
+                // 手势进行时先真实绘制“松手后会回到的页面”，当前页在其上方跟手退出。
+                // 因此人物详情、日志、回收站等返回时看到的是目标页，而不是黑色空背景。
+                if (pageBackProgress > 0f && previousRoute != null) {
+                    Box(modifier = Modifier.fillMaxSize()) { routeContent(previousRoute) }
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            translationX = size.width * 0.22f * pageBackProgress
+                            scaleX = 1f - 0.045f * pageBackProgress
+                            scaleY = 1f - 0.045f * pageBackProgress
+                            alpha = 1f - 0.12f * pageBackProgress
+                        },
+                ) {
+                    if (PRIMARY_ROUTES.contains(route)) {
+                        HorizontalPager(
+                            state = pagerState,
+                            key = { PRIMARY_ROUTES[it].name },
+                            modifier = Modifier.fillMaxSize(),
+                        ) { page ->
+                            routeContent(PRIMARY_ROUTES[page])
+                        }
+                    } else {
+                        routeContent(route)
                     }
-                } else {
-                    routeContent(route)
                 }
             }
 
@@ -548,7 +559,15 @@ fun AppShell(
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
         ) {
-            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f))) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        translationY = size.height * 0.18f * predictiveBackProgress
+                        alpha = 1f - 0.45f * predictiveBackProgress
+                    }
+                    .background(Color.Black.copy(alpha = 0.35f)),
+            ) {
                 UploadReviewOverlay(
                     onDismiss = { container.taskStore.dismissUpload() },
                     onToast = { showToast(it) },

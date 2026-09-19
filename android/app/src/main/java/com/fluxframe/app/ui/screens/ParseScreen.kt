@@ -1,6 +1,8 @@
 package com.fluxframe.app.ui.screens
 
 import android.view.ViewGroup
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -36,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -44,6 +47,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -598,12 +602,36 @@ private fun ParsedImageViewer(
     onClose: () -> Unit,
 ) {
     val container = LocalAppContainer.current
+    val uiPrefs by container.prefs.ui.collectAsStateWithLifecycle()
     val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(0, images.lastIndex)) { images.size }
+    var backProgress by remember { mutableFloatStateOf(0f) }
     Dialog(
         onDismissRequest = onClose,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
     ) {
-        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        if (uiPrefs.predictiveBackEnabled) {
+            PredictiveBackHandler { progress ->
+                try {
+                    progress.collect { event -> backProgress = event.progress }
+                    onClose()
+                } finally {
+                    backProgress = 0f
+                }
+            }
+        } else {
+            BackHandler { onClose() }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    translationX = size.width * 0.28f * backProgress
+                    scaleX = 1f - 0.06f * backProgress
+                    scaleY = 1f - 0.06f * backProgress
+                    alpha = 1f - 0.22f * backProgress
+                }
+                .background(Color.Black),
+        ) {
             HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
                 AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)
