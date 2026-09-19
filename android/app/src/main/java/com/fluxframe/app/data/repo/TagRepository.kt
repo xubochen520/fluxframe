@@ -27,10 +27,11 @@ class TagRepository(private val container: AppContainer) {
 
     suspend fun update(
         id: String,
+        name: String? = null,
         r18: Boolean? = null,
         color: String? = null,
         person: Boolean? = null,
-    ): Result<TagItem> = apiCall { api.updateTag(id, UpdateTagRequest(r18, color, person)) }
+    ): Result<TagItem> = apiCall { api.updateTag(id, UpdateTagRequest(name, r18, color, person)) }
 
     suspend fun delete(id: String): Result<Unit> = apiCall {
         api.deleteTag(id)

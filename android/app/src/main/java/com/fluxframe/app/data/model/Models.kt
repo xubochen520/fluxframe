@@ -108,6 +108,7 @@ data class CreateTagRequest(
 
 @Serializable
 data class UpdateTagRequest(
+    val name: String? = null,
     val r18: Boolean? = null,
     val color: String? = null,
     val person: Boolean? = null,

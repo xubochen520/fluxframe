@@ -2,6 +2,7 @@ package com.fluxframe.app.ui
 
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -37,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -55,6 +58,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.fluxframe.app.data.store.MediaKind
 import com.fluxframe.app.data.store.UploadPhase
 import com.fluxframe.app.ui.components.BottomNavItem
@@ -76,6 +80,7 @@ import com.fluxframe.app.ui.screens.UploadReviewOverlay
 import com.fluxframe.app.ui.screens.ViewerOverlay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.withContext
@@ -194,6 +199,22 @@ fun AppShell(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    // App 持续停留在前台时也要对齐服务端。这样别的设备新增/删除、观看次数变化，
+    // 以及服务端任务完成后的媒体都会自动出现，不要求用户离开 App 再回来。
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                delay(15_000)
+                container.mediaStore.silentRefreshAll()
+            }
+        }
+    }
+
+    // 切换任意页面时立即静默同步一次，周期刷新只负责兜底。
+    LaunchedEffect(route) {
+        container.mediaStore.silentRefreshAll()
+    }
+
     // 内容区直接左右拖动时，以分页器最终停下的位置作为新的主页面。
     LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.settledPage }
@@ -264,8 +285,9 @@ fun AppShell(
         }
     }
 
-    // 系统返回：先关覆盖层，再退页面
-    BackHandler(enabled = viewerIndex != null || upload?.phase == UploadPhase.REVIEW || route != AppRoute.OVERVIEW) {
+    val canHandleBack = viewerIndex != null || upload?.phase == UploadPhase.REVIEW || route != AppRoute.OVERVIEW
+    var predictiveBackProgress by remember { mutableFloatStateOf(0f) }
+    fun performBack() {
         when {
             viewerIndex != null -> viewerIndex = null
             upload?.phase == UploadPhase.REVIEW -> container.taskStore.dismissUpload()
@@ -275,6 +297,21 @@ fun AppShell(
             }
             else -> pop()
         }
+    }
+
+    // 系统返回：先关覆盖层，再退页面。启用时消费 Android 13+ 的手势进度，
+    // 内容会轻微跟手移动；取消手势会自动回到原位。
+    if (uiPrefs.predictiveBackEnabled) {
+        PredictiveBackHandler(enabled = canHandleBack) { progress ->
+            try {
+                progress.collect { event -> predictiveBackProgress = event.progress }
+                performBack()
+            } finally {
+                predictiveBackProgress = 0f
+            }
+        }
+    } else {
+        BackHandler(enabled = canHandleBack) { performBack() }
     }
 
     // 相册选择器：用系统 Photo Picker，不需要任何存储权限
@@ -366,7 +403,16 @@ fun AppShell(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                translationX = size.width * 0.07f * predictiveBackProgress
+                scaleX = 1f - 0.025f * predictiveBackProgress
+                scaleY = 1f - 0.025f * predictiveBackProgress
+                alpha = 1f - 0.08f * predictiveBackProgress
+            },
+    ) {
         Column(modifier = Modifier.fillMaxSize().nestedScroll(scrollConnection)) {
             AnimatedVisibility(
                 visible = !headerHidden,

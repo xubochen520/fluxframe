@@ -2,6 +2,8 @@ package com.fluxframe.app.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -76,6 +78,7 @@ import kotlinx.coroutines.launch
 private const val TAG_PREVIEW_COUNT = 24
 
 /** 智能标签：人物组（可点进详情）+ 普通标签 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TagsScreen(
     onOpenPerson: (String) -> Unit,
@@ -194,7 +197,10 @@ fun TagsScreen(
                                 GlassSurface(
                                     modifier = Modifier
                                         .width(104.dp)
-                                        .clickable { onOpenPerson(tag.id) },
+                                        .combinedClickable(
+                                            onClick = { onOpenPerson(tag.id) },
+                                            onLongClick = { renameTarget = tag },
+                                        ),
                                     contentPadding = PaddingValues(vertical = 12.dp),
                                 ) {
                                     Column(
@@ -256,10 +262,13 @@ fun TagsScreen(
                     GlassSurface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                container.mediaStore.setTag(tag.name)
-                                onOpenMediaLibrary(container.mediaStore.libraryForTag(tag.name))
-                            },
+                            .combinedClickable(
+                                onClick = {
+                                    container.mediaStore.setTag(tag.name)
+                                    onOpenMediaLibrary(container.mediaStore.libraryForTag(tag.name))
+                                },
+                                onLongClick = { renameTarget = tag },
+                            ),
                         contentPadding = PaddingValues(12.dp),
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -358,6 +367,10 @@ fun TagsScreen(
         TextPromptRename(
             tag = tag,
             onDismiss = { renameTarget = null },
+            onDelete = {
+                renameTarget = null
+                confirmDelete = tag
+            },
             onToast = onToast,
         )
     }
@@ -463,10 +476,12 @@ private fun CreateTagDialog(
 private fun TextPromptRename(
     tag: TagItem,
     onDismiss: () -> Unit,
+    onDelete: () -> Unit,
     onToast: (String?) -> Unit,
 ) {
     val container = LocalAppContainer.current
     val scope = rememberCoroutineScope()
+    var name by remember(tag.id) { mutableStateOf(tag.name) }
     var person by remember { mutableStateOf(tag.person) }
     var r18 by remember { mutableStateOf(tag.r18) }
     val dark = LocalDarkTheme.current
@@ -480,13 +495,21 @@ private fun TextPromptRename(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = tag.name,
+                    text = "编辑标签",
                     style = MaterialTheme.typography.titleMedium,
                     color = onGlassColor(dark, emphasis = true),
                 )
+                GlassTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    placeholder = "标签名（1–40 字）",
+                    enabled = !tag.name.equals("R-18", ignoreCase = true),
+                )
                 SwitchRow(
-                    title = "人物标签",
+                    title = if (person) "位于人物组" else "加入人物组",
+                    description = if (person) "关闭即可将此标签移出人物组" else "开启后会在人物分组中显示",
                     checked = person,
+                    enabled = !tag.name.equals("R-18", ignoreCase = true),
                     onCheckedChange = { person = it },
                 )
                 SwitchRow(
@@ -495,6 +518,17 @@ private fun TextPromptRename(
                     enabled = !tag.r18 && !person,
                     onCheckedChange = { r18 = it },
                 )
+                if (!tag.name.equals("R-18", ignoreCase = true)) {
+                    Text(
+                        text = "删除标签",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                            .clickable(onClick = onDelete)
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                     Box(modifier = Modifier.weight(1f)) {
                         SecondaryActionButton(text = "取消", onClick = onDismiss, modifier = Modifier.fillMaxWidth())
@@ -502,16 +536,18 @@ private fun TextPromptRename(
                     Box(modifier = Modifier.weight(1f)) {
                         PrimaryActionButton(
                             text = "保存",
+                            enabled = name.trim().isNotEmpty() && name.trim().length <= 40,
                             onClick = {
                                 scope.launch {
                                     container.tagRepository.update(
                                         id = tag.id,
+                                        name = name.trim().takeIf { it != tag.name },
                                         person = if (person != tag.person) person else null,
                                         r18 = if (r18 != tag.r18) r18 else null,
                                     )
                                         .onSuccess {
-                                            container.mediaStore.upsertTag(it)
-                                            container.mediaStore.refreshAll()
+                                            container.mediaStore.applyTagUpdated(tag, it)
+                                            container.mediaStore.refreshDashboard()
                                             onToast("已更新")
                                         }
                                         .onFailure { onToast(it.message) }

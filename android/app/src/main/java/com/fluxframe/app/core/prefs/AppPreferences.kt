@@ -35,6 +35,8 @@ data class UiPrefs(
     val backgroundImageOpacity: Float = 0.72f,
     /** 点击或横拖底部导航时提供轻微触觉反馈 */
     val bottomBarHapticsEnabled: Boolean = true,
+    /** Android 13+ 边缘返回时显示页面跟手预览 */
+    val predictiveBackEnabled: Boolean = true,
 )
 
 /**
@@ -84,6 +86,7 @@ class AppPreferences(context: Context) {
             .putString(KEY_BACKGROUND_IMAGE, next.backgroundImageUri)
             .putFloat(KEY_BACKGROUND_OPACITY, next.backgroundImageOpacity.coerceIn(0.2f, 1f))
             .putBoolean(KEY_BOTTOM_BAR_HAPTICS, next.bottomBarHapticsEnabled)
+            .putBoolean(KEY_PREDICTIVE_BACK, next.predictiveBackEnabled)
             .apply()
         _ui.value = next
     }
@@ -109,6 +112,7 @@ class AppPreferences(context: Context) {
         backgroundImageUri = prefs.getString(KEY_BACKGROUND_IMAGE, null)?.takeIf { it.isNotBlank() },
         backgroundImageOpacity = prefs.getFloat(KEY_BACKGROUND_OPACITY, 0.72f).coerceIn(0.2f, 1f),
         bottomBarHapticsEnabled = prefs.getBoolean(KEY_BOTTOM_BAR_HAPTICS, true),
+        predictiveBackEnabled = prefs.getBoolean(KEY_PREDICTIVE_BACK, true),
     )
 
     companion object {
@@ -130,6 +134,7 @@ class AppPreferences(context: Context) {
         const val KEY_BACKGROUND_IMAGE = "background_image_uri"
         const val KEY_BACKGROUND_OPACITY = "background_image_opacity"
         const val KEY_BOTTOM_BAR_HAPTICS = "bottom_bar_haptics"
+        const val KEY_PREDICTIVE_BACK = "predictive_back"
 
         /** 取帧位置的可选范围：0 秒（首帧）到 10 分钟 */
         const val MIN_POSTER_SECONDS = 0f

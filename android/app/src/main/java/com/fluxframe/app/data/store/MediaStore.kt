@@ -237,6 +237,12 @@ class MediaStore(private val container: AppContainer) {
         _trashImages.value = _trashImages.value.map { if (it.id == id) it.copy(name = name) else it }
     }
 
+    /** 浏览成功后立即写回计数，不必等下一轮网络刷新。 */
+    fun applyViewed(id: String, views: Int) {
+        _liveImages.value = _liveImages.value.map { if (it.id == id) it.copy(views = views) else it }
+        _trashImages.value = _trashImages.value.map { if (it.id == id) it.copy(views = views) else it }
+    }
+
     fun moveToTrashLocally(id: String) {
         val item = _liveImages.value.firstOrNull { it.id == id } ?: return
         _liveImages.value = _liveImages.value.filterNot { it.id == id }
@@ -285,9 +291,39 @@ class MediaStore(private val container: AppContainer) {
         }
     }
 
+    /** 标签改名时同步媒体标签与当前筛选，避免保存后短暂显示旧名字或空列表。 */
+    fun applyTagUpdated(previous: TagItem, updated: TagItem) {
+        upsertTag(updated)
+        if (previous.name == updated.name) return
+
+        fun renameIn(items: List<ImageItem>) = items.map { item ->
+            val index = item.tagIds.indexOf(updated.id)
+            if (index < 0 || index >= item.tags.size) item
+            else item.copy(tags = item.tags.mapIndexed { i, name -> if (i == index) updated.name else name })
+        }
+
+        _liveImages.value = renameIn(_liveImages.value)
+        _trashImages.value = renameIn(_trashImages.value)
+        if (_filters.value.tags.contains(previous.name)) {
+            _filters.value = _filters.value.copy(
+                tags = _filters.value.tags - previous.name + updated.name,
+            )
+        }
+    }
+
     fun removeTagLocally(tagId: String) {
         val removed = _tags.value.firstOrNull { it.id == tagId }
         _tags.value = _tags.value.filterNot { it.id == tagId }
+        fun stripFrom(items: List<ImageItem>) = items.map { item ->
+            val index = item.tagIds.indexOf(tagId)
+            if (index < 0) item
+            else item.copy(
+                tags = item.tags.filterIndexed { i, _ -> i != index },
+                tagIds = item.tagIds.filterIndexed { i, _ -> i != index },
+            )
+        }
+        _liveImages.value = stripFrom(_liveImages.value)
+        _trashImages.value = stripFrom(_trashImages.value)
         // 被删掉的标签如果正被选中，要一并从筛选里去掉，否则会筛出空结果
         if (removed != null && _filters.value.tags.contains(removed.name)) {
             _filters.value = _filters.value.copy(tags = _filters.value.tags - removed.name)

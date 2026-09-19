@@ -321,6 +321,14 @@ fun SettingsScreen(
                         },
                     )
                     SwitchRow(
+                        title = "预测性返回手势",
+                        description = "从屏幕边缘返回时，跟随手势预览即将返回的页面（Android 13+）",
+                        checked = uiPrefs.predictiveBackEnabled,
+                        onCheckedChange = { value ->
+                            container.prefs.updateUi { it.copy(predictiveBackEnabled = value) }
+                        },
+                    )
+                    SwitchRow(
                         title = "玻璃噪点纹理",
                         description = "亚克力与液态玻璃的颗粒感",
                         checked = uiPrefs.noiseEnabled,

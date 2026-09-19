@@ -807,10 +807,14 @@ app.post('/api/tags', async (request, reply) => {
 app.patch('/api/tags/:id', async (request, reply) => {
   const user = await requireUser(request as AuthenticatedRequest, reply)
   if (!user) return
-  const body = z.object({ r18: z.boolean().optional(), color: z.string().optional(), person: z.boolean().optional() }).parse(request.body)
+  const body = z.object({ name: z.string().trim().min(1).max(40).optional(), r18: z.boolean().optional(), color: z.string().optional(), person: z.boolean().optional() }).parse(request.body)
   const tag = await prisma.tag.findUnique({ where: { id: (request.params as { id: string }).id } })
   if (!tag) return reply.code(404).send({ message: '标签不存在' })
-  const data: { r18?: boolean; color?: string; person?: boolean } = {}
+  const data: { name?: string; r18?: boolean; color?: string; person?: boolean } = {}
+  if (body.name !== undefined && body.name !== tag.name) {
+    if (isTagR18(tag)) return reply.code(400).send({ message: '系统标签 R-18 不能改名' })
+    data.name = body.name.toUpperCase() === 'R-18' ? 'R-18' : body.name
+  }
   if (body.color !== undefined) data.color = body.color
   if (body.r18 !== undefined && !isTagR18(tag)) data.r18 = body.r18
   /* 放入人物组 → 圆点变绿；移出人物组 → 恢复默认紫色（除非用户自定义过颜色） */
@@ -820,9 +824,9 @@ app.patch('/api/tags/:id', async (request, reply) => {
     else if (tag.color === PERSON_TAG_COLOR || body.color === undefined) data.color = DEFAULT_TAG_COLOR
   }
   const updated = await prisma.tag.update({ where: { id: tag.id }, data }).catch(() => null)
-  if (!updated) return reply.code(409).send({ message: '标签更新失败' })
-  const action = data.person === undefined ? '更新标签' : (data.person ? '放入人物组' : '移出人物组')
-  await recordAudit(request, action, user.id, updated.name)
+  if (!updated) return reply.code(409).send({ message: data.name ? '标签名已存在' : '标签更新失败' })
+  const action = data.name !== undefined ? '修改标签名' : data.person === undefined ? '更新标签' : (data.person ? '放入人物组' : '移出人物组')
+  await recordAudit(request, action, user.id, data.name ? `${tag.name} → ${updated.name}` : updated.name)
   const count = await prisma.imageTag.count({ where: { tagId: updated.id } })
   return tagDto(updated, count)
 })

@@ -121,6 +121,7 @@ fun ViewerOverlay(
         current?.let { item ->
             // 记一次浏览（失败静默：这不该打扰看图）
             container.mediaRepository.markViewed(item.id)
+                .onSuccess { views -> container.mediaStore.applyViewed(item.id, views) }
         }
     }
 
