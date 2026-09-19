@@ -1,5 +1,9 @@
 package com.fluxframe.app.ui.screens
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.PredictiveBackHandler
@@ -33,6 +37,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -73,6 +78,8 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import coil.size.Precision
+import coil.size.Size as CoilSize
 import com.fluxframe.app.data.model.ImageItem
 import com.fluxframe.app.core.util.formatDateTime
 import com.fluxframe.app.ui.LocalAppContainer
@@ -98,16 +105,21 @@ import kotlinx.coroutines.launch
  */
 @Composable
 fun ViewerOverlay(
-    index: Int?,
+    mediaId: String?,
     images: List<ImageItem>,
     onClose: () -> Unit,
-    onIndexChange: (Int) -> Unit,
+    onMediaIdChange: (String) -> Unit,
     onToast: (String?) -> Unit,
 ) {
-    if (index == null || images.isEmpty()) return
+    if (mediaId == null || images.isEmpty()) return
     val container = LocalAppContainer.current
+    val context = LocalContext.current
     val uiPrefs by container.prefs.ui.collectAsStateWithLifecycle()
-    val safeIndex = index.coerceIn(0, images.lastIndex)
+    val safeIndex = images.indexOfFirst { it.id == mediaId }
+    if (safeIndex < 0) {
+        LaunchedEffect(mediaId, images) { onClose() }
+        return
+    }
     val pagerState = rememberPagerState(initialPage = safeIndex) { images.size }
     val scope = rememberCoroutineScope()
     var showActions by remember { mutableStateOf(false) }
@@ -129,7 +141,7 @@ fun ViewerOverlay(
     }
 
     LaunchedEffect(pagerState.currentPage) {
-        onIndexChange(pagerState.currentPage)
+        images.getOrNull(pagerState.currentPage)?.let { onMediaIdChange(it.id) }
         // 翻到新的一页时把浮层重新亮出来，让人知道自己在看第几张
         chromeVisible = true
         current?.let { item ->
@@ -137,6 +149,21 @@ fun ViewerOverlay(
             container.mediaRepository.markViewed(item.id)
                 .onSuccess { views -> container.mediaStore.applyViewed(item.id, views) }
         }
+    }
+
+    // 自动刷新或排序改变列表位置时，继续跟随同一个媒体 ID，而不是沿用旧下标。
+    LaunchedEffect(images.map { it.id }, mediaId) {
+        val target = images.indexOfFirst { it.id == mediaId }
+        if (target >= 0 && target != pagerState.currentPage) pagerState.scrollToPage(target)
+    }
+
+    // Android 14+ Ultra HDR gain map、HDR10/HDR10+ 与 Dolby Vision 都需要 HDR 窗口
+    // 才能输出完整动态范围；不支持的设备会由系统安全回落到 SDR。
+    DisposableEffect(uiPrefs.hdrDisplayEnabled) {
+        val activity = context.findActivity()
+        val oldMode = activity?.window?.colorMode
+        if (uiPrefs.hdrDisplayEnabled) activity?.window?.colorMode = ActivityInfo.COLOR_MODE_HDR
+        onDispose { if (oldMode != null) activity.window.colorMode = oldMode }
     }
 
     // 自动隐藏：只要浮层是显示的，就起一个倒计时；任何一次唤出都会重置它
@@ -164,7 +191,7 @@ fun ViewerOverlay(
             pageSpacing = 12.dp,
         ) { page ->
             val item = images.getOrNull(page) ?: return@HorizontalPager
-            if (item.isVideo) {
+            if (item.isVideo || item.isMotionPhoto) {
                 VideoPage(
                     item = item,
                     onChromeVisibilityChange = { visible -> chromeVisible = visible },
@@ -225,10 +252,23 @@ fun ViewerOverlay(
                     contentDescription = "下载",
                     onClick = {
                         current?.let { item ->
+                            onToast("正在准备原文件…")
                             scope.launch {
                                 container.mediaDownloader.enqueue(item)
                                     .onSuccess { onToast("已开始下载，完成后自动保存到图库") }
                                     .onFailure { onToast(it.message) }
+                            }
+                        }
+                    },
+                )
+                GlassIconButton(
+                    icon = Icons.Filled.Share,
+                    contentDescription = "分享原文件",
+                    onClick = {
+                        current?.let { item ->
+                            scope.launch {
+                                container.mediaSharer.share(context, listOf(item))
+                                    .onFailure { onToast(it.message ?: "分享失败") }
                             }
                         }
                     },
@@ -337,6 +377,10 @@ private fun ImagePage(item: ImageItem, onToggleChrome: () -> Unit) {
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
                 .data(container.mediaRepository.previewUrl(item))
+                // 不让 Coil 按屏幕尺寸降采样。查看器允许继续放大，必须保留原始像素。
+                .size(CoilSize.ORIGINAL)
+                .precision(Precision.EXACT)
+                .allowHardware(true)
                 .crossfade(true)
                 .build(),
             contentDescription = item.name,
@@ -381,6 +425,12 @@ private fun ImagePage(item: ImageItem, onToggleChrome: () -> Unit) {
                 },
         )
     }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 /** 视频页：ExoPlayer，复用带会话 Cookie 的 OkHttp 数据源 */

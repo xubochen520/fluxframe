@@ -134,7 +134,9 @@ fun AppShell(
     val route = stack.last()
     val lifecycleOwner = LocalLifecycleOwner.current
     var personTagId by remember { mutableStateOf<String?>(null) }
-    var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    // 用稳定媒体 ID 而不是列表下标记住查看项。后台刷新/排序后下标会变化，
+    // 这正是以前退出再进入偶尔跳到另一张图的原因。
+    var viewerMediaId by remember { mutableStateOf<String?>(null) }
     var toast by remember { mutableStateOf<String?>(null) }
     val pagerState = rememberPagerState(
         initialPage = PRIMARY_ROUTES.indexOf(route).coerceAtLeast(0),
@@ -165,7 +167,7 @@ fun AppShell(
 
     // 上报给 Activity：顶栏收起时连状态栏一起让位
     LaunchedEffect(headerHidden) { onHeaderHiddenChange(headerHidden) }
-    val contentFullscreen = viewerIndex != null || upload?.phase == UploadPhase.REVIEW
+    val contentFullscreen = viewerMediaId != null || upload?.phase == UploadPhase.REVIEW
     LaunchedEffect(contentFullscreen) { onFullscreenChange(contentFullscreen) }
     DisposableEffect(Unit) {
         onDispose {
@@ -286,7 +288,7 @@ fun AppShell(
     }
 
     // 查看器拥有自己的预测返回处理；这里负责上传确认层与页面返回栈。
-    val canHandleBack = viewerIndex == null &&
+    val canHandleBack = viewerMediaId == null &&
         (upload?.phase == UploadPhase.REVIEW || stack.size > 1)
     var predictiveBackProgress by remember { mutableFloatStateOf(0f) }
     fun performBack() {
@@ -344,7 +346,7 @@ fun AppShell(
                 onOpenParse = { push(AppRoute.PARSE) },
                 onOpenImage = { id ->
                     val index = allMedia.indexOfFirst { it.id == id }
-                    if (index >= 0) viewerIndex = index
+                    if (index >= 0) viewerMediaId = allMedia[index].id
                 },
                 onUpload = { pickMedia.launch(visualMediaRequest) },
                 onToast = { showToast(it) },
@@ -352,14 +354,14 @@ fun AppShell(
 
             AppRoute.LIBRARY -> LibraryScreen(
                 kind = MediaKind.IMAGE,
-                onOpenImage = { index -> viewerIndex = index },
+                onOpenImage = { id -> viewerMediaId = id },
                 onOpenTrash = { push(AppRoute.TRASH) },
                 onToast = { showToast(it) },
             )
 
             AppRoute.VIDEOS -> LibraryScreen(
                 kind = MediaKind.VIDEO,
-                onOpenImage = { index -> viewerIndex = index },
+                onOpenImage = { id -> viewerMediaId = id },
                 onOpenTrash = { push(AppRoute.TRASH) },
                 onToast = { showToast(it) },
                 onOpenParse = { push(AppRoute.PARSE) },
@@ -367,7 +369,7 @@ fun AppShell(
 
             AppRoute.TRASH -> LibraryScreen(
                 kind = MediaKind.TRASH,
-                onOpenImage = { index -> viewerIndex = index },
+                onOpenImage = { id -> viewerMediaId = id },
                 onOpenTrash = { pop() },
                 onToast = { showToast(it) },
             )
@@ -546,10 +548,10 @@ fun AppShell(
             else -> images
         }
         ViewerOverlay(
-            index = viewerIndex,
+            mediaId = viewerMediaId,
             images = viewerItems,
-            onClose = { viewerIndex = null },
-            onIndexChange = { viewerIndex = it },
+            onClose = { viewerMediaId = null },
+            onMediaIdChange = { viewerMediaId = it },
             onToast = { showToast(it) },
         )
 

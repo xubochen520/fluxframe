@@ -37,6 +37,10 @@ data class UiPrefs(
     val bottomBarHapticsEnabled: Boolean = true,
     /** Android 13+ 边缘返回时显示页面跟手预览 */
     val predictiveBackEnabled: Boolean = true,
+    /** 在图库双指捏合时切换 2–5 列网格 */
+    val pinchGridZoomEnabled: Boolean = true,
+    /** 全屏媒体启用 HDR / Ultra HDR（兼容厂商 ProXDR 显示增强） */
+    val hdrDisplayEnabled: Boolean = true,
 )
 
 /**
@@ -87,6 +91,8 @@ class AppPreferences(context: Context) {
             .putFloat(KEY_BACKGROUND_OPACITY, next.backgroundImageOpacity.coerceIn(0.2f, 1f))
             .putBoolean(KEY_BOTTOM_BAR_HAPTICS, next.bottomBarHapticsEnabled)
             .putBoolean(KEY_PREDICTIVE_BACK, next.predictiveBackEnabled)
+            .putBoolean(KEY_PINCH_GRID_ZOOM, next.pinchGridZoomEnabled)
+            .putBoolean(KEY_HDR_DISPLAY, next.hdrDisplayEnabled)
             .apply()
         _ui.value = next
     }
@@ -113,6 +119,8 @@ class AppPreferences(context: Context) {
         backgroundImageOpacity = prefs.getFloat(KEY_BACKGROUND_OPACITY, 0.72f).coerceIn(0.2f, 1f),
         bottomBarHapticsEnabled = prefs.getBoolean(KEY_BOTTOM_BAR_HAPTICS, true),
         predictiveBackEnabled = prefs.getBoolean(KEY_PREDICTIVE_BACK, true),
+        pinchGridZoomEnabled = prefs.getBoolean(KEY_PINCH_GRID_ZOOM, true),
+        hdrDisplayEnabled = prefs.getBoolean(KEY_HDR_DISPLAY, true),
     )
 
     companion object {
@@ -135,6 +143,8 @@ class AppPreferences(context: Context) {
         const val KEY_BACKGROUND_OPACITY = "background_image_opacity"
         const val KEY_BOTTOM_BAR_HAPTICS = "bottom_bar_haptics"
         const val KEY_PREDICTIVE_BACK = "predictive_back"
+        const val KEY_PINCH_GRID_ZOOM = "pinch_grid_zoom"
+        const val KEY_HDR_DISPLAY = "hdr_display"
 
         /** 取帧位置的可选范围：0 秒（首帧）到 10 分钟 */
         const val MIN_POSTER_SECONDS = 0f

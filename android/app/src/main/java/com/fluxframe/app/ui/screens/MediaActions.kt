@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.LabelOff
 import androidx.compose.material.icons.filled.NewLabel
 import androidx.compose.material.icons.filled.Restore
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -42,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -69,6 +71,7 @@ fun MediaActionDialog(
     onToast: (String?) -> Unit,
 ) {
     val container = LocalAppContainer.current
+    val context = LocalContext.current
     val tags by container.mediaStore.tags.collectAsStateWithLifecycle()
     val session by container.sessionStore.state.collectAsStateWithLifecycle()
     val dark = LocalDarkTheme.current
@@ -153,6 +156,19 @@ fun MediaActionDialog(
                                 container.mediaDownloader.enqueue(item)
                                     .onSuccess { onToast("已开始下载，完成后自动保存到图库") }
                                     .onFailure { onToast(it.message) }
+                            }
+                            onDismiss()
+                        },
+                    )
+                    ClickableRow(
+                        title = "分享原文件",
+                        description = "调用系统分享面板（互传 / Quick Share 等）",
+                        icon = Icons.Filled.Share,
+                        onClick = {
+                            onToast("正在准备原文件…")
+                            scope.launch {
+                                container.mediaSharer.share(context, listOf(item))
+                                    .onFailure { onToast(it.message ?: "分享失败") }
                             }
                             onDismiss()
                         },

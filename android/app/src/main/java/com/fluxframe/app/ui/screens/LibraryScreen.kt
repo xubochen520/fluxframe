@@ -4,6 +4,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +33,7 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material3.Icon
@@ -48,6 +52,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -88,12 +94,13 @@ import kotlinx.coroutines.launch
 @Composable
 fun LibraryScreen(
     kind: MediaKind,
-    onOpenImage: (Int) -> Unit,
+    onOpenImage: (String) -> Unit,
     onOpenTrash: () -> Unit,
     onToast: (String?) -> Unit,
     onOpenParse: () -> Unit = {},
 ) {
     val container = LocalAppContainer.current
+    val context = LocalContext.current
     val dark = LocalDarkTheme.current
     val uiPrefs by container.prefs.ui.collectAsStateWithLifecycle()
     val filters by container.mediaStore.filters.collectAsStateWithLifecycle()
@@ -242,6 +249,7 @@ fun LibraryScreen(
                         description = "下载所选",
                         onClick = {
                             val picked = items.filter { it.id in selectedIds }
+                            onToast("正在准备 ${picked.size} 个原文件…")
                             scope.launch {
                                 container.mediaDownloader.enqueueBatch(picked)
                                     .onSuccess { count ->
@@ -249,6 +257,18 @@ fun LibraryScreen(
                                         selectedIds = emptySet()
                                     }
                                     .onFailure { onToast(it.message) }
+                            }
+                        },
+                    )
+                    RoundIconAction(
+                        icon = Icons.Filled.Share,
+                        description = "分享所选",
+                        onClick = {
+                            val picked = items.filter { it.id in selectedIds }
+                            scope.launch {
+                                container.mediaSharer.share(context, picked)
+                                    .onSuccess { selectedIds = emptySet() }
+                                    .onFailure { onToast(it.message ?: "分享失败") }
                             }
                         },
                     )
@@ -379,7 +399,37 @@ fun LibraryScreen(
 
                 else -> LazyVerticalStaggeredGrid(
                     columns = StaggeredGridCells.Fixed(uiPrefs.gridColumns),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(uiPrefs.pinchGridZoomEnabled) {
+                            if (!uiPrefs.pinchGridZoomEnabled) return@pointerInput
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false)
+                                var cumulativeZoom = 1f
+                                var gridZooming = false
+                                var columns = container.prefs.ui.value.gridColumns
+                                var pointersPressed: Boolean
+                                do {
+                                    val event = awaitPointerEvent()
+                                    if (event.changes.count { it.pressed } >= 2) {
+                                        cumulativeZoom *= event.calculateZoom()
+                                        val next = when {
+                                            cumulativeZoom > 1.16f -> (columns - 1).coerceAtLeast(2)
+                                            cumulativeZoom < 0.86f -> (columns + 1).coerceAtMost(5)
+                                            else -> columns
+                                        }
+                                        if (next != columns) {
+                                            gridZooming = true
+                                            columns = next
+                                            cumulativeZoom = 1f
+                                            container.prefs.updateUi { it.copy(gridColumns = next) }
+                                        }
+                                        if (gridZooming) event.changes.forEach { it.consume() }
+                                    }
+                                    pointersPressed = event.changes.any { it.pressed }
+                                } while (pointersPressed)
+                            }
+                        },
                     contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 20.dp),
                     verticalItemSpacing = 10.dp,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -398,7 +448,7 @@ fun LibraryScreen(
                                 if (selectedIds.isNotEmpty()) {
                                     selectedIds = if (item.id in selectedIds) selectedIds - item.id else selectedIds + item.id
                                 } else {
-                                    onOpenImage(index)
+                                    onOpenImage(item.id)
                                 }
                             },
                             onLongClick = {

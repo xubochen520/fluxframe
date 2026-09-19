@@ -329,6 +329,22 @@ fun SettingsScreen(
                         },
                     )
                     SwitchRow(
+                        title = "图库捏合缩放",
+                        description = "在图片库或视频库双指捏合，在每行 2–5 项之间调整",
+                        checked = uiPrefs.pinchGridZoomEnabled,
+                        onCheckedChange = { value ->
+                            container.prefs.updateUi { it.copy(pinchGridZoomEnabled = value) }
+                        },
+                    )
+                    SwitchRow(
+                        title = "HDR / ProXDR 兼容显示",
+                        description = "全屏查看时启用 HDR 窗口；支持 Ultra HDR 增益图、HDR10/HDR10+ 与 Dolby Vision，不支持的设备自动回退",
+                        checked = uiPrefs.hdrDisplayEnabled,
+                        onCheckedChange = { value ->
+                            container.prefs.updateUi { it.copy(hdrDisplayEnabled = value) }
+                        },
+                    )
+                    SwitchRow(
                         title = "玻璃噪点纹理",
                         description = "亚克力与液态玻璃的颗粒感",
                         checked = uiPrefs.noiseEnabled,

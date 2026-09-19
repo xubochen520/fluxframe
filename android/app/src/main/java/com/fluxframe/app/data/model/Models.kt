@@ -62,6 +62,12 @@ data class ImageItem(
 ) {
     val isVideo: Boolean get() = mimeType.startsWith("video/")
     val isImage: Boolean get() = mimeType.startsWith("image/")
+    /** Android Motion Photo 规范建议文件名以 MP 结尾；这类单文件可由 Media3 播放内嵌视频。 */
+    val isMotionPhoto: Boolean
+        get() = isImage && (
+            tags.any { it.equals("实况", ignoreCase = true) } ||
+                Regex("""(?i).*MP(?:\.(?:jpe?g|heic|heif|avif))?$""").matches(name)
+            )
     val aspectRatio: Float
         get() = if (width > 0 && height > 0) width.toFloat() / height.toFloat() else 1f
     /** 是否落在回收站 */
@@ -154,6 +160,8 @@ data class DashboardStats(
     val storageCapacity: String = "未知",
     val storagePercent: Double = 0.0,
     val databaseImageBytes: String = "0 B",
+    /** 宿主磁盘实际已用空间；storage 仍表示 FluxFrame 媒体目录自身占用 */
+    val storageUsed: String = "0 B",
 )
 
 @Serializable

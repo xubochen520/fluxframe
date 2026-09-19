@@ -158,7 +158,7 @@ fun OverviewScreen(
                         )
                         Text(
                             text = buildString {
-                                append(stats?.storage ?: "--")
+                                append(stats?.storageUsed ?: "--")
                                 append(" / ")
                                 append(stats?.storageCapacity ?: "未知")
                             },
@@ -171,6 +171,11 @@ fun OverviewScreen(
                         modifier = Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(50)),
                         color = MaterialTheme.colorScheme.primary,
                         trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                    )
+                    Text(
+                        text = "FluxFrame 媒体库占用 ${stats?.storage ?: "--"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = onGlassColor(dark, emphasis = false),
                     )
                 }
             }

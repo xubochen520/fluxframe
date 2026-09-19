@@ -305,4 +305,13 @@ class PureLogicTest {
         val keys = MediaRepository.SORT_OPTIONS.map { it.key }
         assertEquals(listOf("views", "newest", "name"), keys)
     }
+
+    @Test
+    fun `motion photo names are recognized with or without extension`() {
+        assertTrue(ImageItem("1", "IMG_20260920_MP", "image/jpeg").isMotionPhoto)
+        assertTrue(ImageItem("2", "holidayMP.HEIC", "image/heic").isMotionPhoto)
+        assertTrue(ImageItem("5", "IMG_1234", "image/jpeg", tags = listOf("实况")).isMotionPhoto)
+        assertFalse(ImageItem("3", "ordinary", "image/jpeg").isMotionPhoto)
+        assertFalse(ImageItem("4", "clipMP.mp4", "video/mp4").isMotionPhoto)
+    }
 }

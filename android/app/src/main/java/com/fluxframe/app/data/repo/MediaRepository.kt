@@ -160,12 +160,8 @@ class MediaRepository(private val container: AppContainer) {
     /** 退出登录 / 换服务器时清掉封面缓存 */
     fun clearVideoPosterCache() = VideoPosterLoader.clear(container.context)
 
-    /** 全屏预览：图片用 1600 变体，视频用原文件交给 ExoPlayer */
-    fun previewUrl(item: ImageItem): String = if (item.isVideo) {
-        absolute(item.url)
-    } else {
-        absolute("/api/images/${item.id}/variant/1600")
-    }
+    /** 全屏查看必须使用原文件。1600px 变体只适合普通预览，放大后会明显发糊。 */
+    fun previewUrl(item: ImageItem): String = absolute(item.url)
 
     /** 播放 / 内联展示 */
     fun fileUrl(item: ImageItem): String = absolute(item.url)

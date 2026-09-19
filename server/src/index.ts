@@ -334,8 +334,12 @@ async function storageUsage() {
     statfs(storageDir).catch(() => null),
   ])
   const capacityBytes = filesystem ? Number(filesystem.blocks) * Number(filesystem.bsize) : 0
-  const percent = capacityBytes > 0 ? Math.min(100, (usedBytes / capacityBytes) * 100) : 0
-  return { usedBytes, capacityBytes, percent }
+  // 进度条表达的是整块宿主磁盘的真实占用，而不是“媒体目录 / 整块磁盘”。
+  // 后者在几十 GB 的磁盘上几乎永远是 0%，此前看起来就像进度失效。
+  const availableBytes = filesystem ? Number(filesystem.bavail) * Number(filesystem.bsize) : 0
+  const diskUsedBytes = capacityBytes > 0 ? Math.max(0, capacityBytes - availableBytes) : 0
+  const percent = capacityBytes > 0 ? Math.min(100, (diskUsedBytes / capacityBytes) * 100) : 0
+  return { usedBytes, diskUsedBytes, capacityBytes, percent }
 }
 function imageDto(image: any) {
   const thumbnail = image.variants?.find((variant: any) => variant.width === 320)?.key
@@ -462,7 +466,7 @@ app.get('/api/dashboard', async (request, reply) => {
     prisma.auditLog.findMany({ orderBy: { createdAt: 'desc' }, take: 5, include: { user: true } }),
     storageUsage(),
   ])
-  return { stats: { imageCount, tagCount, userCount, totalViews: views._sum.viewCount || 0, storage: byteSize(disk.usedBytes), storageCapacity: byteSize(disk.capacityBytes), storagePercent: Number(disk.percent.toFixed(2)), databaseImageBytes: byteSize(storage._sum.size || 0n) }, top: top.map(imageDto), recent: recent.map(imageDto), logs: logs.map((log) => ({ id: log.id, action: log.action, target: log.target, user: log.user?.username || '系统', ip: log.ip, scope: log.scope === 'INTERNAL' ? '内网' : '外网', time: log.createdAt.toISOString(), tone: auditTone(log.action) })) }
+  return { stats: { imageCount, tagCount, userCount, totalViews: views._sum.viewCount || 0, storage: byteSize(disk.usedBytes), storageUsed: byteSize(disk.diskUsedBytes), storageCapacity: byteSize(disk.capacityBytes), storagePercent: Number(disk.percent.toFixed(2)), databaseImageBytes: byteSize(storage._sum.size || 0n) }, top: top.map(imageDto), recent: recent.map(imageDto), logs: logs.map((log) => ({ id: log.id, action: log.action, target: log.target, user: log.user?.username || '系统', ip: log.ip, scope: log.scope === 'INTERNAL' ? '内网' : '外网', time: log.createdAt.toISOString(), tone: auditTone(log.action) })) }
 })
 
 app.get('/api/images', async (request, reply) => {
@@ -483,6 +487,14 @@ app.get('/api/images', async (request, reply) => {
 function normalizeUploadTags(tags: unknown) {
   if (!Array.isArray(tags)) return []
   return [...new Set(tags.map((tag: unknown) => String(tag).trim().replace(/^#/, '')).filter((tag: string) => tag.length >= 1 && tag.length <= 40))].slice(0, 30)
+}
+/** 识别 Android 标准 Motion Photo / 旧版 MicroVideo XMP；原文件始终原样保存。 */
+function isMotionPhoto(buffer: Buffer, fileName: string) {
+  if (/MP\.(?:jpe?g|heic|heif|avif)$/i.test(fileName)) return true
+  // XMP 位于主图前部；限制探测长度，避免大实况视频造成额外字符串内存峰值。
+  const xmp = buffer.subarray(0, Math.min(buffer.byteLength, 2 * 1024 * 1024)).toString('latin1')
+  return /(?:Camera:MotionPhoto|GCamera:MotionPhoto)\s*=\s*["']1["']/i.test(xmp) ||
+    /GCamera:MicroVideo\s*=\s*["']1["']/i.test(xmp)
 }
 async function finalizePendingUpload(request: FastifyRequest, user: { id: string }, pending: PendingUpload, name: string, tagNames: string[]) {
   const id = randomUUID()
@@ -549,10 +561,14 @@ app.post('/api/images/upload/analyze', async (request, reply) => {
     await mkdir(path.dirname(safeStoragePath(tempKey)), { recursive: true })
     await writeFile(safeStoragePath(tempKey), buffer)
     // 视频不做视觉识别，自动带「视频」标签（可在确认页删除）
-    let tags: string[] = isVideo ? ['视频'] : []
+    const motionPhoto = isImage && isMotionPhoto(buffer, part.filename)
+    let tags: string[] = isVideo ? ['视频'] : motionPhoto ? ['实况'] : []
     let aiError = ''
     if (isImage && aiConfig.enabled) {
-      try { tags = (await suggestTags(buffer, part.mimetype, existingTags.map((tag) => tag.name))).tags } catch (error) { aiError = error instanceof Error ? error.message : 'AI 分析失败'; app.log.warn({ error }, `AI tag analysis failed for ${part.filename}`) }
+      try {
+        const suggested = (await suggestTags(buffer, part.mimetype, existingTags.map((tag) => tag.name))).tags
+        tags = motionPhoto ? [...new Set(['实况', ...suggested])] : suggested
+      } catch (error) { aiError = error instanceof Error ? error.message : 'AI 分析失败'; app.log.warn({ error }, `AI tag analysis failed for ${part.filename}`) }
     }
     pendingUploads.set(tempId, { userId: user.id, tempId, tempKey, fileName: part.filename, mimeType: part.mimetype, size: buffer.byteLength, width: metadata?.width, height: metadata?.height, sha256: hash, createdAt: Date.now() })
     items.push({ sourceIndex: currentIndex, tempId, fileName: part.filename, name: part.filename.replace(/\.[^.]+$/, ''), mimeType: part.mimetype, size: buffer.byteLength, width: metadata?.width || 0, height: metadata?.height || 0, tags, duplicate: false, aiError })
@@ -627,8 +643,9 @@ app.post('/api/images/upload', async (request, reply) => {
     }
     const image = await prisma.$transaction(async (tx) => {
       const created = await tx.image.create({ data: { id, name: part.filename.replace(/\.[^.]+$/, ''), originalKey, mimeType: part.mimetype, size: BigInt(buffer.byteLength), width: metadata?.width, height: metadata?.height, sha256: hash, uploaderId: user.id, variants: { create: variants } }, include: { tags: { include: { tag: true } }, variants: true } })
-      if (isVideo) {
-        const tag = await tx.tag.upsert({ where: { name: '视频' }, create: { name: '视频' }, update: {} })
+      const automaticTag = isVideo ? '视频' : isImage && isMotionPhoto(buffer, part.filename) ? '实况' : null
+      if (automaticTag) {
+        const tag = await tx.tag.upsert({ where: { name: automaticTag }, create: { name: automaticTag }, update: {} })
         await tx.imageTag.createMany({ data: [{ imageId: created.id, tagId: tag.id, addedById: user.id }], skipDuplicates: true })
       }
       return tx.image.findUnique({ where: { id: created.id }, include: { tags: { include: { tag: true } }, variants: true } })

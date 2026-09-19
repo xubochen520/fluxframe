@@ -113,6 +113,7 @@ class AppContainer(context: Context) {
     val deepseekRepository = DeepseekRepository(this)
     val parseRepository = ParseRepository(this)
     val mediaDownloader = com.fluxframe.app.core.download.MediaDownloader(this)
+    val mediaSharer = com.fluxframe.app.core.share.MediaSharer(this)
 
     /* ------------------------------- 状态层 ------------------------------- */
     /* 用 lazy 打断「store 之间互相引用」的初始化循环：
