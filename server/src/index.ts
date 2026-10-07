@@ -513,6 +513,76 @@ function isMotionPhoto(buffer: Buffer, fileName: string) {
   return /(?:Camera:MotionPhoto|GCamera:MotionPhoto)\s*=\s*["']1["']/i.test(xmp) ||
     /GCamera:MicroVideo\s*=\s*["']1["']/i.test(xmp)
 }
+/* ---------------- 视频封面（网页端卡顿的头号修复） ----------------
+ * 旧逻辑：视频入库不生成任何 variants，imageDto 的 thumb 回退到 /file ——
+ * 图片库/总览的每个视频卡片都会直接加载几十 MB 的视频本体（浏览器为取 0.5s 处的
+ * 画面要发 Range 请求并解码视频），7 个视频（约 143MB）就能把弱服务器的磁盘
+ * 带宽、Node 进程和手机端的解码器同时打满，滚动/交互严重卡顿。
+ * 现在入库时用 ffmpeg 抽 1 帧（-ss 放在 -i 前，快速定位，秒级完成）生成
+ * 320/768 两档 webp 封面，前端卡片一律显示封面图，点开才加载视频。 */
+async function extractVideoFrame(filePath: string): Promise<Buffer | null> {
+  const ffmpeg = await locateFfmpeg(await getSavedFfmpegPath())
+  if (!ffmpeg?.exe) return null
+  /* 依次尝试 1s → 0.5s → 0s：个别视频开头是黑帧或无 moov 前置，往后取更稳 */
+  for (const seek of ['1', '0.5', '0']) {
+    const frame = await new Promise<Buffer | null>((resolve) => {
+      const child = spawn(ffmpeg.exe, ['-hide_banner', '-loglevel', 'error', '-ss', seek, '-i', filePath, '-frames:v', '1', '-an', '-f', 'image2pipe', '-vcodec', 'mjpeg', '-'], { stdio: ['ignore', 'pipe', 'pipe'] })
+      const chunks: Buffer[] = []
+      child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk))
+      /* stderr 必须排空，否则写满管道缓冲区会卡死 ffmpeg；loglevel=error 时基本无输出 */
+      child.stderr.resume()
+      child.on('error', () => resolve(null))
+      child.on('close', () => resolve(chunks.length ? Buffer.concat(chunks) : null))
+    })
+    if (frame && frame.byteLength > 100) return frame
+  }
+  return null
+}
+
+/** 为视频生成 320/768 两档封面变体；失败返回空数组（不影响入库，仅缺封面，前端回退旧逻辑） */
+async function generateVideoPosters(id: string, originalKey: string): Promise<Array<{ width: number; key: string }>> {
+  const frame = await extractVideoFrame(safeStoragePath(originalKey))
+  if (!frame) return []
+  const variants: Array<{ width: number; key: string }> = []
+  try {
+    for (const width of [320, 768]) {
+      const key = `thumbnails/${id}-${width}.webp`
+      await sharp(frame).resize({ width, withoutEnlargement: true }).webp({ quality: 84 }).toFile(safeStoragePath(key))
+      variants.push({ width, key })
+    }
+  } catch (error) {
+    app.log.warn({ error }, `视频封面生成失败：${id}`)
+    return []
+  }
+  return variants
+}
+
+/** 启动后台补算：给存量视频补封面（幂等，已有 320 档则跳过）。
+ *  不阻塞启动；历史视频补完后前端立即从「拉视频本体」切换到「拉封面图」。 */
+async function backfillVideoPosters() {
+  try {
+    const videos = await prisma.image.findMany({ where: { deletedAt: null, mimeType: { startsWith: 'video/' } }, include: { variants: true } })
+    let fixed = 0
+    for (const video of videos) {
+      if (video.variants.some((variant) => variant.width === 320)) continue
+      const posters = await generateVideoPosters(video.id, video.originalKey)
+      if (!posters.length) { app.log.warn(`存量视频封面补算失败（跳过）：${video.name}`); continue }
+      /* 只写缺失的档位，避开 [imageId, width] 唯一约束 */
+      const missing = posters.filter((poster) => !video.variants.some((variant) => variant.width === poster.width))
+      if (missing.length) await prisma.imageVariant.createMany({ data: missing.map((poster) => ({ ...poster, imageId: video.id })) })
+      if (!video.width || !video.height) {
+        const meta = await sharp(safeStoragePath(posters[0].key)).metadata().catch(() => null)
+        if (meta?.width && meta?.height) await prisma.image.update({ where: { id: video.id }, data: { width: meta.width, height: meta.height } }).catch(() => null)
+      }
+      fixed++
+      app.log.warn(`已为存量视频生成封面：${video.name}`)
+    }
+    if (fixed) app.log.warn(`存量视频封面补算完成：共 ${fixed} 个`)
+  } catch (error) {
+    app.log.warn({ error }, '存量视频封面补算异常')
+  }
+}
+
 async function finalizePendingUpload(request: FastifyRequest, user: { id: string }, pending: PendingUpload, name: string, tagNames: string[]) {
   const id = randomUUID()
   const ext = path.extname(pending.fileName).toLowerCase() || '.bin'
@@ -520,6 +590,8 @@ async function finalizePendingUpload(request: FastifyRequest, user: { id: string
   await rename(safeStoragePath(pending.tempKey), safeStoragePath(originalKey))
   const variants: Array<{ width: number; key: string }> = []
   const isImage = pending.mimeType.startsWith('image/')
+  let mediaWidth = pending.width
+  let mediaHeight = pending.height
   try {
     if (isImage) {
       for (const width of [320, 768, 1600]) {
@@ -527,9 +599,17 @@ async function finalizePendingUpload(request: FastifyRequest, user: { id: string
         await sharp(safeStoragePath(originalKey)).resize({ width, withoutEnlargement: true }).webp({ quality: 84 }).toFile(safeStoragePath(key))
         variants.push({ width, key })
       }
+    } else if (pending.mimeType.startsWith('video/')) {
+      /* 视频也生成封面变体（见 generateVideoPosters 注释）：网格端从此不再拉视频本体 */
+      const posters = await generateVideoPosters(id, originalKey)
+      variants.push(...posters)
+      if (posters.length) {
+        const meta = await sharp(safeStoragePath(posters[0].key)).metadata().catch(() => null)
+        if (meta?.width && meta?.height) { mediaWidth = meta.width; mediaHeight = meta.height }
+      }
     }
     const image = await prisma.$transaction(async (tx) => {
-      const created = await tx.image.create({ data: { id, name, originalKey, mimeType: pending.mimeType, size: BigInt(pending.size), width: pending.width, height: pending.height, sha256: pending.sha256, uploaderId: user.id, variants: { create: variants } } })
+      const created = await tx.image.create({ data: { id, name, originalKey, mimeType: pending.mimeType, size: BigInt(pending.size), width: mediaWidth, height: mediaHeight, sha256: pending.sha256, uploaderId: user.id, variants: { create: variants } } })
       const tags = []
       for (const tagName of tagNames) tags.push(await tx.tag.upsert({ where: { name: tagName }, create: { name: tagName }, update: {} }))
       if (tags.length) await tx.imageTag.createMany({ data: tags.map((tag) => ({ imageId: created.id, tagId: tag.id, addedById: user.id })), skipDuplicates: true })
@@ -746,6 +826,8 @@ app.post('/api/images/upload', async (request, reply) => {
     const buffer = await part.toBuffer()
     if (buffer.byteLength > uploadLimitMb * 1024 * 1024) return reply.code(413).send({ message: `单个文件不能超过 ${uploadLimitMb} MB` })
     const metadata = isImage ? await sharp(buffer).metadata() : null
+    let mediaWidth = metadata?.width
+    let mediaHeight = metadata?.height
     const hash = createHash('sha256').update(buffer).digest('hex')
     if (await prisma.image.findUnique({ where: { sha256: hash } })) continue
     const id = randomUUID()
@@ -759,9 +841,17 @@ app.post('/api/images/upload', async (request, reply) => {
         await sharp(buffer).resize({ width, withoutEnlargement: true }).webp({ quality: 84 }).toFile(safeStoragePath(key))
         variants.push({ width, key })
       }
+    } else if (isVideo) {
+      /* 旧直传路径同样生成视频封面（与 finalizePendingUpload 保持一致） */
+      const posters = await generateVideoPosters(id, originalKey)
+      variants.push(...posters)
+      if (posters.length) {
+        const meta = await sharp(safeStoragePath(posters[0].key)).metadata().catch(() => null)
+        if (meta?.width && meta?.height) { mediaWidth = meta.width; mediaHeight = meta.height }
+      }
     }
     const image = await prisma.$transaction(async (tx) => {
-      const created = await tx.image.create({ data: { id, name: part.filename.replace(/\.[^.]+$/, ''), originalKey, mimeType: part.mimetype, size: BigInt(buffer.byteLength), width: metadata?.width, height: metadata?.height, sha256: hash, uploaderId: user.id, variants: { create: variants } }, include: { tags: { include: { tag: true } }, variants: true } })
+      const created = await tx.image.create({ data: { id, name: part.filename.replace(/\.[^.]+$/, ''), originalKey, mimeType: part.mimetype, size: BigInt(buffer.byteLength), width: mediaWidth, height: mediaHeight, sha256: hash, uploaderId: user.id, variants: { create: variants } }, include: { tags: { include: { tag: true } }, variants: true } })
       const automaticTag = isVideo ? '视频' : isImage && isMotionPhoto(buffer, part.filename) ? '实况' : null
       if (automaticTag) {
         const tag = await tx.tag.upsert({ where: { name: automaticTag }, create: { name: automaticTag }, update: {} })
@@ -809,6 +899,10 @@ async function sendImageFile(request: AuthenticatedRequest, reply: FastifyReply,
     return reply.code(404).send({ message: '媒体文件缺失（可能在入库后被外部删除），请重新上传或在「视频提取」中重新保存' })
   }
   const contentType = variant ? 'image/webp' : image.mimeType
+  /* 缓存策略：缩略图按 [imageId, width] 唯一、内容永不变化 → 一年 immutable，
+     浏览器二次访问零请求；原文件同 id 不变（重新上传会生成新 id）→ 放宽到一天。
+     旧值统一 3600s，导致每天网格里 135 张缩略图全部重新验证一遍。 */
+  const cacheControl = variant ? 'private, max-age=31536000, immutable' : 'private, max-age=86400'
   const rangeHeader = request.headers.range
   if (typeof rangeHeader === 'string') {
     const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader)
@@ -817,9 +911,9 @@ async function sendImageFile(request: AuthenticatedRequest, reply: FastifyReply,
     const requestedEnd = match[2] ? Number(match[2]) : fileInfo.size - 1
     const end = Math.min(requestedEnd, fileInfo.size - 1)
     if (start < 0 || start > end || start >= fileInfo.size) return reply.code(416).header('Content-Range', `bytes */${fileInfo.size}`).send()
-    return reply.code(206).type(contentType).headers({ 'Accept-Ranges': 'bytes', 'Content-Range': `bytes ${start}-${end}/${fileInfo.size}`, 'Content-Length': end - start + 1, 'Cache-Control': 'private, max-age=3600' }).send(createReadStream(filePath, { start, end }))
+    return reply.code(206).type(contentType).headers({ 'Accept-Ranges': 'bytes', 'Content-Range': `bytes ${start}-${end}/${fileInfo.size}`, 'Content-Length': end - start + 1, 'Cache-Control': cacheControl }).send(createReadStream(filePath, { start, end }))
   }
-  return reply.type(contentType).headers({ 'Accept-Ranges': 'bytes', 'Content-Length': fileInfo.size, 'Cache-Control': 'private, max-age=3600' }).send(createReadStream(filePath))
+  return reply.type(contentType).headers({ 'Accept-Ranges': 'bytes', 'Content-Length': fileInfo.size, 'Cache-Control': cacheControl }).send(createReadStream(filePath))
 }
 app.get('/api/images/:id/file', async (request, reply) => sendImageFile(request as AuthenticatedRequest, reply))
 app.get('/api/images/:id/variant/:width', async (request, reply) => sendImageFile(request as AuthenticatedRequest, reply, Number((request.params as { width: string }).width)))
@@ -2077,6 +2171,8 @@ async function start() {
   const maintenanceTimer = setInterval(() => { void cleanupOldAuditLogs(); void cleanupExpiredPendingUploads() }, maintenanceIntervalMs)
   maintenanceTimer.unref()
   await ensureSpecialTags()
+  /* 后台补算存量视频封面（幂等）：补完后历史视频的网格卡片也从「拉视频本体」变为「拉封面图」 */
+  void backfillVideoPosters()
   const admin = await prisma.user.findFirst({ where: { role: 'ADMIN' } })
   if (!admin) {
     const password = process.env.ADMIN_PASSWORD || 'admin123'
@@ -2088,7 +2184,8 @@ async function start() {
   try {
     const distStat = await stat(distDir)
     if (distStat.isDirectory()) {
-      await app.register(fastifyStatic, { root: distDir, prefix: '/', setHeaders(reply, filePath) { if (filePath.endsWith('.html')) reply.header('Cache-Control', 'no-store') } })
+      await app.register(fastifyStatic, { root: distDir, prefix: '/', setHeaders(reply, filePath) { if (filePath.endsWith('.html')) reply.header('Cache-Control', 'no-store'); else if (filePath.includes('/assets/')) reply.header('Cache-Control', 'public, max-age=31536000, immutable') } })
+
       app.setNotFoundHandler((request, reply) => {
         if (request.method !== 'GET' || request.url.startsWith('/api') || request.url.startsWith('/assets')) return reply.code(404).send({ message: 'Not Found' })
         return reply.type('text/html').header('Cache-Control', 'no-store').send(createReadStream(path.join(distDir, 'index.html')))
