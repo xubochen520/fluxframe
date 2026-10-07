@@ -18,6 +18,13 @@ import com.fluxframe.app.data.model.DeepseekKeyUpdateRequest
 import com.fluxframe.app.data.model.DeepseekMergeRequest
 import com.fluxframe.app.data.model.DeepseekSummary
 import com.fluxframe.app.data.model.DownloadSessionResponse
+import com.fluxframe.app.data.model.EmbedBackfillRequest
+import com.fluxframe.app.data.model.EmbedBackfillResponse
+import com.fluxframe.app.data.model.EmbedCalibration
+import com.fluxframe.app.data.model.EmbedGraph
+import com.fluxframe.app.data.model.EmbedStatus
+import com.fluxframe.app.data.model.EmbedThresholdRequest
+import com.fluxframe.app.data.model.EmbedThresholdResponse
 import com.fluxframe.app.data.model.EngineStatus
 import com.fluxframe.app.data.model.HealthResponse
 import com.fluxframe.app.data.model.ImageDeleteResponse
@@ -37,6 +44,7 @@ import com.fluxframe.app.data.model.R18ModeResponse
 import com.fluxframe.app.data.model.RenameImageRequest
 import com.fluxframe.app.data.model.RenameImageResponse
 import com.fluxframe.app.data.model.SimpleOkResponse
+import com.fluxframe.app.data.model.SimilarImagesResponse
 import com.fluxframe.app.data.model.SystemSettings
 import com.fluxframe.app.data.model.TagItem
 import com.fluxframe.app.data.model.TagListResponse
@@ -141,6 +149,41 @@ interface FluxFrameApi {
 
     @DELETE("api/images/{id}/tags/{tagId}")
     suspend fun removeTagFromImage(@Path("id") id: String, @Path("tagId") tagId: String): SimpleOkResponse
+
+    /* --------------------- 相似图 / 关系网（CCIP 视觉指纹） ---------------------
+     * 语义：按「像素上看起来像不像」找同角色 / 同张图，与标签体系无关。
+     * 注意两点（服务端 embed.ts 的既定行为）：
+     *   1) 只有静态图片有指纹，视频永远返回 indexed=false；
+     *   2) 首次请求某张还没建指纹的图时，服务端会**当场算完再返回**（约 0.7~3 秒），
+     *      所以这个接口的读超时要比普通接口宽，客户端也要接受它偶尔慢一次。
+     */
+
+    /** 某张图的相似图列表，按相似度降序 */
+    @GET("api/images/{id}/similar")
+    suspend fun similarImages(
+        @Path("id") id: String,
+        @Query("limit") limit: Int = 24,
+    ): SimilarImagesResponse
+
+    /** 指纹索引概况（已建多少张、阈值、后台是否在算） */
+    @GET("api/embed/status")
+    suspend fun embedStatus(): EmbedStatus
+
+    /** 关系网：已建指纹的图片 + 相似边 + 相似分组 */
+    @GET("api/embed/graph")
+    suspend fun embedGraph(@Query("edges") edges: Int = 600): EmbedGraph
+
+    /** 仅 ADMIN：把还没建指纹的图排进后台队列 */
+    @POST("api/embed/backfill")
+    suspend fun embedBackfill(@Body body: com.fluxframe.app.data.model.EmbedBackfillRequest): EmbedBackfillResponse
+
+    /** 仅 ADMIN：调整相似度阈值并重算关系 */
+    @PATCH("api/embed/threshold")
+    suspend fun embedSetThreshold(@Body body: EmbedThresholdRequest): EmbedThresholdResponse
+
+    /** 当前阈值的实测校准数据（同角色 / 异角色的分数分布） */
+    @GET("api/embed/calibration")
+    suspend fun embedCalibration(): EmbedCalibration
 
     /* ------------------------------ 上传 ------------------------------ */
 

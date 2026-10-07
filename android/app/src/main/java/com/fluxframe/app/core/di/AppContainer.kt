@@ -112,6 +112,8 @@ class AppContainer(context: Context) {
     val adminRepository = AdminRepository(this)
     val deepseekRepository = DeepseekRepository(this)
     val parseRepository = ParseRepository(this)
+    /** 相似图 / 关系网（CCIP 视觉指纹） */
+    val embedRepository = com.fluxframe.app.data.repo.EmbedRepository(this)
     val mediaDownloader = com.fluxframe.app.core.download.MediaDownloader(this)
     val mediaSharer = com.fluxframe.app.core.share.MediaSharer(this)
 

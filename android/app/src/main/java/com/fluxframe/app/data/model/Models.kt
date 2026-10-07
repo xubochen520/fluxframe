@@ -59,9 +59,16 @@ data class ImageItem(
     val tagIds: List<String> = emptyList(),
     val r18: Boolean = false,
     val deletedAt: String? = null,
+    /**
+     * 余弦相似度，仅 `/api/images/:id/similar` 会返回（1.0 = 完全一样）。
+     * 其他接口没有这个字段，默认 0 不影响任何判断。
+     */
+    val score: Double = 0.0,
 ) {
     val isVideo: Boolean get() = mimeType.startsWith("video/")
     val isImage: Boolean get() = mimeType.startsWith("image/")
+    /** 相似度百分比（0~100），供相似图列表展示 */
+    val similarPercent: Int get() = Math.round(score * 100).toInt()
     /** Android Motion Photo 规范建议文件名以 MP 结尾；这类单文件可由 Media3 播放内嵌视频。 */
     val isMotionPhoto: Boolean
         get() = isImage && (
@@ -88,6 +95,101 @@ data class RenameImageRequest(val name: String)
 
 @Serializable
 data class RenameImageResponse(val ok: Boolean = true, val name: String)
+
+/* --------------------- 相似图 / 关系网（CCIP 视觉指纹） ---------------------
+ * 服务端 embed.ts 用 CCIP 视觉指纹算相似度，与标签无关 ——
+ * 标签向量那条路实测对只有 1~2 张图的角色几乎无效，视觉指纹才是按像素找同角色。
+ * 指纹只对静态图片算，视频没有，请求时会返回 indexed=false。
+ */
+
+/** 一张相似图 = 图片本体（带 [ImageItem.score]），不再单开一套字段 */
+typealias SimilarImageItem = ImageItem
+
+@Serializable
+data class SimilarImagesResponse(
+    /** 服务端指纹模型是否就绪 */
+    val ready: Boolean = false,
+    /** 当前这张图是否已建指纹 */
+    val indexed: Boolean = false,
+    /** 还没建指纹、服务端正在算（正常约 1 秒，客户端可稍后重试） */
+    val analyzing: Boolean = false,
+    /** 当前相似度阈值（0~1） */
+    val threshold: Double = 0.35,
+    val items: List<SimilarImageItem> = emptyList(),
+)
+
+/** `GET /api/embed/status`：索引概况（设置页展示） */
+@Serializable
+data class EmbedStatus(
+    val modelReady: Boolean = false,
+    val sessionActive: Boolean = false,
+    val version: String = "",
+    val threshold: Double = 0.35,
+    /** 已建指纹的图片数 */
+    val indexed: Int = 0,
+    /** 库内静态图片总数 */
+    val imageCount: Int = 0,
+    /** 还没建指纹的数量 */
+    val missing: Int = 0,
+    /** 平均每张图有多少相似图 */
+    val avgNeighbors: Double = 0.0,
+    val updatedAt: String = "",
+    val queueLength: Int = 0,
+    val working: Boolean = false,
+    val failed: Int = 0,
+    val lastError: String = "",
+)
+
+@Serializable
+data class EmbedGraphEdge(val a: String, val b: String, val score: Double = 0.0)
+
+@Serializable
+data class EmbedGraphGroup(val members: List<String> = emptyList(), val size: Int = 0)
+
+/** `GET /api/embed/graph`：关系网（节点 + 相似边 + 相似分组） */
+@Serializable
+data class EmbedGraph(
+    val ready: Boolean = false,
+    val threshold: Double = 0.35,
+    /** 已建指纹的图片总数（含没有相似图的） */
+    val totalIndexed: Int = 0,
+    /** 其中真正连上相似关系的张数 */
+    val linked: Int = 0,
+    /** 没有任何相似图的张数 */
+    val isolated: Int = 0,
+    val nodes: List<ImageItem> = emptyList(),
+    val edges: List<EmbedGraphEdge> = emptyList(),
+    val groups: List<EmbedGraphGroup> = emptyList(),
+)
+
+/** `POST /api/embed/backfill`：把还没建指纹的图排进后台队列 */
+@Serializable
+data class EmbedBackfillRequest(val force: Boolean = false)
+
+@Serializable
+data class EmbedBackfillResponse(val ok: Boolean = true, val queued: Int = 0, val scanning: Boolean = false)
+
+/** `PATCH /api/embed/threshold` */
+@Serializable
+data class EmbedThresholdRequest(val threshold: Double)
+
+@Serializable
+data class EmbedThresholdResponse(val ok: Boolean = true, val threshold: Double = 0.35)
+
+/** 当前阈值的实测校准数据（同角色 / 异角色的分数分布） */
+@Serializable
+data class EmbedQuantiles(val p10: Double? = null, val p50: Double? = null, val p90: Double? = null)
+
+@Serializable
+data class EmbedCalibration(
+    val threshold: Double = 0.35,
+    val pairs: EmbedPairCounts = EmbedPairCounts(),
+    val same: EmbedQuantiles = EmbedQuantiles(),
+    val diff: EmbedQuantiles = EmbedQuantiles(),
+)
+
+@Serializable
+data class EmbedPairCounts(val same: Int = 0, val diff: Int = 0)
 
 /* --------------------------------- 标签 --------------------------------- */
 

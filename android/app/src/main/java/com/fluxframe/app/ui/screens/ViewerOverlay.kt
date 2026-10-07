@@ -34,6 +34,7 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.MoreHoriz
@@ -81,6 +82,8 @@ import coil.request.ImageRequest
 import coil.size.Precision
 import coil.size.Size as CoilSize
 import com.fluxframe.app.data.model.ImageItem
+import com.fluxframe.app.data.repo.EmbedRepository
+import com.fluxframe.app.core.net.toApiException
 import com.fluxframe.app.core.util.formatDateTime
 import com.fluxframe.app.ui.LocalAppContainer
 import com.fluxframe.app.ui.ZoomMath
@@ -127,6 +130,47 @@ fun ViewerOverlay(
     var backProgress by remember { mutableFloatStateOf(0f) }
     val current = images.getOrNull(pagerState.currentPage.coerceIn(0, images.lastIndex))
 
+    /* ---- 相似图面板：上滑拉出，也可点顶部「相似图」按钮 ----
+       服务端对没建过指纹的图会当场算完再返回（约 0.7~3 秒），所以偶尔慢一次是正常的，
+       期间用 Loading 状态兜住，不要让它看起来像卡死。 */
+    var similarState by remember { mutableStateOf<SimilarUiState>(SimilarUiState.Idle) }
+    var similarForId by remember { mutableStateOf<String?>(null) }
+
+    fun loadSimilar(item: ImageItem) {
+        if (similarForId == item.id && similarState is SimilarUiState.Ready) return
+        similarForId = item.id
+        similarState = SimilarUiState.Loading
+        scope.launch {
+            val result = container.embedRepository.similarWithRetry(item.id)
+            // 期间用户可能已经翻到别的图，丢弃过期结果
+            if (similarForId != item.id) return@launch
+            similarState = result.fold(
+                onSuccess = { outcome ->
+                    when (outcome) {
+                        is EmbedRepository.SimilarOutcome.Ok ->
+                            SimilarUiState.Ready(outcome.items, outcome.threshold)
+                        is EmbedRepository.SimilarOutcome.Analyzing ->
+                            SimilarUiState.Message("还在建立指纹", "这张图的视觉指纹正在计算，稍等几秒再上滑一次即可。")
+                        is EmbedRepository.SimilarOutcome.Unsupported ->
+                            SimilarUiState.Message("这张图没有相似图", outcome.reason)
+                    }
+                },
+                onFailure = { error ->
+                    SimilarUiState.Message("读取失败", error.toApiException().message)
+                },
+            )
+        }
+    }
+
+    /** 翻页 / 关闭面板时清掉上一张图的结果，避免看到错位的相似图 */
+    fun closeSimilar() {
+        similarState = SimilarUiState.Idle
+        similarForId = null
+    }
+
+    /** 当前这一页的图片是否被放大（放大时拖动是看细节，不该被上滑抢走） */
+    var currentZoomed by remember { mutableStateOf(false) }
+
     if (uiPrefs.predictiveBackEnabled) {
         PredictiveBackHandler { progress ->
             try {
@@ -144,6 +188,8 @@ fun ViewerOverlay(
         images.getOrNull(pagerState.currentPage)?.let { onMediaIdChange(it.id) }
         // 翻到新的一页时把浮层重新亮出来，让人知道自己在看第几张
         chromeVisible = true
+        // 也把上一张的相似图收起来：留着会让人以为看的是当前这张的相似图
+        closeSimilar()
         current?.let { item ->
             // 记一次浏览（失败静默：这不该打扰看图）
             container.mediaRepository.markViewed(item.id)
@@ -199,7 +245,10 @@ fun ViewerOverlay(
             } else {
                 ImagePage(
                     item = item,
+                    isCurrent = page == pagerState.currentPage,
                     onToggleChrome = { chromeVisible = !chromeVisible },
+                    onZoomChange = { zoomed -> if (page == pagerState.currentPage) currentZoomed = zoomed },
+                    onSwipeUp = { if (page == pagerState.currentPage) loadSimilar(item) },
                 )
             }
         }
@@ -249,8 +298,7 @@ fun ViewerOverlay(
                 }
                 GlassIconButton(
                     icon = Icons.Filled.Download,
-                    contentDescription = "下载",
-                    onClick = {
+                    contentDescription = "下载",                    onClick = {
                         current?.let { item ->
                             onToast("正在准备原文件…")
                             scope.launch {
@@ -273,6 +321,18 @@ fun ViewerOverlay(
                         }
                     },
                 )
+                // 相似图入口：上滑也能拉出，但手势看不见，留个按钮让人发现这个功能。
+                // 视频没有视觉指纹，直接不给入口，避免点开只看到「不支持」。
+                if (current != null && !current.isVideo) {
+                    GlassIconButton(
+                        icon = Icons.Filled.AutoAwesome,
+                        contentDescription = if (similarState is SimilarUiState.Idle) "查看相似图片" else "收起相似图",
+                        onClick = {
+                            if (similarState is SimilarUiState.Idle) loadSimilar(current)
+                            else closeSimilar()
+                        },
+                    )
+                }
                 GlassIconButton(
                     icon = Icons.Filled.MoreHoriz,
                     contentDescription = "更多",
@@ -319,6 +379,24 @@ fun ViewerOverlay(
                 }
             }
         }
+
+        // ---- 相似图面板（底部升起；上滑或点顶部按钮拉出）----
+        SimilarPanel(
+            state = similarState,
+            onClose = { closeSimilar() },
+            onPick = { picked ->
+                /* 点相似图里的一张：如果它本来就在当前翻页列表里就直接翻过去，
+                   否则提示用户 —— 不去动 pager 的数据源，避免打乱当前的浏览上下文。 */
+                val target = images.indexOfFirst { it.id == picked.id }
+                if (target >= 0) {
+                    scope.launch { pagerState.animateScrollToPage(target) }
+                    closeSimilar()
+                } else {
+                    onToast("「${picked.name}」不在当前列表里，可在图片库中打开")
+                }
+            },
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
     }
 
     if (showActions && current != null) {
@@ -337,9 +415,15 @@ private const val CHROME_TIMEOUT_MS = 3200L
 /** 双击缩放的动画时长 */
 private const val ZOOM_DURATION_MS = 340
 
-/** 图片页：双指缩放 + 双击以「点击点」为焦点放大/复位 + 单击切换浮层 */
+/** 图片页：双指缩放 + 双击以「点击点」为焦点放大/复位 + 单击切换浮层 + 未放大时上滑看相似图 */
 @Composable
-private fun ImagePage(item: ImageItem, onToggleChrome: () -> Unit) {
+private fun ImagePage(
+    item: ImageItem,
+    isCurrent: Boolean,
+    onToggleChrome: () -> Unit,
+    onZoomChange: (Boolean) -> Unit,
+    onSwipeUp: () -> Unit,
+) {
     val container = LocalAppContainer.current
     val scope = rememberCoroutineScope()
     var scale by remember(item.id) { mutableFloatStateOf(1f) }
@@ -373,6 +457,15 @@ private fun ImagePage(item: ImageItem, onToggleChrome: () -> Unit) {
         }
     }
 
+    /** 把「是否处于放大状态」同步给外层：放大时不接管上滑，拖动手势要留给看细节 */
+    LaunchedEffect(scale) { onZoomChange(scale > 1.02f) }
+
+    /* 上滑看相似图的累计位移。
+       注意：**必须搭在下面那个 detectTransformGestures 里判断**，不能另挂一个 pointerInput ——
+       子节点（AsyncImage）的手势检测器会先拿到事件并消耗掉，挂在外层 Box 上的聆听器收不到任何东西
+       （实测：真机手势完全没反应）。搭在现有检测器里则不存在手势竞争。 */
+    var swipeUpAccum by remember(item.id) { mutableFloatStateOf(0f) }
+
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
@@ -400,10 +493,26 @@ private fun ImagePage(item: ImageItem, onToggleChrome: () -> Unit) {
                         zoomJob?.cancel()
                         val next = ZoomMath.scaleBy(scale, zoom)
                         scale = next
-                        offset = if (next > 1.02f) {
-                            ZoomMath.clamp(offset + pan, next, boxSize)
+                        if (next > 1.02f) {
+                            offset = ZoomMath.clamp(offset + pan, next, boxSize)
+                            // 放大状态下拖动是在看细节，不当作「看相似图」
+                            swipeUpAccum = 0f
                         } else {
-                            Offset.Zero
+                            offset = Offset.Zero
+                            /* 未放大时：把竖直方向的累计位移用来判定「上滑看相似图」。
+                               只用竖直分量，横向拖动交给 HorizontalPager 翻页。 */
+                            swipeUpAccum = if (kotlin.math.abs(pan.y) >= kotlin.math.abs(pan.x)) {
+                                swipeUpAccum + pan.y
+                            } else {
+                                0f
+                            }
+                            if (isCurrent && swipeUpAccum < -SWIPE_UP_PX) {
+                                /* 先清零再回调：detectTransformGestures 在一次滑动里会连发多次，
+                                   不清零就会连续触发（实测一次上滑触发 8 次）。
+                                   清零靠的是 Compose 的快照状态，回调里的重活另起协程，不阻塞手势。 */
+                                swipeUpAccum = 0f
+                                onSwipeUp()
+                            }
                         }
                     }
                 }
