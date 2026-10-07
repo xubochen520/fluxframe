@@ -58,10 +58,14 @@ docker exec -u root fluxframe-app rm -f /app/server/create-user.mjs
 
 echo
 echo "=== 7/7 校验 ==="
+# 管理员账号只从环境变量或 deploy/.env 读，不写进脚本——本文件会进版本库。
+ADMIN_USER="${ADMIN_USER:-$(grep -E '^ADMIN_USERNAME=' deploy/.env 2>/dev/null | cut -d= -f2 | tr -d '"')}"
+ADMIN_PASS="${ADMIN_PASS:-$(grep -E '^ADMIN_PASSWORD=' deploy/.env 2>/dev/null | cut -d= -f2 | tr -d '"')}"
+[ -n "${ADMIN_USER}" ] && [ -n "${ADMIN_PASS}" ] || { echo "缺少 ADMIN_USERNAME / ADMIN_PASSWORD：请写进 deploy/.env 或设为环境变量" >&2; exit 1; }
 JAR="$(mktemp)"
 curl -s -c "$JAR" -o /dev/null -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"REDACTED-PASSWORD"}' "http://127.0.0.1:${PORT}/api/auth/login" \
-  -w '  admin 登录 http=%{http_code}\n'
+  -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" "http://127.0.0.1:${PORT}/api/auth/login" \
+  -w "  $ADMIN_USER 登录 http=%{http_code}\n"
 echo "  /api/me        → $(curl -s -b "$JAR" "http://127.0.0.1:${PORT}/api/me")"
 DASH="$(curl -s -b "$JAR" "http://127.0.0.1:${PORT}/api/dashboard")"
 echo "  /api/dashboard → $(echo "$DASH" | head -c 220)"

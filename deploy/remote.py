@@ -6,7 +6,7 @@ Usage:
   python deploy/remote.py put   <local> <remote>             # upload one file
   python deploy/remote.py putdir <localdir> <remotedir>      # upload a directory tree (recursive)
 
-Connection info comes from env vars (with defaults):
+Connection info comes from env vars:
   DEPLOY_HOST=192.168.1.100  DEPLOY_USER=root  DEPLOY_PASS=<必填>  DEPLOY_PORT=22
 """
 import os
@@ -26,8 +26,16 @@ for _stream in (sys.stdout, sys.stderr):
 
 HOST = os.environ.get("DEPLOY_HOST", "192.168.1.100")
 USER = os.environ.get("DEPLOY_USER", "root")
-PASS = os.environ.get("DEPLOY_PASS", "")
 PORT = int(os.environ.get("DEPLOY_PORT", "22"))
+
+# 密码只从环境变量读，**不留默认值**：本文件会进版本库，写死等于把服务器密码公开。
+PASS = os.environ.get("DEPLOY_PASS")
+if not PASS:
+    raise SystemExit(
+        "请先设置 DEPLOY_PASS 环境变量：\n"
+        "  PowerShell:  $env:DEPLOY_PASS='...'; python deploy/remote.py exec 'ls'\n"
+        "  bash:        DEPLOY_PASS='...' python3 deploy/remote.py exec 'ls'"
+    )
 
 
 def connect() -> paramiko.SSHClient:

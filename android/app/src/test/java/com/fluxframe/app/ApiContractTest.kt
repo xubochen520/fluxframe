@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit
  * 服务未启动时整类自动跳过（`assumeTrue`），因此不会拖垮 CI。
  * 可用系统属性覆盖：
  *   -Dfluxframe.baseUrl=http://192.168.1.100:4311/
- *   -Dfluxframe.user=admin -Dfluxframe.pass=***
+ *   -Dfluxframe.user=&lt;用户名&gt; -Dfluxframe.pass=&lt;密码&gt;
  */
 class ApiContractTest {
 

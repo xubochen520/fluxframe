@@ -22,8 +22,12 @@ echo "thumbnails: $(find deploy/data/storage/thumbnails -type f | wc -l) 个"
 
 echo
 echo "=== 用真实图片（非视频）复核文件接口 ==="
+# 管理员账号只从环境变量或 deploy/.env 读，不写进脚本——本文件会进版本库。
+ADMIN_USER="${ADMIN_USER:-$(grep -E '^ADMIN_USERNAME=' deploy/.env 2>/dev/null | cut -d= -f2 | tr -d '"')}"
+ADMIN_PASS="${ADMIN_PASS:-$(grep -E '^ADMIN_PASSWORD=' deploy/.env 2>/dev/null | cut -d= -f2 | tr -d '"')}"
+[ -n "${ADMIN_USER}" ] && [ -n "${ADMIN_PASS}" ] || { echo "缺少 ADMIN_USERNAME / ADMIN_PASSWORD：请写进 deploy/.env 或设为环境变量" >&2; exit 1; }
 JAR="$(mktemp)"
-curl -s -c "$JAR" -o /dev/null -H 'Content-Type: application/json' -d '{"username":"admin","password":"REDACTED-PASSWORD"}' "$BASE/api/auth/login"
+curl -s -c "$JAR" -o /dev/null -H 'Content-Type: application/json' -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" "$BASE/api/auth/login"
 IMG_ID="$("${PSQL[@]}" -c "SELECT id FROM \"Image\" WHERE \"mimeType\" LIKE 'image/%' AND \"deletedAt\" IS NULL ORDER BY \"uploadedAt\" DESC LIMIT 1" | tr -d '\r')"
 echo "  抽样图片：$IMG_ID"
 for u in "variant/320" "variant/768" "file" "download"; do

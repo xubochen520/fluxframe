@@ -9,11 +9,15 @@ BASE="http://127.0.0.1:${PORT}"
 JAR="$(mktemp)"
 PSQL=(docker exec fluxframe-postgres psql -U postgres -d image_manager -t -A)
 q() { "${PSQL[@]}" -c "$1" 2>/dev/null | tr -d '\r' | head -1; }
+# 管理员账号只从环境变量或 deploy/.env 读，不写进脚本——本文件会进版本库。
+ADMIN_USER="${ADMIN_USER:-$(grep -E '^ADMIN_USERNAME=' deploy/.env 2>/dev/null | cut -d= -f2 | tr -d '"')}"
+ADMIN_PASS="${ADMIN_PASS:-$(grep -E '^ADMIN_PASSWORD=' deploy/.env 2>/dev/null | cut -d= -f2 | tr -d '"')}"
+[ -n "${ADMIN_USER}" ] && [ -n "${ADMIN_PASS}" ] || { echo "缺少 ADMIN_USERNAME / ADMIN_PASSWORD：请写进 deploy/.env 或设为环境变量" >&2; exit 1; }
 pass=0; fail=0
 check() { if [ "$2" = "$3" ]; then echo "  PASS  $1（$3）"; pass=$((pass+1)); else echo "  FAIL  $1（期望 $2，实际 $3）"; fail=$((fail+1)); fi; }
 
 echo "=== 账户 ==="
-check "admin 登录" "200" "$(curl -s -c "$JAR" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"username":"admin","password":"REDACTED-PASSWORD"}' "$BASE/api/auth/login")"
+check "$ADMIN_USER 登录" "200" "$(curl -s -c "$JAR" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" "$BASE/api/auth/login")"
 ME="$(curl -s -b "$JAR" "$BASE/api/me")"
 echo "  /api/me → $ME"
 check "角色为 ADMIN" "yes" "$(echo "$ME" | grep -q '"role":"ADMIN"' && echo yes || echo no)"
