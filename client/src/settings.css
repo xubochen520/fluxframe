@@ -112,8 +112,383 @@
 .image-grid .image-card { align-self: start; height: max-content; }
 .image-grid .image-wrap { height: auto; aspect-ratio: auto; }
 .image-grid .image-wrap img { height: auto; aspect-ratio: auto; object-fit: contain; background: rgba(5, 9, 20, .45); }
-.preview-image { transform-origin: 0 0; will-change: transform; cursor: zoom-in; }
+.preview-image { transform-origin: 0 0; will-change: transform; cursor: zoom-in; touch-action: pan-y; }
 .preview-image img { user-select: none; -webkit-user-drag: none; }
+
+/* ---------- 人物框选叠层 ----------
+   框用百分比定位：.preview-image 随图片自然尺寸布局，因此百分比天然跟随缩放与拖拽。
+   叠层本身 pointer-events:none，只有框体接收事件，这样空白处仍可拖动/缩放图片。 */
+.preview-image.box-editing { cursor: default; }
+.box-layer { position: absolute; inset: 0; pointer-events: none; }
+
+/* ============ 相似图面板（大图预览里上滑拉出） ============
+   设计：不遮挡图片本身，面板从底部升起「压住」底部；图片同时上移一点，
+   既是视觉反馈（图确实被推上去了），也保证图片主体仍然可见。 */
+.preview-backdrop.similar-open .preview-image { transform: translateY(-13vh) !important; }
+.preview-backdrop.similar-open .preview-caption { opacity: 0; pointer-events: none; transition: opacity .2s ease; }
+
+.similar-panel {
+  position: absolute; left: 50%; bottom: 0; z-index: 4;
+  width: min(1080px, 96vw);
+  max-height: 58vh;
+  transform: translateX(-50%);
+  display: flex; flex-direction: column;
+  background: rgba(13, 18, 34, .97);
+  border: 1px solid rgba(148, 163, 184, .18);
+  border-bottom: none;
+  border-radius: 16px 16px 0 0;
+  box-shadow: 0 -14px 50px rgba(0, 0, 0, .45);
+  overflow: hidden;
+}
+.similar-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px 9px;
+  border-bottom: 1px solid rgba(148, 163, 184, .12);
+  flex: 0 0 auto;
+}.similar-head strong { color: #e6ecff; font-size: 13px; }
+.similar-head .similar-sub { color: #78839d; font-size: 11.5px; }
+.similar-close {
+  margin-left: auto; flex: 0 0 auto;
+  display: grid; place-items: center; width: 26px; height: 26px;
+  border-radius: 8px; border: 1px solid rgba(148, 163, 184, .2);
+  background: rgba(30, 41, 59, .6); color: #cbd5e1;
+}
+.similar-close:hover { color: #fff; background: rgba(51, 65, 85, .8); }
+.similar-body { overflow-y: auto; overscroll-behavior: contain; padding: 12px 14px 14px; -webkit-overflow-scrolling: touch; flex: 1 1 auto; }
+.similar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
+.similar-card {
+  display: flex; flex-direction: column; gap: 5px; padding: 0;
+  background: transparent; border: none; text-align: left; min-width: 0;
+}
+.similar-thumb {
+  position: relative; display: block; width: 100%; aspect-ratio: 1;
+  border-radius: 9px; overflow: hidden;
+  background: rgba(30, 41, 59, .55);
+  border: 1px solid rgba(148, 163, 184, .16);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .02);
+}
+.similar-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.similar-card:hover .similar-thumb { border-color: rgba(167, 139, 250, .8); }
+.similar-card:active .similar-thumb { transform: scale(.97); }
+.similar-score {
+  position: absolute; right: 5px; bottom: 5px;
+  padding: 1px 5px; border-radius: 6px;
+  background: rgba(8, 12, 24, .82); color: #d7ccff;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .2px;
+}
+.similar-meta { display: flex; flex-direction: column; min-width: 0; }
+.similar-meta strong { color: #cbd5e1; font-size: 11px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.similar-meta small { color: #78839d; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.similar-empty { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 22px 10px; color: #78839d; font-size: 12px; text-align: center; }
+.similar-empty strong { color: #a9b4cc; font-size: 12.5px; font-weight: 600; }
+.similar-loading { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 24px; color: #78839d; font-size: 12px; }
+.similar-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 14px calc(10px + env(safe-area-inset-bottom));
+  margin-top: 2px;
+  border-top: 1px solid rgba(148, 163, 184, .1);
+  color: #5d6883; font-size: 10.5px;
+}
+@media (max-width: 720px) {
+  /* 手机上 3 列太挤：168px 的卡片宽会把图片名截断成一两个词，降到 2 列 */
+  .similar-panel { width: 100vw; max-height: 66vh; border-radius: 14px 14px 0 0; }
+  .similar-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .similar-meta strong { font-size: 11.5px; }
+  .preview-backdrop.similar-open .preview-image { transform: translateY(-20vh) !important; }
+}
+
+/* ---- 相似图：大图下方的「上滑查看」提示 ---- */
+.similar-entry { color: #c4b5fd !important; border-color: rgba(167, 139, 250, .34) !important; }
+.similar-entry:hover { background: rgba(167, 139, 250, .16) !important; }
+.similar-hint {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 999px;
+  background: rgba(167, 139, 250, .12);
+  border: 1px solid rgba(167, 139, 250, .28);
+  color: #c4b5fd; font-size: 11px; font-weight: 500;
+  animation: similar-hint-in .45s ease both;
+}
+.similar-hint:active { transform: scale(.96); }
+@keyframes similar-hint-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* 面板升起的位移动画（Vue transition）；不用 height 动画，避免每帧重排 */
+.similar-slide-enter-active, .similar-slide-leave-active { transition: transform .26s cubic-bezier(.22, 1, .36, 1), opacity .2s ease; }
+.similar-slide-enter-from, .similar-slide-leave-to { transform: translate(-50%, 102%); opacity: 0; }
+
+/* ============ 关系网视图 ============ */
+.similar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.graph-stats {
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px;
+  margin-bottom: 16px;
+}
+.graph-stats > div {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 12px 14px; border-radius: 12px;
+  background: rgba(19, 26, 47, .68);
+  border: 1px solid rgba(148, 163, 184, .13);
+}
+.graph-stats strong { color: #e6ecff; font-size: 19px; font-weight: 600; letter-spacing: -.3px; }
+.graph-stats span { color: #78839d; font-size: 11px; }
+.graph-loading { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 46px; color: #78839d; font-size: 13px; }
+.graph-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 9px;
+  padding: 42px 24px; text-align: center; color: #78839d;
+}
+.graph-empty strong { color: #dbe3f4; font-size: 15px; }
+.graph-empty p { max-width: 460px; color: #78839d; font-size: 12.5px; line-height: 1.7; }
+.graph-empty .primary-button { margin-top: 6px; }
+.graph-groups { display: flex; flex-direction: column; gap: 14px; }
+.graph-group { padding: 14px 16px 16px; }
+.graph-group-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.graph-group-head > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.graph-group-head strong { color: #e6ecff; font-size: 13.5px; }
+.graph-group-head small { color: #78839d; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60vw; }
+.graph-group-head .text-button { margin-left: auto; flex: 0 0 auto; }
+.graph-group-grid { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.graph-thumb {
+  position: relative; width: 82px; height: 82px; padding: 0;
+  border-radius: 9px; overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, .16);
+  background: rgba(30, 41, 59, .5);
+}
+.graph-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.graph-thumb:hover { border-color: rgba(167, 139, 250, .8); }
+.graph-thumb:active { transform: scale(.96); }
+.graph-thumb-tag {
+  position: absolute; left: 4px; bottom: 4px; max-width: calc(100% - 8px);
+  padding: 1px 5px; border-radius: 5px;
+  background: rgba(8, 12, 24, .8); color: #cbd5e1; font-size: 9.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.graph-more { color: #78839d; font-size: 12px; padding: 0 4px; }
+
+/* ---- 设置页：相似图索引卡片 ---- */
+.embed-status-row { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+.embed-status-main { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.embed-status-main .status-dot.off { background: #f87171; box-shadow: 0 0 0 4px rgba(248, 113, 113, .14); }
+.embed-status-main strong { color: #dbe3f4; font-size: 13px; }
+.embed-status-main small { color: #78839d; font-size: 11.5px; padding-left: 3px; }
+.embed-status-row .filter-button { margin-left: auto; }
+.embed-warn {
+  margin-top: 8px; padding: 8px 11px; border-radius: 9px;
+  background: rgba(248, 113, 113, .1);
+  border: 1px solid rgba(248, 113, 113, .24);
+  color: #fca5a5; font-size: 11.5px; line-height: 1.6;
+}
+.embed-threshold { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; }
+.embed-threshold input[type="range"] { width: 132px; accent-color: #a78bfa; }
+.embed-threshold strong { color: #c4b5fd; font-size: 13px; min-width: 40px; text-align: right; }
+.embed-calib { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 10px 0 12px; color: #78839d; font-size: 11px; }
+.embed-calib span { padding: 2px 8px; border-radius: 6px; background: rgba(148, 163, 184, .08); }
+
+@media (max-width: 720px) {
+  .graph-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .graph-thumb { width: 68px; height: 68px; }
+  .embed-status-row .filter-button { margin-left: 0; }
+  .embed-threshold input[type="range"] { width: 96px; }
+}
+
+
+.box-item {
+  position: absolute;
+  border: 2px solid #22d3ee;
+  border-radius: 4px;
+  background: rgba(34, 211, 238, .1);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .45) inset;
+  pointer-events: auto;
+  cursor: move;
+  touch-action: none;
+}
+.box-item.head { border-color: #f59e0b; background: rgba(245, 158, 11, .1); }
+.box-item.manual { border-style: dashed; }
+/* 选中的框加粗外发光：确认参考图时用的就是这一个 */
+.box-item.selected { border-width: 3px; box-shadow: 0 0 0 2px rgba(255, 255, 255, .55), 0 0 14px rgba(34, 211, 238, .65); }
+.box-item.head.selected { box-shadow: 0 0 0 2px rgba(255, 255, 255, .55), 0 0 14px rgba(245, 158, 11, .65); }
+.box-layer.dragging .box-item { transition: none; }
+.box-label {
+  position: absolute;
+  top: -18px;
+  left: -2px;
+  padding: 1px 5px;
+  border-radius: 4px 4px 0 0;
+  color: #06202a;
+  background: #22d3ee;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.box-item.head .box-label { background: #f59e0b; color: #2a1a02; }
+.box-del {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  color: #fff;
+  background: #ef4444;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .5);
+}
+.box-handle {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  width: 13px;
+  height: 13px;
+  border: 2px solid #0b1020;
+  border-radius: 3px;
+  background: #22d3ee;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+.box-item.head .box-handle { background: #f59e0b; }
+.box-toolbar {
+  position: absolute;
+  left: 50%;
+  /* 图片上方：.preview-caption 占了图片下方 -42px，放下面会重叠 */
+  top: -46px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(10, 15, 31, .9);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
+  white-space: nowrap;
+  z-index: 4;
+}
+.box-tip { color: #9aa4bd; font-size: 10px; }
+.box-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  color: #cdd4e6;
+  background: rgba(255, 255, 255, .07);
+  font-size: 10px;
+}
+.box-btn:hover:not(:disabled) { background: rgba(255, 255, 255, .14); color: #fff; }
+.box-btn:disabled { opacity: .45; cursor: not-allowed; }
+.box-btn.primary { color: #08231b; background: #34d399; font-weight: 600; }
+.box-btn.primary:disabled { color: #08231b; }
+.caption-download.on { color: #67e8f9; border-color: rgba(103, 232, 249, .45); }
+.ref-picker {
+  position: absolute;
+  right: 10px;
+  top: 48px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 178px;
+  max-width: 240px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(10, 15, 31, .95);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .5);
+}
+.ref-picker p { margin: 0 0 3px; color: #9aa4bd; font-size: 10px; }
+.ref-pick-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 7px;
+  border-radius: 6px;
+  color: #dbe2f2;
+  background: rgba(255, 255, 255, .05);
+  font-size: 11px;
+  text-align: left;
+}
+.ref-pick-item:hover:not(:disabled) { background: rgba(52, 211, 153, .18); color: #fff; }
+.ref-pick-item:disabled { opacity: .5; }
+.ref-pick-item i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.ref-pick-item span { flex: 1; }
+.ref-pick-item small { color: #7c86a0; font-size: 9px; }
+.ref-pick-hint { margin-top: 2px; color: #6f7b96; font-size: 9px; line-height: 1.4; }
+
+/* ---------- 参考图库查看页 ---------- */
+.person-chip-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  color: #9aa4bd;
+  background: rgba(255, 255, 255, .05);
+  font-size: 10px;
+}
+.person-chip-ref:hover { color: #67e8f9; background: rgba(103, 232, 249, .14); }
+.person-chip-ref.filled { color: #67e8f9; background: rgba(103, 232, 249, .12); }
+.person-chip-ref em { font-style: normal; font-weight: 700; }
+
+.references-modal { width: min(880px, calc(100vw - 28px)); max-height: min(860px, calc(100vh - 28px)); overflow: auto; }
+.ref-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 11px;
+  margin-top: 4px;
+}
+.ref-card {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, .035);
+}
+/* 标签已被移除的参考：标红提示，说明该样本已经过期 */
+.ref-card.stale { border-color: rgba(239, 68, 68, .5); }
+.ref-thumb { display: block; width: 100%; padding: 0; background: rgba(5, 9, 20, .65); }
+.ref-thumb img { display: block; width: 100%; height: 132px; object-fit: contain; }
+.ref-thumb:hover img { opacity: .85; }
+.ref-info { padding: 6px 7px 7px; }
+.ref-info strong {
+  display: block;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ref-info span { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.ref-info em {
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-style: normal;
+  font-size: 9px;
+  background: rgba(255, 255, 255, .08);
+  color: #9aa4bd;
+}
+.ref-info em.head { background: rgba(245, 158, 11, .18); color: #fbbf24; }
+.ref-info em.face { background: rgba(34, 211, 238, .18); color: #67e8f9; }
+.ref-info em.manual { background: rgba(167, 139, 250, .2); color: #c4b5fd; }
+.ref-info em.auto { background: rgba(52, 211, 153, .16); color: #6ee7b7; }
+.ref-info em.stale-tag { background: rgba(239, 68, 68, .2); color: #fca5a5; }
+.ref-drop {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 6px;
+  color: #fca5a5;
+  background: rgba(11, 16, 32, .8);
+}
+.ref-drop:hover:not(:disabled) { color: #fff; background: #ef4444; }
+.ref-drop:disabled { opacity: .4; }
 @media (max-width: 560px) {
   .batch-tag-modal { width: calc(100vw - 24px); height: calc(100vh - 24px); max-height: calc(100vh - 24px); padding: 20px; }
   .batch-image-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -332,6 +707,9 @@
   .library-progress { background: rgba(19, 26, 47, .9); -webkit-backdrop-filter: none; backdrop-filter: none; }
   /* 预览弹层放到底栏之下，保证点开图片后立刻点导航也能直接响应 */
   .preview-backdrop { z-index: 11; }
+  /* 但相似图面板打开时必须盖住底栏：一是面板本身要显示在屏幕最下方，
+     二是底栏会截走最底部那条区域的上滑手势（实测左下角上滑会失效）。 */
+  .preview-backdrop.similar-open { z-index: 40; }
   .page-content { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
   .main-area { min-height: 100vh; }
   .image-card:active .image-wrap img,

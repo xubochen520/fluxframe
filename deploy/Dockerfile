@@ -23,6 +23,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package.json package-lock.json ./
 COPY client/package.json client/package-lock.json ./client/
 COPY server/package.json server/package-lock.json ./server/
+# server/.npmrc 里设了 onnxruntime_node_install=skip：
+# onnxruntime-node 的 postinstall 会去 NuGet 下载用不到的 CUDA 二进制，受限网络下必然失败；
+# CPU 所需的原生二进制已随 npm 包分发。注意别改成 --ignore-scripts，那会连带跳过 argon2 原生编译。
+COPY server/.npmrc ./server/.npmrc
 RUN npm ci \
  && npm --prefix client ci \
  && npm --prefix server ci

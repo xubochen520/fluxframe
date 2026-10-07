@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { Check, ChevronDown, LoaderCircle, Plus, ShieldCheck, Sparkles, Upload, X } from 'lucide-vue-next'
-import { api, type UploadAnalysisItem } from '../api'
+import { api, type TagAdviceItem, type UploadAnalysisItem } from '../api'
 import type { TagItem } from '../types'
 
 type ReviewItem = UploadAnalysisItem & { file: File; previewUrl: string }
@@ -13,8 +13,38 @@ const stage = ref<'select' | 'analyzing' | 'reviewing' | 'uploading'>('select')
 const error = ref('')
 const aiEnabled = ref(false)
 const aiModel = ref('')
+const taggerEnabled = ref(false)
 const tagInputs = ref<Record<string, string>>({})
 const tagPickerOpen = ref<Record<string, boolean>>({})
+
+/** 确认页里可勾选的建议：按类别拆开，用户点一下就加进这张图的标签 */
+function adviceGroups(item: ReviewItem): Array<{ key: string; label: string; hint: string; list: TagAdviceItem[] }> {
+  const a = item.advice
+  if (!a) return []
+  return [
+    { key: 'character', label: '角色', hint: '识别得很准，建议保留', list: a.character },
+    { key: 'copyright', label: '作品', hint: '', list: a.copyright },
+    { key: 'general', label: '属性', hint: '仅供建议，白丝/黑丝这类色系判断不太可靠', list: a.general },
+  ].filter((g) => g.list.length)
+}
+/** 建议里还没被采纳的部分（已加进 tags 的不再显示） */
+function pendingAdvice(item: ReviewItem, list: TagAdviceItem[]) {
+  return list.filter((s) => !item.tags.includes(s.name))
+}
+function applyAdvice(item: ReviewItem, name: string) {
+  if (!item.tags.includes(name)) item.tags.push(name)
+}
+/** 一键采纳全部建议（角色与作品已自动填入，这里主要补属性） */
+function applyAllAdvice(item: ReviewItem) {
+  const a = item.advice
+  if (!a) return
+  for (const s of [...a.character, ...a.copyright, ...a.general]) applyAdvice(item, s.name)
+}
+function adviceCount(item: ReviewItem) {
+  const a = item.advice
+  if (!a) return 0
+  return pendingAdvice(item, a.character).length + pendingAdvice(item, a.copyright).length + pendingAdvice(item, a.general).length
+}
 
 const readyItems = computed(() => items.value.filter((item) => item.tempId && !item.duplicate))
 const selectedCount = computed(() => readyItems.value.length)
@@ -44,6 +74,7 @@ async function chooseFiles(event: Event) {
     const response = await api.analyzeUpload(files)
     aiEnabled.value = response.aiEnabled
     aiModel.value = response.aiModel
+    taggerEnabled.value = response.taggerEnabled === true
     items.value = response.items.map((item) => ({ ...item, file: files[item.sourceIndex], previewUrl: URL.createObjectURL(files[item.sourceIndex]) })).filter((item) => item.file)
     stage.value = 'reviewing'
   } catch (cause) {
@@ -118,7 +149,7 @@ onBeforeUnmount(() => { items.value.forEach(revokePreview); void cancelPending()
       <p v-if="stage === 'select'">支持图片（JPG、PNG、WEBP）与视频（MP4、WebM、MOV 等），视频会自动带上「视频」标签。</p>
       <p v-else-if="stage === 'analyzing'" class="upload-status"><LoaderCircle :size="15" class="spin" />正在逐张分析图片内容，请稍候。</p>
       <p v-else-if="stage === 'uploading'" class="upload-status"><LoaderCircle :size="15" class="spin" />正在写入文件和数据库。</p>
-      <p v-else class="upload-status"><Sparkles :size="15" />{{ aiEnabled ? `AI 建议已生成（${aiModel}），视频已自动标记「视频」。点击标签可删除。` : '视频已自动标记「视频」，可手动调整或补充标签。' }}</p>
+      <p v-else class="upload-status"><Sparkles :size="15" />{{ aiEnabled ? `AI 建议已生成（${aiModel}），视频已自动标记「视频」。点击标签可删除。` : taggerEnabled ? '自动打标已完成（本地分类器），点建议即可加入标签；视频已自动标记「视频」。' : '视频已自动标记「视频」，可手动调整或补充标签。' }}</p>
 
       <label v-if="stage === 'select'" class="drop-zone upload-review-drop-zone">
         <input type="file" accept="image/*,video/*" multiple @change="chooseFiles" />
@@ -135,6 +166,7 @@ onBeforeUnmount(() => { items.value.forEach(revokePreview); void cancelPending()
               <input v-model="item.name" class="review-name" :disabled="item.duplicate" />
               <small v-if="item.duplicate" class="review-warning">与已有图片重复：{{ item.duplicateName }}</small>
               <small v-else-if="item.aiError" class="review-warning">AI 分析失败，可手动添加标签</small>
+              <div v-if="!item.duplicate && adviceCount(item)" class="review-advice"><div class="review-advice-head"><span><Sparkles :size="12" />识别建议</span><button type="button" class="review-advice-all" @click="applyAllAdvice(item)">全部采纳</button></div><div v-for="group in adviceGroups(item)" :key="group.key" class="review-advice-row"><em :class="group.key" :title="group.hint">{{ group.label }}</em><div class="review-advice-chips"><button v-for="s in pendingAdvice(item, group.list)" :key="s.raw" type="button" class="review-advice-chip" :title="`${s.raw} · 置信度 ${(s.score * 100).toFixed(0)}%${group.hint ? ' · ' + group.hint : ''}`" @click="applyAdvice(item, s.name)"><Plus :size="10" />{{ s.name }}<small>{{ (s.score * 100).toFixed(0) }}%</small></button></div></div></div>
               <div class="review-tags"><button v-for="tag in item.tags" :key="tag" class="review-tag" @click="toggleTag(item, tag)">#{{ tag }} <X :size="11" /></button><span v-if="!item.tags.length" class="review-empty-tag">暂无标签</span></div>
               <div v-if="!item.duplicate && props.r18Mode" class="review-r18-row"><span>R-18 标记</span><button type="button" class="r18-switch" :class="{ on: item.tags.includes('R-18') }" :aria-pressed="item.tags.includes('R-18')" @click="toggleR18(item)"><i></i><em>{{ item.tags.includes('R-18') ? '已开启' : '未开启' }}</em></button></div>
               <form v-if="!item.duplicate" class="review-add-tag" @submit.prevent="submitTagInput(item)"><div class="review-tag-combo"><input v-model="tagInputs[item.tempId!]" :placeholder="availableFor(item).length ? '选择或输入标签' : '输入新标签'" maxlength="40" @focus="openTagPicker(item)" @keydown.esc="closeTagPicker(item)" @blur="closeTagPicker(item)" /><button v-if="availableFor(item).length" type="button" class="review-tag-combo-toggle" :class="{ open: tagPickerOpen[item.tempId!] }" title="选择已有标签" @mousedown.prevent @click="toggleTagPicker(item)"><ChevronDown :size="13" /></button><button type="submit" class="review-tag-combo-submit" title="添加标签"><Plus :size="14" /></button><div v-if="tagPickerOpen[item.tempId!]" class="review-tag-dropdown"><button v-for="name in availableFor(item)" :key="name" type="button" class="review-tag-option" @mousedown.prevent @click="pickTag(item, name)"><i :style="{ background: tagColor(name) }"></i>{{ name }}</button><span v-if="!availableFor(item).length" class="review-tag-dropdown-empty">没有可选标签，可输入新标签</span></div></div></form>
@@ -180,6 +212,20 @@ onBeforeUnmount(() => { items.value.forEach(revokePreview); void cancelPending()
 .review-tag-option i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .review-tag-dropdown-empty { padding: 6px 7px; color: #6f7b96; font-size: 9px; }
 .review-warning { display: block; margin-top: 6px; color: #fbbf24; font-size: 9px; line-height: 1.4; }
+/* 自动打标建议：按类别分组，点一下采纳 */
+.review-advice { margin-top: 9px; padding: 7px; border: 1px solid rgba(167,139,250,.24); border-radius: 8px; background: rgba(167,139,250,.07); }
+.review-advice-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
+.review-advice-head > span { display: inline-flex; align-items: center; gap: 4px; color: #b9a9ff; font-size: 9px; font-weight: 600; }
+.review-advice-all { padding: 3px 6px; border-radius: 5px; color: #06231b; background: rgba(52,211,153,.85); font-size: 9px; font-weight: 600; }
+.review-advice-all:hover { background: #34d399; }
+.review-advice-row { display: flex; align-items: flex-start; gap: 5px; margin-top: 5px; }
+.review-advice-row em { flex: none; padding: 2px 5px; border-radius: 4px; font-style: normal; font-size: 8px; background: rgba(255,255,255,.08); color: #9aa4bd; }
+.review-advice-row em.character { background: rgba(52,211,153,.2); color: #6ee7b7; }
+.review-advice-row em.copyright { background: rgba(103,232,249,.18); color: #67e8f9; }
+.review-advice-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.review-advice-chip { display: inline-flex; align-items: center; gap: 3px; padding: 3px 6px; border: 1px solid rgba(167,139,250,.3); border-radius: 5px; color: #d7ccff; background: rgba(255,255,255,.05); font-size: 9px; }
+.review-advice-chip:hover { border-color: #a78bfa; color: #fff; background: rgba(167,139,250,.22); }
+.review-advice-chip small { color: #8b93a8; font-size: 8px; }
 .review-r18-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; color: #8b96ad; font-size: 9px; }
 .r18-switch { display: inline-flex; align-items: center; gap: 5px; min-width: 66px; padding: 3px 5px 3px 4px; border-radius: 20px; color: #dbeafe; background: #2563eb; font-size: 8px; }
 .r18-switch i { width: 13px; height: 13px; border-radius: 50%; background: #fff; transition: .2s; }

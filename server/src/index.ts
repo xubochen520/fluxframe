@@ -18,6 +18,13 @@ import { registerParseApi, pickUpstreamHeaders, type ParseServerDeps } from './p
 import { locateFfmpeg, downloadFfmpeg, getFfmpegStatus } from './ffmpeg-manager.js'
 import { biliQrCreate, biliQrPoll, extractSessdata } from './bili-login.js'
 import { createDeepseekService, maskKey } from './deepseek.js'
+import { detectBoxes, detectDir, detectModelsReady, newBoxesPayload, readBoxes, writeBoxes, type DetectBox } from './detect.js'
+import { addReference, cropRegion, listReferences, referenceCounts, regionFromBoxIndex, removeReference } from './references.js'
+import { suggestTagsByTagger, taggerModelsReady, type TagSuggestResult } from './tagger.js'
+import {
+  dropEmbeddings, embedDir, embedModelReady, embedStats, ensureNeighbors, flushIndex, graphPayload,
+  hasEmbedding, putEmbedding, setThreshold, similarTo, cosine, countIndexed, DEFAULT_SIMILARITY_THRESHOLD, SIMILAR_LIMIT,
+} from './embed.js'
 
 const prisma = new PrismaClient()
 const app = Fastify({
@@ -43,6 +50,8 @@ const cookieSecure = process.env.COOKIE_SECURE !== undefined
   : process.env.NODE_ENV === 'production'
 type PendingUpload = { userId: string; tempId: string; tempKey: string; fileName: string; mimeType: string; size: number; width?: number; height?: number; sha256: string; createdAt: number }
 const pendingUploads = new Map<string, PendingUpload>()
+/** 打标建议按 sha256 暂存，随 analyze 响应返回给确认页（不入库，用户确认后才成为标签） */
+const taggerAdvice = new Map<string, { character: TagSuggestResult['character']; copyright: TagSuggestResult['copyright']; general: TagSuggestResult['general']; rating: TagSuggestResult['rating'] }>()
 type DownloadPrincipal = { id: string; username: string; role: 'ADMIN' | 'USER'; r18Mode: boolean }
 type DownloadGrant = { user: DownloadPrincipal; expiresAt: number }
 /**
@@ -70,6 +79,14 @@ const defaultSettings = {
   aiEnabled: process.env.AI_ENABLED === 'true' || Boolean(process.env.AI_API_KEY),
   aiBaseUrl: process.env.AI_BASE_URL || 'http://127.0.0.1:8080/v1',
   aiModel: process.env.AI_MODEL || 'qwen2.5-vl-7b-instruct',
+  /**
+   * 上传时是否自动识别标签（camie-tagger-v2 多标签分类器）。
+   * 默认 false：一是用户已明确不需要它来认标签；二是实测它让上传从 <1 秒变成 1.85 秒，
+   * 且模型空闲 15 分钟被卸载后，下次上传要重新加载 753MB 模型 —— 那一次要等 50 秒，
+   * 就是用户反馈的「上传一张图等半天」。相似图走的是视觉指纹（CCIP），与此无关。
+   * 想要自动填标签时把这项打开即可（代码路径完整保留）。
+   */
+  autoTagOnUpload: false,
 }
 
 type AuthenticatedRequest = FastifyRequest & { user?: { id: string; username: string; role: 'ADMIN' | 'USER'; r18Mode: boolean } }
@@ -519,6 +536,10 @@ async function finalizePendingUpload(request: FastifyRequest, user: { id: string
       return tx.image.findUnique({ where: { id: created.id }, include: { tags: { include: { tag: true } }, variants: true } })
     })
     if (!image) throw new Error('图片入库失败')
+    /* 入库后异步算视觉指纹（相似图关系网用）。刻意不 await：
+       指纹推理约 0.7 秒/张，放进上传响应里会让「上传一张图等半天」重演。
+       失败只记日志——指纹是锦上添花，缺了不影响图片本身可用，下次补算会补上。 */
+    scheduleEmbedding(image.id, originalKey, pending.sha256, isImage)
     // 入库自带的标签（如自动「视频」标签）不单独记「添加标签」，避免刷屏；
     // 上传/提取行为由各调用方按媒体类型记审计（上传图片/上传视频/提取视频/提取封面）
     return imageDto(image)
@@ -530,11 +551,88 @@ async function finalizePendingUpload(request: FastifyRequest, user: { id: string
   }
 }
 
+/* ---------------- 视觉指纹（相似图关系网）后台计算 ----------------
+ * 串行队列：CCIP 一次推理约 0.7 秒且吃内存，并发跑反而更慢，也可能把容器顶爆。
+ * 上传完成立刻返回，指纹在后台慢慢补；算完就落盘，前端刷新即可看到相似图。 */
+const embedQueue: Array<{ id: string; key: string; sha256: string }> = []
+let embedWorkerRunning = false
+let embedDone = 0
+let embedFailed = 0
+let embedLastError = ''
+
+async function runEmbedWorker() {
+  if (embedWorkerRunning) return
+  embedWorkerRunning = true
+  try {
+    while (embedQueue.length) {
+      const job = embedQueue.shift()!
+      try {
+        const buffer = await readFile(safeStoragePath(job.key))
+        await putEmbedding(job.id, buffer, job.sha256)
+        embedDone++
+      } catch (error) {
+        embedFailed++
+        embedLastError = error instanceof Error ? error.message : String(error)
+        app.log.warn({ error }, `视觉指纹计算失败：${job.id}`)
+      }
+    }
+    await flushIndex()
+  } finally {
+    embedWorkerRunning = false
+  }
+}
+
+/**
+ * 等某张图的指纹算好，最多等 timeoutMs。
+ * 用处：用户刚上传完就点开看相似图时，这张图通常「正在算」；与其返回空列表让前端轮询，
+ * 不如就在这里等它算完（正常约 0.7 秒）。排队靠后或超时就放弃，交给前端轮询兜底。
+ */
+async function waitForEmbedding(id: string, sha256: string, timeoutMs = 6000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await hasEmbedding(id, sha256)) return true
+    await new Promise((resolve) => setTimeout(resolve, 120))
+  }
+  return false
+}
+
+/** 把一张图排进指纹队列（已在队列里或已有指纹则跳过） */
+function scheduleEmbedding(id: string, key: string, sha256: string, isImage: boolean) {
+  if (!isImage || !embedModelReady()) return
+  if (embedQueue.some((job) => job.id === id)) return
+  void hasEmbedding(id, sha256).then((exists) => {
+    if (exists) return
+    embedQueue.push({ id, key, sha256 })
+    void runEmbedWorker()
+  }).catch(() => {})
+}
+
+/** 批量补算存量图片的指纹（后台跑，接口立刻返回进度） */
+async function backfillEmbeddings(force = false): Promise<{ queued: number; scanning: boolean }> {
+  if (!embedModelReady()) throw new Error('指纹模型未就绪')
+  const images = await prisma.image.findMany({
+    where: { deletedAt: null, mimeType: { startsWith: 'image/' } },
+    select: { id: true, originalKey: true, sha256: true },
+    orderBy: { uploadedAt: 'asc' },
+  })
+  let queued = 0
+  for (const image of images) {
+    if (!force && await hasEmbedding(image.id, image.sha256)) continue
+    if (embedQueue.some((job) => job.id === image.id)) continue
+    embedQueue.push({ id: image.id, key: image.originalKey, sha256: image.sha256 })
+    queued++
+  }
+  void runEmbedWorker()
+  return { queued, scanning: true }
+}
+
 app.post('/api/images/upload/analyze', async (request, reply) => {
   const user = await requireUser(request as AuthenticatedRequest, reply)
   if (!user) return
   const configuredLimit = await prisma.systemSetting.findUnique({ where: { key: 'uploadLimitMb' } })
   const uploadLimitMb = typeof configuredLimit?.value === 'number' ? configuredLimit.value : defaultSettings.uploadLimitMb
+  const autoTagRow = await prisma.systemSetting.findUnique({ where: { key: 'autoTagOnUpload' } })
+  const autoTagOnUpload = typeof autoTagRow?.value === 'boolean' ? autoTagRow.value : defaultSettings.autoTagOnUpload
   // 已有标签按使用频率从高到低排列，帮助模型优先选择常用标签
   const existingTags = await prisma.tag.findMany({ where: user.r18Mode ? undefined : r18HiddenTagsFilter, orderBy: { images: { _count: 'desc' } }, select: { name: true } })
   const aiConfig = await getAiConfig()
@@ -564,17 +662,38 @@ app.post('/api/images/upload/analyze', async (request, reply) => {
     const motionPhoto = isImage && isMotionPhoto(buffer, part.filename)
     let tags: string[] = isVideo ? ['视频'] : motionPhoto ? ['实况'] : []
     let aiError = ''
+    /* 两条打标路径，互斥生效（都需要显式开启；默认都不开，上传走纯存储 + 后台算指纹）：
+       - aiConfig.enabled=true → Qwen-VL 生成式打标（能出中文描述性标签，但慢且角色名不可靠）
+       - 否则若 autoTagOnUpload 且分类器模型就位 → camie-tagger-v2 闭集分类（角色名准，约 1.85 秒/张）
+       默认关掉的理由见 defaultSettings.autoTagOnUpload 的注释：用户不需要它认标签，
+       而且它让上传慢一个数量级、模型被卸载后首传还要等 50 秒。 */
     if (isImage && aiConfig.enabled) {
       try {
         const suggested = (await suggestTags(buffer, part.mimetype, existingTags.map((tag) => tag.name))).tags
         tags = motionPhoto ? [...new Set(['实况', ...suggested])] : suggested
       } catch (error) { aiError = error instanceof Error ? error.message : 'AI 分析失败'; app.log.warn({ error }, `AI tag analysis failed for ${part.filename}`) }
+    } else if (isImage && autoTagOnUpload && taggerModelsReady()) {
+      try {
+        const result = await suggestTagsByTagger(buffer, existingTags.map((tag) => tag.name))
+        /* 自动填入只放「角色 + 作品」——实测这两类最可靠（角色 92% 命中、作品 86% 量级）。
+           属性（general）不自动填：一是英文标签多、会污染中文标签体系，
+           二是白丝/黑丝这类色系判断只有 0%~67%，不适合不打招呼就写进库。
+           它们全部作为 advice 返回，由用户在确认页按需点选。 */
+        const autoFill = [...result.character, ...result.copyright].map((item) => item.name)
+        tags = motionPhoto ? [...new Set(['实况', ...autoFill])] : autoFill
+        taggerAdvice.set(hash, {
+          character: result.character,
+          copyright: result.copyright,
+          general: result.general,
+          rating: result.rating,
+        })
+      } catch (error) { aiError = error instanceof Error ? error.message : '自动打标失败'; app.log.warn({ error }, `Tagger analysis failed for ${part.filename}`) }
     }
     pendingUploads.set(tempId, { userId: user.id, tempId, tempKey, fileName: part.filename, mimeType: part.mimetype, size: buffer.byteLength, width: metadata?.width, height: metadata?.height, sha256: hash, createdAt: Date.now() })
-    items.push({ sourceIndex: currentIndex, tempId, fileName: part.filename, name: part.filename.replace(/\.[^.]+$/, ''), mimeType: part.mimetype, size: buffer.byteLength, width: metadata?.width || 0, height: metadata?.height || 0, tags, duplicate: false, aiError })
+    items.push({ sourceIndex: currentIndex, tempId, fileName: part.filename, name: part.filename.replace(/\.[^.]+$/, ''), mimeType: part.mimetype, size: buffer.byteLength, width: metadata?.width || 0, height: metadata?.height || 0, tags, duplicate: false, aiError, advice: taggerAdvice.get(hash) })
   }
   await recordAudit(request, '分析待上传媒体', user.id, `${items.length} 个文件`)
-  return { items, aiEnabled: aiConfig.enabled, aiModel: aiConfig.model }
+  return { items, aiEnabled: aiConfig.enabled, aiModel: aiConfig.model, taggerEnabled: !aiConfig.enabled && autoTagOnUpload && taggerModelsReady() }
 })
 
 app.post('/api/images/upload/complete', async (request, reply) => {
@@ -771,6 +890,8 @@ app.delete('/api/images/:id/permanent', async (request, reply) => {
   if (!image) return reply.code(404).send({ message: '图片不存在' })
   await prisma.image.delete({ where: { id } })
   await Promise.all([rm(safeStoragePath(image.originalKey), { force: true }), ...image.variants.map((variant) => rm(safeStoragePath(variant.key), { force: true }))])
+  // 顺手清掉指纹，别让关系网里留着已删图片的边
+  try { await dropEmbeddings([id]) } catch (error) { app.log.warn({ error }, `清理指纹失败：${id}`) }
   await recordAudit(request, '永久删除图片', user.id, image.name)
   return { ok: true }
 })
@@ -1511,6 +1632,435 @@ const parseServerDeps: ParseServerDeps = {
   findFfmpeg: async () => findFfmpegForParse(),
 }
 registerParseApi(app, parseServerDeps)
+
+// ---------- 人物框选 + 角色参考图库 ----------
+/* 说明：检测结果只存「归一化框坐标」，不切割原图；参考图库只存 { imageId, box } 引用，
+   裁剪按需即时生成。这样原图始终是唯一真相，换检测模型后可整体重算。 */
+const boxSchema = z.object({
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+  w: z.number().gt(0).max(1),
+  h: z.number().gt(0).max(1),
+  score: z.number().min(0).max(1).default(0),
+  kind: z.enum(['face', 'head', 'region']).default('face'),
+  manual: z.boolean().optional(),
+})
+
+/** 读图片原始文件（含 R18 可见性校验），供检测与裁剪复用 */
+async function loadOriginalForDetect(request: AuthenticatedRequest, reply: FastifyReply, id: string) {
+  const user = await requireUser(request, reply)
+  if (!user) return null
+  const image = await imageWithRelations(id)
+  if (!image || image.deletedAt) { await reply.code(404).send({ message: '图片不存在' }); return null }
+  if (!user.r18Mode && isImageR18(image)) { await reply.code(404).send({ message: '图片不存在' }); return null }
+  const filePath = safeStoragePath(image.originalKey)
+  try { await stat(filePath) } catch {
+    await reply.code(404).send({ message: '媒体文件缺失，无法框选' })
+    return null
+  }
+  return { user, image, filePath }
+}
+
+/** 框选总览：模型是否就绪 + 全库已完成框选的数量（前端用于显示进度/开关） */
+app.get('/api/detect/status', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const where: Prisma.ImageWhereInput = user.r18Mode
+    ? { deletedAt: null, mimeType: { startsWith: 'image/' } }
+    : { deletedAt: null, mimeType: { startsWith: 'image/' }, ...r18HiddenImageFilter }
+  const total = await prisma.image.count({ where })
+  // 直接数 sidecar 目录，避免逐张读 JSON
+  let boxed = 0
+  try {
+    const entries = await readdir(path.join(detectDir(), 'boxes'))
+    boxed = entries.filter((name) => name.endsWith('.json')).length
+  } catch { boxed = 0 }
+  return { modelsReady: detectModelsReady(), total, boxed, pending: Math.max(0, total - boxed) }
+})
+
+/** 取某张图的框（不存在则返回空，不自动触发检测） */
+app.get('/api/images/:id/boxes', async (request, reply) => {
+  const id = (request.params as { id: string }).id
+  const loaded = await loadOriginalForDetect(request as AuthenticatedRequest, reply, id)
+  if (!loaded) return
+  const payload = await readBoxes(id)
+  if (payload) return payload
+  const image = loaded.image
+  return { version: 1, inputLong: 0, width: image.width || 0, height: image.height || 0, detectedAt: '', boxes: [] }
+})
+
+/** 立即对这张图跑检测并落盘（同步返回结果，单张约 0.2~0.5 秒） */
+app.post('/api/images/:id/boxes/detect', async (request, reply) => {
+  const id = (request.params as { id: string }).id
+  const loaded = await loadOriginalForDetect(request as AuthenticatedRequest, reply, id)
+  if (!loaded) return
+  if (!String(loaded.image.mimeType).startsWith('image/')) return reply.code(400).send({ message: '仅支持对静态图片框选，视频请先抽帧' })
+  if (!detectModelsReady()) return reply.code(503).send({ message: '检测模型未就绪，请先在设置中下载' })
+  try {
+    const buffer = await readFile(loaded.filePath)
+    const result = await detectBoxes(buffer)
+    const payload = newBoxesPayload(result.width, result.height, result.boxes, result.inputLong)
+    await writeBoxes(id, payload)
+    await recordAudit(request, '框选人物', loaded.user.id, `${loaded.image.name}（${result.boxes.length} 个框）`)
+    return payload
+  } catch (error) {
+    app.log.error(error)
+    return reply.code(500).send({ message: `框选失败：${error instanceof Error ? error.message : '未知错误'}` })
+  }
+})
+
+/** 保存人工调整后的框（整表覆盖，前端「保存」按钮调用） */
+app.put('/api/images/:id/boxes', async (request, reply) => {
+  const id = (request.params as { id: string }).id
+  const loaded = await loadOriginalForDetect(request as AuthenticatedRequest, reply, id)
+  if (!loaded) return
+  const body = z.object({
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+    boxes: z.array(boxSchema).max(50),
+  }).parse(request.body)
+  const boxes: DetectBox[] = body.boxes.map((box) => ({
+    x: Math.min(box.x, 1 - 1e-6),
+    y: Math.min(box.y, 1 - 1e-6),
+    w: Math.min(box.w, 1 - box.x),
+    h: Math.min(box.h, 1 - box.y),
+    score: box.score,
+    // 人工框只有脸/头两种语义；'region' 统一归为 face，避免与检测框类型冲突
+    kind: box.kind === 'head' ? 'head' : 'face',
+    manual: box.manual ?? true,
+  }))
+  const payload = newBoxesPayload(body.width, body.height, boxes)
+  await writeBoxes(id, payload)
+  await recordAudit(request, '调整框选', loaded.user.id, `${loaded.image.name}（${boxes.length} 个框）`)
+  return payload
+})
+
+/** 框选裁剪预览：boxIndex 引用已保存的框，或直接给 region（归一化）*/
+app.get('/api/images/:id/box-crop', async (request, reply) => {
+  const id = (request.params as { id: string }).id
+  const loaded = await loadOriginalForDetect(request as AuthenticatedRequest, reply, id)
+  if (!loaded) return
+  const query = z.object({
+    boxIndex: z.coerce.number().int().min(0).optional(),
+    x: z.coerce.number().min(0).max(1).optional(),
+    y: z.coerce.number().min(0).max(1).optional(),
+    w: z.coerce.number().gt(0).max(1).optional(),
+    h: z.coerce.number().gt(0).max(1).optional(),
+    width: z.coerce.number().int().min(32).max(1024).default(240),
+  }).parse(request.query)
+  let region = query.x !== undefined && query.y !== undefined && query.w !== undefined && query.h !== undefined
+    ? { x: query.x, y: query.y, w: query.w, h: query.h }
+    : null
+  if (!region && query.boxIndex !== undefined) {
+    const box = await regionFromBoxIndex(id, query.boxIndex)
+    if (box) region = { x: box.x, y: box.y, w: box.w, h: box.h }
+  }
+  if (!region) return reply.code(404).send({ message: '框不存在，请先框选' })
+  try {
+    const buffer = await cropRegion(loaded.filePath, region, { width: query.width })
+    return reply.type('image/jpeg').header('Cache-Control', 'private, max-age=600').send(buffer)
+  } catch (error) {
+    app.log.error(error)
+    return reply.code(500).send({ message: '裁剪失败' })
+  }
+})
+
+/** 某角色标签的参考图库：已确认的参考样本（含裁剪缩略图地址） */
+app.get('/api/tags/:id/references', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const tagId = (request.params as { id: string }).id
+  const tag = await prisma.tag.findUnique({ where: { id: tagId } })
+  if (!tag) return reply.code(404).send({ message: '标签不存在' })
+  if (!user.r18Mode && isTagR18(tag)) return reply.code(403).send({ message: '需要开启 R18 模式才能查看' })
+  const entries = await listReferences(tagId)
+  const items = []
+  for (const entry of entries) {
+    const image = await imageWithRelations(entry.imageId)
+    if (!image || image.deletedAt) continue
+    if (!user.r18Mode && isImageR18(image)) continue
+    items.push({
+      imageId: image.id,
+      name: image.name,
+      thumb: `/api/images/${image.id}/file`,
+      box: entry.box,
+      kind: entry.kind,
+      source: entry.source,
+      addedAt: entry.addedAt,
+      /** 该图当前是否仍带这个标签（标签被移除时提示参考已失效） */
+      stillTagged: image.tags.some((item) => item.tag.id === tagId),
+      crop: `/api/images/${image.id}/box-crop?x=${entry.box.x}&y=${entry.box.y}&w=${entry.box.w}&h=${entry.box.h}&width=200`,
+    })
+  }
+  return { tag: { id: tag.id, name: tag.name, person: tag.person === true }, total: items.length, items }
+})
+
+/** 把一个框确认成该角色的参考样本 */
+app.post('/api/tags/:id/references', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const tagId = (request.params as { id: string }).id
+  const tag = await prisma.tag.findUnique({ where: { id: tagId } })
+  if (!tag) return reply.code(404).send({ message: '标签不存在' })
+  if (!user.r18Mode && isTagR18(tag)) return reply.code(403).send({ message: '需要开启 R18 模式' })
+  const body = z.object({
+    imageId: z.string().min(1),
+    boxIndex: z.number().int().min(0).optional(),
+    box: boxSchema.optional(),
+    note: z.string().max(200).optional(),
+  }).refine((value) => value.boxIndex !== undefined || value.box, { message: '需要提供 boxIndex 或 box' }).parse(request.body)
+
+  const image = await imageWithRelations(body.imageId)
+  if (!image || image.deletedAt) return reply.code(404).send({ message: '图片不存在' })
+  if (!user.r18Mode && isImageR18(image)) return reply.code(403).send({ message: '需要开启 R18 模式' })
+
+  let region = body.box ? { x: body.box.x, y: body.box.y, w: body.box.w, h: body.box.h } : null
+  let kind: 'face' | 'head' | 'region' = body.box?.kind === 'head' ? 'head' : 'face'
+  if (!region && body.boxIndex !== undefined) {
+    const box = await regionFromBoxIndex(body.imageId, body.boxIndex)
+    if (!box) return reply.code(404).send({ message: '框不存在，请先框选' })
+    region = { x: box.x, y: box.y, w: box.w, h: box.h }
+    kind = box.kind
+  }
+  if (!region) return reply.code(400).send({ message: '缺少框坐标' })
+
+  const result = await addReference(tagId, {
+    imageId: body.imageId, box: region, kind,
+    source: body.box ? 'manual' : 'auto',
+    note: body.note,
+    addedById: user.id,
+  })
+  await recordAudit(request, tag.person ? '确认人物参考' : '确认参考图', user.id, `${tag.name} ↔ ${image.name}`)
+  return { ok: true, ...result }
+})
+
+app.delete('/api/tags/:id/references/:imageId', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const { id: tagId, imageId } = request.params as { id: string; imageId: string }
+  const tag = await prisma.tag.findUnique({ where: { id: tagId } })
+  if (!tag) return reply.code(404).send({ message: '标签不存在' })
+  // 可选的框坐标：同一张图可能有多个参考条目，带上则只删这一条
+  const query = z.object({
+    x: z.coerce.number().min(0).max(1).optional(),
+    y: z.coerce.number().min(0).max(1).optional(),
+    w: z.coerce.number().gt(0).max(1).optional(),
+    h: z.coerce.number().gt(0).max(1).optional(),
+  }).parse(request.query)
+  const box = query.x !== undefined && query.y !== undefined && query.w !== undefined && query.h !== undefined
+    ? { x: query.x, y: query.y, w: query.w, h: query.h }
+    : undefined
+  const result = await removeReference(tagId, imageId, box)
+  await recordAudit(request, '移除参考图', user.id, `${tag.name}（-${result.removed}）`)
+  return { ok: true, ...result }
+})
+
+/** 各角色参考图数量（在标签列表里显示「参考 N」进度） */
+app.get('/api/references/summary', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  return { counts: await referenceCounts() }
+})
+
+/** 自动打标（本地多标签分类器）是否就绪 */
+app.get('/api/tagger/status', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const aiConfig = await getAiConfig()
+  const autoTagRow = await prisma.systemSetting.findUnique({ where: { key: 'autoTagOnUpload' } })
+  const autoTagOnUpload = typeof autoTagRow?.value === 'boolean' ? autoTagRow.value : defaultSettings.autoTagOnUpload
+  return { ready: taggerModelsReady(), active: !aiConfig.enabled && autoTagOnUpload && taggerModelsReady(), autoTagOnUpload, aiEnabled: aiConfig.enabled, aiModel: aiConfig.model }
+})
+
+/* ---------------- 相似图 / 关系网 ----------------
+ * 依据是 CCIP 视觉指纹（见 embed.ts），不是标签——实测标签向量对只有 1~2 张图的角色几乎无效。 */
+
+/** 取「已算好邻居」的索引（内部会按需重算一次） */
+async function ensureNeighborsForUser(_user: { r18Mode: boolean }) {
+  return ensureNeighbors()
+}
+
+/** 两个 id 的余弦相似度（校准接口用） */
+function cosineOf(index: { entries: Record<string, { vec: number[] }> }, a: string, b: string) {
+  return cosine(index.entries[a].vec, index.entries[b].vec)
+}
+
+/** 把「id + 分数」列表补成完整图片信息，并过滤掉已删除 / 当前用户看不到的 */
+async function loadSimilarDtos(neighbors: Array<{ id: string; score: number }>, user: { r18Mode: boolean }) {
+  if (!neighbors.length) return []
+  const rows = await prisma.image.findMany({
+    where: { id: { in: neighbors.map((item) => item.id) }, deletedAt: null },
+    include: { tags: { include: { tag: true } }, variants: true },
+  })
+  const byId = new Map(rows.map((row) => [row.id, row]))
+  const items: any[] = []
+  for (const neighbor of neighbors) {
+    const row = byId.get(neighbor.id)
+    if (!row) continue
+    if (!user.r18Mode && isImageR18(row)) continue
+    items.push({ ...imageDto(row), score: Number(neighbor.score.toFixed(4)) })
+  }
+  return items
+}
+
+/** 指纹与索引状态：前端据此显示「已建索引 N 张」「后台还在算 M 张」 */
+app.get('/api/embed/status', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const stats = await embedStats()
+  const imageCount = await prisma.image.count({ where: { deletedAt: null, mimeType: { startsWith: 'image/' } } })
+  return {
+    ...stats,
+    modelPath: path.join(embedDir(), 'ccip_feat.onnx'),
+    imageCount,
+    /** 还没建指纹的图片数：前端提示「点这里补齐」 */
+    missing: Math.max(0, imageCount - stats.indexed),
+    queueLength: embedQueue.length,
+    working: embedWorkerRunning,
+    done: embedDone,
+    failed: embedFailed,
+    lastError: embedLastError,
+  }
+})
+
+/** 某张图的相似图列表（大图上滑时调这个） */
+app.get('/api/images/:id/similar', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const id = (request.params as { id: string }).id
+  const query = z.object({ limit: z.coerce.number().int().min(1).max(60).default(SIMILAR_LIMIT) }).parse(request.query)
+  const image = await imageWithRelations(id)
+  if (!image || image.deletedAt) return reply.code(404).send({ message: '图片不存在' })
+  if (!embedModelReady()) return { ready: false, indexed: false, threshold: DEFAULT_SIMILARITY_THRESHOLD, items: [] }
+
+  const index = await ensureNeighborsForUser(user)
+  let indexed = Boolean(index.entries[id])
+  let items: any[] = []
+  if (indexed) {
+    items = await loadSimilarDtos((index.neighbors[id] || []).slice(0, query.limit), user)
+  } else if (image.mimeType.startsWith('image/')) {
+    /* 这张图还没指纹（多半是刚上传、后台正在算）。队列里没有就先排上，再等它算完 ——
+       正常约 0.7 秒，用户感知是「转一下圈就出结果」，而不是「空列表 + 自己再刷新」。
+       排队靠后或算失败就超时返回，前端仍会按 analyzing 轮询兜底。 */
+    if (!embedQueue.some((job) => job.id === id)) {
+      embedQueue.push({ id, key: image.originalKey, sha256: image.sha256 })
+      void runEmbedWorker()
+    }
+    await waitForEmbedding(id, image.sha256)
+    const fresh = await ensureNeighborsForUser(user)
+    indexed = Boolean(fresh.entries[id])
+    if (indexed) items = await loadSimilarDtos((fresh.neighbors[id] || []).slice(0, query.limit), user)
+  }
+
+  return {
+    ready: true,
+    indexed,
+    threshold: index.threshold,
+    /** 兜底：确实没算出来（图损坏或队列排太长）时，前端显示「正在识别，稍后刷新」 */
+    analyzing: !indexed,
+    items,
+  }
+})
+
+/** 关系网：节点 + 相似边 + 相似分组 */
+app.get('/api/embed/graph', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const query = z.object({ edges: z.coerce.number().int().min(50).max(3000).default(600) }).parse(request.query)
+  if (!embedModelReady()) return { ready: false, nodes: 0, edges: [], groups: [], isolated: 0 }
+  await ensureNeighborsForUser(user)
+  const graph = await graphPayload(query.edges)
+  const ids = [...new Set([...graph.edges.flatMap((edge) => [edge.a, edge.b]), ...graph.groups.flatMap((group) => group.members)])]
+  const rows = ids.length
+    ? await prisma.image.findMany({ where: { id: { in: ids }, deletedAt: null }, include: { tags: { include: { tag: true } }, variants: true } })
+    : []
+  const visible = rows.filter((row) => user.r18Mode || !isImageR18(row))
+  const nodes = visible.map((row) => imageDto(row))
+  const allowed = new Set(nodes.map((node) => node.id))
+  const visibleEdges = graph.edges.filter((edge) => allowed.has(edge.a) && allowed.has(edge.b))
+  /* 以「可见边」为准算谁真的连上了：分组里可能有成员的所有边都指向被隐藏的图，
+     那种成员在本用户视角下其实是孤立的，不能算进已关联。 */
+  const linkedIds = new Set<string>()
+  for (const edge of visibleEdges) { linkedIds.add(edge.a); linkedIds.add(edge.b) }
+  const visibleGroups = graph.groups
+    .map((group) => ({ members: group.members.filter((member) => allowed.has(member)) }))
+    .map((group) => ({ members: group.members, size: group.members.length }))
+    .filter((group) => group.size > 1 && group.members.some((member) => linkedIds.has(member)))
+  const visibleLinked = visibleGroups.reduce((sum, group) => sum + group.size, 0)
+  /* 「已建指纹」要用索引里的真实总数：graph.nodes 只包含出现在边/分组里的图（71 张），
+     库里其实有 128 张建了指纹，剩下 57 张是没有任何相似图的。 */
+  const totalIndexed = await countIndexed()
+  return {
+    ready: true,
+    ...graph,
+    nodes,
+    edges: visibleEdges,
+    groups: visibleGroups,
+    totalIndexed,
+    /* nodes 只含有关联的图，所以「孤立」按全库口径算，与上面两项保持自洽 */
+    linked: visibleLinked,
+    isolated: Math.max(0, totalIndexed - visibleLinked),
+  }
+})
+
+/** 启动批量补算：把还没建指纹的图排进后台队列 */
+app.post('/api/embed/backfill', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const body = z.object({ force: z.boolean().default(false) }).parse(request.body ?? {})
+  const result = await backfillEmbeddings(body.force)
+  await recordAudit(request, '建立相似图索引', user.id, `新增 ${result.queued} 张`)
+  return { ok: true, ...result }
+})
+
+/** 调整相似度阈值（不同图库内容差异大，允许前端试） */
+app.patch('/api/embed/threshold', async (request, reply) => {
+  const user = await requireAdmin(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const body = z.object({ threshold: z.number().min(0.05).max(0.95) }).parse(request.body)
+  const value = await setThreshold(body.threshold)
+  await recordAudit(request, '调整相似度阈值', user.id, String(value))
+  return { ok: true, threshold: value }
+})
+
+/** 用箱线图口径说明当前阈值：同角色/异角色的实测分布，帮用户判断松紧 */
+app.get('/api/embed/calibration', async (request, reply) => {
+  const user = await requireUser(request as AuthenticatedRequest, reply)
+  if (!user) return
+  const index = await ensureNeighborsForUser(user)
+  const ids = Object.keys(index.entries)
+  const images = await prisma.image.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, tags: { select: { tag: { select: { name: true, person: true } } } } },
+  })
+  const chars = new Map<string, Set<string>>()
+  for (const image of images) {
+    chars.set(image.id, new Set(image.tags.filter((item) => item.tag.person).map((item) => item.tag.name)))
+  }
+  const same: number[] = []
+  const diff: number[] = []
+  for (let i = 0; i < ids.length; i++) {
+    for (let j = i + 1; j < ids.length; j++) {
+      const a = chars.get(ids[i])
+      const b = chars.get(ids[j])
+      if (!a?.size || !b?.size) continue
+      const score = cosineOf(index, ids[i], ids[j])
+      const shared = [...a].some((name) => b.has(name))
+      ;(shared ? same : diff).push(score)
+    }
+  }
+  const quantile = (values: number[], p: number) => {
+    if (!values.length) return null
+    const sorted = [...values].sort((x, y) => x - y)
+    return Number(sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))].toFixed(4))
+  }
+  return {
+    threshold: index.threshold,
+    pairs: { same: same.length, diff: diff.length },
+    same: { p10: quantile(same, 0.1), p50: quantile(same, 0.5), p90: quantile(same, 0.9) },
+    diff: { p10: quantile(diff, 0.1), p50: quantile(diff, 0.5), p90: quantile(diff, 0.9) },
+  }
+})
 
 async function start() {
   await prisma.$connect()

@@ -1,4 +1,4 @@
-export type View = 'overview' | 'library' | 'tags' | 'logs' | 'trash' | 'settings' | 'parse'
+export type View = 'overview' | 'library' | 'similar' | 'tags' | 'logs' | 'trash' | 'settings' | 'parse'
 export type IconName = 'LayoutDashboard' | 'Images' | 'Tags' | 'ScrollText' | 'Trash2' | 'Settings2'
 
 export interface ImageItem {

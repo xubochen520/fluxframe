@@ -35,3 +35,11 @@ android/build-log.txt
 /gradlew
 /gradlew.bat
 /gradle-wrapper.jar
+
+# 本地排查与验证产物（不入库）
+# 根目录下以 _ 或 .dsh 开头的一次性脚本、截图、抓取副本、生成的报表等，
+# 都只服务于当次排查，没有长期价值。文件保留在磁盘上，只是不进版本库。
+/_*
+/.dsh*
+/.runmobilecheck.py
+/FLUXFRAME_标签自动识别_实测报表.xlsx
