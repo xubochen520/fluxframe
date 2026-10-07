@@ -395,7 +395,8 @@ export class GalaxyEngine {
 
   private pointers = new Map<number, { x: number; y: number }>()
   private dragStart: { x: number; y: number; centerX: number; centerY: number; moved: boolean } | null = null
-  private pinchStart: { distance: number; zoom: number } | null = null
+  /** 双指捏合：只记上一次的两指距离，每帧用增量比值缩放（锚点取两指中点） */
+  private pinchStart: { distance: number } | null = null
 
   private detach: Array<() => void> = []
 
@@ -554,7 +555,7 @@ export class GalaxyEngine {
         this.animating = false
       } else if (this.pointers.size === 2) {
         const [a, b] = [...this.pointers.values()]
-        this.pinchStart = { distance: Math.hypot(a.x - b.x, a.y - b.y), zoom: this.zoom }
+        this.pinchStart = { distance: Math.hypot(a.x - b.x, a.y - b.y) }
         this.dragStart = null
       }
     })
@@ -565,13 +566,14 @@ export class GalaxyEngine {
       if (this.pointers.size === 2 && this.pinchStart) {
         const [a, b] = [...this.pointers.values()]
         const distance = Math.hypot(a.x - b.x, a.y - b.y)
-        if (this.pinchStart.distance > 12) {
-          this.zoom = this.clampZoom(this.pinchStart.zoom * (distance / this.pinchStart.distance))
-          this.targetZoom = this.zoom
-          this.animating = false
-          this.dirty = true
-          this.callbacks.onView?.(this.zoom, this.thumbAlpha)
+        /* 逐帧按「本次距离 / 上次距离」增量缩放，锚点取两指中点：
+           这样双指捏合是围着手指缩放，而不是围着画布中心缩放。
+           pinchStart.distance 每帧更新成当前值，增量比值才不会累乘出错。 */
+        if (this.pinchStart.distance > 12 && distance > 12) {
+          const rect = canvas.getBoundingClientRect()
+          this.zoomAt(distance / this.pinchStart.distance, (a.x + b.x) / 2 - rect.left, (a.y + b.y) / 2 - rect.top)
         }
+        this.pinchStart = { distance }
         return
       }
 
@@ -580,8 +582,12 @@ export class GalaxyEngine {
         const dy = event.clientY - this.dragStart.y
         if (Math.abs(dx) > CLICK_SLOP || Math.abs(dy) > CLICK_SLOP) this.dragStart.moved = true
         if (this.dragStart.moved) {
+          /* 「抓住内容拖」：鼠标往哪边拖，星图就往哪边跟。
+             注意两轴的符号是**相反**的：屏幕 x 与世界 x 同向，屏幕 y 与世界 y 反向
+             （WebGL 世界 +y 朝上、鼠标 +y 朝下）。第一版把 y 也写成了减号，
+             结果就是上下拖动的方向和手相反。 */
           this.centerX = this.dragStart.centerX - (dx * this.dpr) / this.zoom
-          this.centerY = this.dragStart.centerY - (dy * this.dpr) / this.zoom
+          this.centerY = this.dragStart.centerY + (dy * this.dpr) / this.zoom
           this.targetCenterX = this.centerX
           this.targetCenterY = this.centerY
           this.dirty = true
@@ -657,21 +663,32 @@ export class GalaxyEngine {
 
   /* ---------- 相机 ---------- */
 
+  /**
+   * CSS 坐标（相对画布、y 朝下）→ 着色器里的 device 坐标（y 朝上）。
+   *
+   * 这个换算必须只此一处。两套 y 方向（WebGL 世界 +y 朝上、DOM/CSS +y 朝下）混用是
+   * 这套代码最容易翻车的地方，而且错得很隐蔽：画面看着完全正常，只有「鼠标瞄不准」
+   * 和「上下拖动反向」两个症状——因为命中判定、缩放锚点这条链路整体镜像了。
+   * 之前 worldToScreen 修对了，pick/zoomAt 却还按老约定算，就踩了这个坑。
+   */
+  private cssToDevice(cssX: number, cssY: number) {
+    return { x: cssX * this.dpr, y: this.height - cssY * this.dpr }
+  }
+
   private clampZoom(value: number) {
     return Math.max(this.minZoom, Math.min(this.maxZoom, value))
   }
 
+  /** 以画布上的某点（CSS 坐标）为锚点缩放：锚点底下的世界坐标保持不动 */
   private zoomAt(factor: number, cssX: number, cssY: number) {
-    const deviceX = cssX * this.dpr
-    const deviceY = cssY * this.dpr
-    /* 保持指针下的世界坐标不动：先算出那个点，缩放后再把镜头挪回去 */
-    const worldX = (deviceX - this.width * 0.5) / this.zoom + this.centerX
-    const worldY = (deviceY - this.height * 0.5) / this.zoom + this.centerY
+    const device = this.cssToDevice(cssX, cssY)
+    const worldX = (device.x - this.width * 0.5) / this.zoom + this.centerX
+    const worldY = (device.y - this.height * 0.5) / this.zoom + this.centerY
     const next = this.clampZoom(this.zoom * factor)
     if (next === this.zoom) return
     this.zoom = next
-    this.centerX = worldX - (deviceX - this.width * 0.5) / next
-    this.centerY = worldY - (deviceY - this.height * 0.5) / next
+    this.centerX = worldX - (device.x - this.width * 0.5) / next
+    this.centerY = worldY - (device.y - this.height * 0.5) / next
     this.targetZoom = next
     this.targetCenterX = this.centerX
     this.targetCenterY = this.centerY
@@ -783,15 +800,14 @@ export class GalaxyEngine {
   /* ---------- 命中 / 选中 / 高亮 ---------- */
 
   private pick(cssX: number, cssY: number): number | null {
-    const deviceX = cssX * this.dpr
-    const deviceY = cssY * this.dpr
+    const device = this.cssToDevice(cssX, cssY)
     const limit = PICK_RADIUS * this.dpr
     let best: number | null = null
     let bestDistance = limit * limit
     for (let i = 0; i < this.nodes.length; i++) {
       const node = this.nodes[i]
-      const dx = (node.x - this.centerX) * this.zoom + this.width * 0.5 - deviceX
-      const dy = (node.y - this.centerY) * this.zoom + this.height * 0.5 - deviceY
+      const dx = (node.x - this.centerX) * this.zoom + this.width * 0.5 - device.x
+      const dy = (node.y - this.centerY) * this.zoom + this.height * 0.5 - device.y
       const distance = dx * dx + dy * dy
       if (distance < bestDistance) {
         bestDistance = distance
