@@ -48,6 +48,11 @@ data class ImageItem(
     val mimeType: String = "",
     val url: String = "",
     val thumb: String = "",
+    /**
+     * 放大后用的高分缩略图（服务端挑最小的 >= 640 的档位，通常是 768）。
+     * 没有大图时服务端会回落到 [thumb]，所以这里可能是空串（老数据 / 视频）。
+     */
+    val thumbLarge: String = "",
     val width: Int = 0,
     val height: Int = 0,
     /** 后端已格式化的可读体积，例如 "1.2 MB" */

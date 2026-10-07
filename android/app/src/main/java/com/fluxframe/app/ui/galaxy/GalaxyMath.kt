@@ -31,8 +31,20 @@ object GalaxyMath {
     const val THUMB_FADE_FROM = 30f
     const val THUMB_FADE_TO = 62f
 
-    /** 缩略图的屏幕边长上限：不封的话继续放大一张图能铺满整个屏幕 */
-    const val THUMB_MAX_PX = 210f
+    /**
+     * 缩略图的屏幕边长上限。
+     *
+     * 手机屏幕本来就小，封得太死就看不清图上是什么了 —— 第一版照搬网页端的 210px，
+     * 结果放大到底也就占屏宽的五分之一，用户反馈"糊得看不清"。400px 大约是屏宽的 37%，
+     * 一眼能认出是哪张图；再大就会把星图结构盖住。
+     */
+    const val THUMB_MAX_PX = 400f
+
+    /**
+     * 超过这个屏幕边长就换高清档（服务端的 768 变体）。
+     * 320 档铺到 400px 就是 1.25 倍拉伸，手机上能看出来发虚。
+     */
+    const val THUMB_LARGE_AT = 280f
 
     /** 点光晕的世界半径 */
     const val POINT_RADIUS_WORLD = 0.012f
@@ -182,6 +194,28 @@ object GalaxyMath {
 
     /** 缩略图当前该显示的屏幕边长（px，已封顶） */
     fun thumbScreenPx(zoom: Float): Float = min(THUMB_WORLD * zoom, THUMB_MAX_PX)
+
+    /** 当前屏幕尺寸该不该换高清档（服务端的 768 变体） */
+    fun prefersLargeThumb(thumbPx: Float): Boolean = thumbPx > THUMB_LARGE_AT
+
+    /**
+     * 手上这张位图够不够清楚，要不要重新解一张更大的。
+     *
+     * 这是「星图糊得看不清」那个 bug 的核心判断：第一版只在「缓存里没有」时才去加载，
+     * 于是谁先加载就永远用谁的分辨率 —— 缩略图在屏幕边长 30px 时就开始淡入，
+     * 那时请求到的是 30px 的小图；等用户放大到 400px，还是那张小图被拉大十几倍。
+     *
+     * [availablePx] 取「已就绪」与「正在加载」里**较大**的那个：已经在路上的大图
+     * 不该被同一帧的又一次请求打断。
+     *
+     * 留 [SHARPEN_HEADROOM] 的余量是必要的：不留的话用户每滚一格缩放都会重下一遍
+     * （40→45→50px…），流量和抖动都白白增加，画质却看不出区别。
+     */
+    fun needsSharperBitmap(wantedPx: Int, availablePx: Int): Boolean =
+        availablePx <= 0 || wantedPx > availablePx * SHARPEN_HEADROOM
+
+    /** 重新解码的触发余量：需要的尺寸超过现有尺寸这么多才值得重下 */
+    const val SHARPEN_HEADROOM = 1.25f
 
     /** 缩略图在屏幕上的透明度：0 = 还是个小星点，1 = 完全显示 */
     fun thumbAlpha(zoom: Float): Float {

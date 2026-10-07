@@ -127,8 +127,17 @@ class EmbedRepository(private val container: AppContainer) {
     /** 后端返回的是相对路径，拼成可访问的绝对地址（缩略图 / 原图都要用） */
     fun absolute(path: String): String = container.mediaRepository.absoluteFor(path)
 
-    /** 网格缩略图地址（相似图列表用） */
+    /** 网格缩略图地址（相似图列表、星系图小尺寸时用） */
     fun thumbUrl(item: ImageItem): String = absolute(item.thumb.ifBlank { item.url })
+
+    /**
+     * 星系图放大后用的高清缩略图（服务端的 768 变体）。
+     * 320 档铺到 400px 就是拉伸，手机上能看出虚；没有大图时自动退回小图。
+     */
+    fun largeThumbUrl(item: ImageItem): String {
+        val large = item.thumbLarge?.takeIf { it.isNotBlank() }
+        return absolute(large ?: item.thumb.ifBlank { item.url })
+    }
 
     /** 全屏查看原图地址 */
     fun previewUrl(item: ImageItem): String = absolute(item.url)

@@ -143,6 +143,36 @@ class GalaxyMathTest {
         assertTrue(mid > 0f)
     }
 
+    /* --------------------- 画质：什么时候该重新解一张更大的 --------------------- */
+
+    @Test
+    fun `a bitmap loaded while the tile was tiny must be re-decoded after zooming in`() {
+        /*
+         * 这正是「星图糊得看不清」那个 bug：
+         * 缩略图在屏幕边长 30px 时开始淡入，那时只请求到一张 30px 的小图；
+         * 用户放大到 400px 时，如果不重新解码，就是把 30px 拉大十三倍。
+         */
+        assertTrue("30px 的图撑不住 400px 的格子，必须重新解", GalaxyMath.needsSharperBitmap(wantedPx = 400, availablePx = 30))
+        assertTrue(GalaxyMath.needsSharperBitmap(wantedPx = 200, availablePx = 30))
+        assertTrue("一张都还没有时当然要加载", GalaxyMath.needsSharperBitmap(wantedPx = 60, availablePx = 0))
+    }
+
+    @Test
+    fun `small zoom steps do not trigger a pointless re-decode`() {
+        /* 留 25% 余量：40→45px 这种差别肉眼看不出来，重下一遍只是白花流量 */
+        assertTrue("小幅变化不该重下", !GalaxyMath.needsSharperBitmap(wantedPx = 45, availablePx = 40))
+        assertTrue("刚好在余量内也不重下", !GalaxyMath.needsSharperBitmap(wantedPx = 50, availablePx = 40))
+        assertTrue("超出余量才重下", GalaxyMath.needsSharperBitmap(wantedPx = 60, availablePx = 40))
+        assertTrue("已经比需要的还清楚，不用动", !GalaxyMath.needsSharperBitmap(wantedPx = 100, availablePx = 400))
+    }
+
+    @Test
+    fun `large tiles switch to the high resolution variant`() {
+        assertTrue("小的格子用 320 档就够，没必要拉 768 的白流量", !GalaxyMath.prefersLargeThumb(GalaxyMath.THUMB_LARGE_AT - 1f))
+        assertTrue("320 档铺到 400px 会发虚，这时候该换 768 档", GalaxyMath.prefersLargeThumb(GalaxyMath.THUMB_LARGE_AT + 1f))
+        assertTrue(GalaxyMath.prefersLargeThumb(GalaxyMath.THUMB_MAX_PX))
+    }
+
     @Test
     fun `character colour is stable and different characters differ`() {
         val first = GalaxyMath.characterColor("纳西妲")

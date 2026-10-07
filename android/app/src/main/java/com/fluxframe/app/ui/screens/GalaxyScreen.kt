@@ -278,6 +278,11 @@ fun GalaxyScreen(
                 val viewportWidth = canvasSize.width
                 val viewportHeight = canvasSize.height
                 val thumbPxNow = GalaxyMath.thumbScreenPx(zoomNow)
+                /*
+                 * 放大到一定程度就换 768 档：320 档铺到 400px 是拉伸，手机上能看出虚。
+                 * 传的地址决定了"这次要下哪一档"，缓存内部会按需要的尺寸重新解码。
+                 */
+                val useLarge = GalaxyMath.prefersLargeThumb(thumbPxNow)
                 val cameraNow = camera
                 var started = 0
                 for (index in layout.nodes.indices) {
@@ -286,10 +291,10 @@ fun GalaxyScreen(
                     val screen = GalaxyMath.worldToScreen(node.x, node.y, cameraNow, viewportWidth, viewportHeight)
                     if (screen.x < -thumbPxNow || screen.x > viewportWidth + thumbPxNow) continue
                     if (screen.y < -thumbPxNow || screen.y > viewportHeight + thumbPxNow) continue
-                    val key = node.item.id
-                    if (thumbs.has(key)) continue
-                    thumbs.request(key, container.embedRepository.thumbUrl(node.item), thumbPxNow.roundToInt(), scope)
-                    started++
+                    val item = node.item
+                    val url = if (useLarge) container.embedRepository.largeThumbUrl(item) else container.embedRepository.thumbUrl(item)
+                    /* 只统计真正发起请求的那几次，别让"已经有了"把这一轮的额度占满 */
+                    if (thumbs.bitmap(item.id, url, thumbPxNow.roundToInt(), scope) == null) started++
                 }
                 thumbs.trim()
             }
@@ -415,7 +420,14 @@ fun GalaxyScreen(
                     val center = GalaxyMath.worldToScreen(node.x, node.y, camera, size.width, size.height)
                     if (center.x < -half || center.x > size.width + half) continue
                     if (center.y < -half || center.y > size.height + half) continue
-                    val bitmap = thumbs.get(node.item.id) ?: continue
+                    val item = node.item
+                    val url = if (GalaxyMath.prefersLargeThumb(thumbPx)) {
+                        container.embedRepository.largeThumbUrl(item)
+                    } else {
+                        container.embedRepository.thumbUrl(item)
+                    }
+                    /* 不够清楚时这里会顺手排一张更大的；当前这张先照画，新的到位自然变清楚 */
+                    val bitmap = thumbs.bitmap(item.id, url, thumbPx.roundToInt(), scope) ?: continue
                     var alpha = thumbAlpha * emphasis[index]
                     if (focusIndex >= 0 && index != focusIndex) alpha *= 0.42f
                     if (alpha <= 0.02f) continue
