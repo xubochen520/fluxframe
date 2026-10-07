@@ -282,7 +282,12 @@
 .embed-calib span { padding: 2px 8px; border-radius: 6px; background: rgba(148, 163, 184, .08); }
 
 @media (max-width: 720px) {
-  .graph-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 手机上 5 张统计卡竖排会吃掉大半屏，横滑一行就够；正文里也不需要横滑条 */
+  .graph-stats { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+  .graph-stats::-webkit-scrollbar { display: none; }
+  .graph-stats > div { flex: 0 0 auto; min-width: 86px; padding: 9px 12px; }
+  .graph-stats strong { font-size: 16px; }
+  .graph-stats span { font-size: 10px; }
   .graph-thumb { width: 68px; height: 68px; }
   .embed-status-row .filter-button { margin-left: 0; }
   .embed-threshold input[type="range"] { width: 96px; }

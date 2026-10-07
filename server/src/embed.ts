@@ -22,6 +22,7 @@ import { existsSync } from 'node:fs'
 import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import sharp from 'sharp'
+import { modelsDir } from './models-dir.js'
 
 /**
  * resize 的 kernel 形参类型是 keyof KernelEnum（字符串字面量联合）。
@@ -87,9 +88,7 @@ let dirty = false
 let flushTimer: NodeJS.Timeout | undefined
 const FLUSH_DEBOUNCE_MS = 1200
 
-function modelsDir() {
-  return process.env.MODELS_DIR?.trim() ? path.resolve(process.env.MODELS_DIR.trim()) : path.resolve('./models')
-}
+/* 模型目录由 models-dir.ts 统一解析（layout.ts 也要用，但不该连带拉起 onnxruntime） */
 export function embedDir() { return path.join(modelsDir(), 'embed') }
 function modelFile() { return path.join(embedDir(), 'ccip_feat.onnx') }
 function indexFile() { return path.join(embedDir(), 'index.json') }

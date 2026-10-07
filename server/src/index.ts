@@ -25,6 +25,7 @@ import {
   dropEmbeddings, embedDir, embedModelReady, embedStats, ensureNeighbors, flushIndex, graphPayload,
   hasEmbedding, putEmbedding, setThreshold, similarTo, cosine, countIndexed, DEFAULT_SIMILARITY_THRESHOLD, SIMILAR_LIMIT,
 } from './embed.js'
+import { ensureLayout } from './layout.js'
 
 const prisma = new PrismaClient()
 const app = Fastify({
@@ -360,12 +361,19 @@ async function storageUsage() {
 }
 function imageDto(image: any) {
   const thumbnail = image.variants?.find((variant: any) => variant.width === 320)?.key
+  /* 放大后要用的高分缩略图：挑最小的那个 >= 640 的档位。
+     不要把原图丢给前端——图库里动辄几千像素的原图，够放大看细节反而是负担。 */
+  const larger = image.variants
+    ?.filter((variant: any) => variant.width >= 640)
+    .sort((a: any, b: any) => a.width - b.width)[0]
+  const thumb = thumbnail ? `/api/images/${image.id}/variant/320` : `/api/images/${image.id}/file`
   return {
     id: image.id,
     name: image.name,
     mimeType: image.mimeType,
     url: `/api/images/${image.id}/file`,
-    thumb: thumbnail ? `/api/images/${image.id}/variant/320` : `/api/images/${image.id}/file`,
+    thumb,
+    thumbLarge: larger ? `/api/images/${image.id}/variant/${larger.width}` : thumb,
     width: image.width || 0,
     height: image.height || 0,
     size: byteSize(image.size),
@@ -2056,21 +2064,35 @@ app.get('/api/images/:id/similar', async (request, reply) => {
   }
 })
 
-/** 关系网：节点 + 相似边 + 相似分组 */
+/**
+ * 关系网：节点 + 相似边 + 相似分组 + 二维布局（星系图用）。
+ *
+ * 与早期版本的两处差别，都是为了前端那张 WebGL 星系图：
+ *   1. nodes 从「只含有关联的图」扩到「全部建了指纹且可见的图」。孤立图不是噪音，
+ *      它们是星云之间稀疏的星点——少了它们，图会显得比实际更「满」，也看不出
+ *      「其实一大半图没有相似图」这件事。分组列表只认 size>1，不受影响。
+ *   2. 多返回 positions（二维坐标）与 characters（主角色名）。坐标由 layout.ts 算好
+ *      缓存，调用方只需按 id 取；characters 用来上色、做星云标签和搜人。
+ */
 app.get('/api/embed/graph', async (request, reply) => {
   const user = await requireUser(request as AuthenticatedRequest, reply)
   if (!user) return
   const query = z.object({ edges: z.coerce.number().int().min(50).max(3000).default(600) }).parse(request.query)
-  if (!embedModelReady()) return { ready: false, nodes: 0, edges: [], groups: [], isolated: 0 }
-  await ensureNeighborsForUser(user)
+  if (!embedModelReady()) return { ready: false, nodes: [], edges: [], groups: [], isolated: 0, positions: {}, characters: {} }
+  const index = await ensureNeighborsForUser(user)
   const graph = await graphPayload(query.edges)
-  const ids = [...new Set([...graph.edges.flatMap((edge) => [edge.a, edge.b]), ...graph.groups.flatMap((group) => group.members)])]
-  const rows = ids.length
-    ? await prisma.image.findMany({ where: { id: { in: ids }, deletedAt: null }, include: { tags: { include: { tag: true } }, variants: true } })
-    : []
+
+  /* 布局是纯计算 + 磁盘缓存，和邻居表的懒算一样按需触发 */
+  const layout = await ensureLayout(index)
+
+  const rows = await prisma.image.findMany({
+    where: { id: { in: Object.keys(index.entries) }, deletedAt: null },
+    include: { tags: { include: { tag: true } }, variants: true },
+  })
   const visible = rows.filter((row) => user.r18Mode || !isImageR18(row))
   const nodes = visible.map((row) => imageDto(row))
   const allowed = new Set(nodes.map((node) => node.id))
+
   const visibleEdges = graph.edges.filter((edge) => allowed.has(edge.a) && allowed.has(edge.b))
   /* 以「可见边」为准算谁真的连上了：分组里可能有成员的所有边都指向被隐藏的图，
      那种成员在本用户视角下其实是孤立的，不能算进已关联。 */
@@ -2081,8 +2103,21 @@ app.get('/api/embed/graph', async (request, reply) => {
     .map((group) => ({ members: group.members, size: group.members.length }))
     .filter((group) => group.size > 1 && group.members.some((member) => linkedIds.has(member)))
   const visibleLinked = visibleGroups.reduce((sum, group) => sum + group.size, 0)
-  /* 「已建指纹」要用索引里的真实总数：graph.nodes 只包含出现在边/分组里的图（71 张），
-     库里其实有 128 张建了指纹，剩下 57 张是没有任何相似图的。 */
+
+  /* 只回可见节点的坐标与主角色；被 R18 过滤掉的图连坐标都不该出现 */
+  const positions: Record<string, [number, number]> = {}
+  const characters: Record<string, string> = {}
+  for (const node of nodes) positions[node.id] = layout.points[node.id] ?? [0, 0]
+  for (const row of visible) {
+    /* 主角色 = 该图身上第一个人物标签（按名字排序，保证同一张图每次结果一致） */
+    const persons = row.tags
+      .filter((item) => item.tag.person)
+      .map((item) => item.tag.name)
+      .sort()
+    if (persons.length) characters[row.id] = persons[0]
+  }
+
+  /* 「已建指纹」要用索引里的真实总数：nodes 是可见节点，还要算上被隐藏的 */
   const totalIndexed = await countIndexed()
   return {
     ready: true,
@@ -2090,8 +2125,12 @@ app.get('/api/embed/graph', async (request, reply) => {
     nodes,
     edges: visibleEdges,
     groups: visibleGroups,
+    positions,
+    characters,
+    layoutVersion: layout.version,
+    layoutAt: layout.updatedAt,
     totalIndexed,
-    /* nodes 只含有关联的图，所以「孤立」按全库口径算，与上面两项保持自洽 */
+    /* 「孤立」按全库口径算，与上面两项保持自洽 */
     linked: visibleLinked,
     isolated: Math.max(0, totalIndexed - visibleLinked),
   }

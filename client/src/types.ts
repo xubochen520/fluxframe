@@ -7,6 +7,8 @@ export interface ImageItem {
   mimeType?: string
   url: string
   thumb: string
+  /** 放大后用的高分缩略图（服务端挑最小的 >= 640 的档位）；没有大图时等于 thumb */
+  thumbLarge?: string
   width: number
   height: number
   size: string

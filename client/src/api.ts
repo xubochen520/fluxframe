@@ -120,9 +120,18 @@ export interface EmbedGraphPayload {
   nodes: ImageItem[]
   edges: EmbedGraphEdge[]
   groups: EmbedGraphGroup[]
+  /**
+   * 星系图坐标：id → [x, y]，归一化到 [-1,1]（保持长宽比）。
+   * 由服务端 layout.ts 用 UMAP 式降维算好并缓存，前端只负责画。
+   */
+  positions: Record<string, [number, number]>
+  /** id → 主角色名（人物标签里排序第一的那个）；没打人物标签的图不在这个表里 */
+  characters: Record<string, string>
+  layoutVersion?: string
+  layoutAt?: string
   /** 已建指纹的图片总数（含没有相似图的） */
   totalIndexed?: number
-  /** 其中真正连上相似关系的张数。注意：它等于各分组大小之和 */
+  /** 其中真正连上相似关系的张数 */
   linked?: number
   /** 没有任何相似图的孤立图片数量 = totalIndexed - linked */
   isolated: number
