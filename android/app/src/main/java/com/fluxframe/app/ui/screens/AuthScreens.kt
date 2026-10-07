@@ -93,18 +93,29 @@ fun ServerSetupScreen(onConfigured: () -> Unit) {
         }
     }
 
-    fun connect(endpoint: ServerEndpoint) {
+    /**
+     * 逐个探测候选地址，采用第一个应答 `/api/health` 的。
+     *
+     * 手动输入时端口往往是猜的（域名挂在 80/443、局域网直连在 4311），
+     * 所以由 [ServerEndpoint.candidates] 给出优先级列表，这里按序试，
+     * 而不是赌一个默认端口。
+     */
+    fun connect(candidates: List<ServerEndpoint>) {
+        if (candidates.isEmpty()) {
+            error = "地址格式不正确，示例：192.168.1.100:4311 或 fluxframe.example.com"
+            return
+        }
         connecting = true
         error = null
         scope.launch {
-            val ok = container.discovery.probe(endpoint)
-            if (ok) {
-                container.prefs.saveServer(endpoint)
-                connecting = false
+            val hit = candidates.firstOrNull { container.discovery.probe(it) }
+            connecting = false
+            if (hit != null) {
+                container.prefs.saveServer(hit)
                 onConfigured()
             } else {
-                connecting = false
-                error = "无法连接 ${endpoint.authority}：请确认服务已启动、手机与服务器在同一网络"
+                val tried = candidates.joinToString("、") { it.authority }
+                error = "无法连接 $tried：请确认服务已启动、手机能访问该地址"
             }
         }
     }
@@ -195,7 +206,7 @@ fun ServerSetupScreen(onConfigured: () -> Unit) {
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
-                                .clickable(enabled = !connecting) { connect(endpoint) }
+                                .clickable(enabled = !connecting) { connect(listOf(endpoint)) }
                                 .padding(horizontal = 12.dp, vertical = 11.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -256,11 +267,11 @@ fun ServerSetupScreen(onConfigured: () -> Unit) {
                 GlassTextField(
                     value = manual,
                     onValueChange = { manual = it },
-                    placeholder = "192.168.1.100:4311",
+                    placeholder = "192.168.1.100:4311 或 fluxframe.example.com",
                     leadingIcon = Icons.Filled.Dns,
                 )
                 Text(
-                    text = "只填 IP 也可以，默认使用 4311 端口。",
+                    text = "填 IP 默认 4311 端口；填域名默认 80/443，会自动试出可用的那个。",
                     style = MaterialTheme.typography.labelSmall,
                     color = onGlassColor(dark, emphasis = false),
                 )
@@ -268,14 +279,7 @@ fun ServerSetupScreen(onConfigured: () -> Unit) {
                     text = "连接",
                     loading = connecting,
                     enabled = manual.isNotBlank(),
-                    onClick = {
-                        val endpoint = ServerEndpoint.parse(manual)
-                        if (endpoint == null) {
-                            error = "地址格式不正确，示例：192.168.1.100:4311"
-                        } else {
-                            connect(endpoint)
-                        }
-                    },
+                    onClick = { connect(ServerEndpoint.candidates(manual)) },
                 )
             }
         }

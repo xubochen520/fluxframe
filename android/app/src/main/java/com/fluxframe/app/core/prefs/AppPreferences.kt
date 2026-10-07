@@ -67,8 +67,13 @@ class AppPreferences(context: Context) {
 
     val hasServer: Boolean get() = _server.value != null
 
+    /**
+     * 存 [ServerEndpoint.storageKey]（带 scheme）而不是 authority：
+     * 否则 `https://` 存进去会变成 `host:port`，重启后按 IP 规则解析回 4311，
+     * 用户看到的是「昨天还能连，今天连不上」。
+     */
     fun saveServer(endpoint: ServerEndpoint?) {
-        prefs.edit().putString(KEY_SERVER, endpoint?.authority).apply()
+        prefs.edit().putString(KEY_SERVER, endpoint?.storageKey).apply()
         _server.value = endpoint
     }
 

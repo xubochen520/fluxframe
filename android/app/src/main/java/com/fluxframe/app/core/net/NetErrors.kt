@@ -78,9 +78,9 @@ fun Throwable.toApiException(): ApiException = when (this) {
         ApiException(code(), parseErrorMessage(body) ?: defaultMessageFor(code()), body)
     }
 
-    is SocketTimeoutException -> ApiException(0, "连接超时：服务器没有响应，请检查 IP 与端口是否正确")
-    is ConnectException -> ApiException(0, "无法连接服务器：请确认服务已启动且手机与服务器在同一网络")
-    is UnknownHostException -> ApiException(0, "找不到该地址：请检查服务器 IP")
+    is SocketTimeoutException -> ApiException(0, "连接超时：服务器没有响应，请检查地址与端口是否正确")
+    is ConnectException -> ApiException(0, "无法连接服务器：请确认服务已启动，且手机能访问该地址")
+    is UnknownHostException -> ApiException(0, "找不到该地址：请检查 IP 或域名是否正确")
     is IOException -> ApiException(0, "网络异常：${message ?: "连接被中断"}")
     else -> ApiException(-1, message ?: "发生未知错误")
 }

@@ -52,8 +52,64 @@ class PureLogicTest {
     fun `parse accepts ip with port and scheme and trailing slash`() {
         assertEquals(ServerEndpoint("10.0.0.5", 8080), ServerEndpoint.parse("10.0.0.5:8080"))
         assertEquals(ServerEndpoint("10.0.0.5", 8080), ServerEndpoint.parse("http://10.0.0.5:8080/"))
-        assertEquals(ServerEndpoint("10.0.0.5", 8080), ServerEndpoint.parse("  https://10.0.0.5:8080/path  "))
+        // https 必须保留：老版本把 scheme 一律丢掉写死 http，配了证书的域名会连不上
+        assertEquals(ServerEndpoint("10.0.0.5", 8080, secure = true), ServerEndpoint.parse("  https://10.0.0.5:8080/path  "))
         assertEquals(ServerEndpoint("10.0.0.5", 8080), ServerEndpoint.parse("10.0.0.5:8080?x=1"))
+    }
+
+    @Test
+    fun `domain defaults to standard web port while ip keeps 4311`() {
+        // 域名基本都指向反向代理/内网穿透，公网只开 80/443；
+        // 实测 fluxframe.example.com 经 frp 只暴露 80，4311 在外网不可达
+        val domain = ServerEndpoint.parse("fluxframe.example.com")
+        assertNotNull(domain)
+        assertEquals("fluxframe.example.com", domain!!.host)
+        assertEquals(ServerEndpoint.HTTP_PORT, domain.port)
+        assertEquals("http://fluxframe.example.com:80/", domain.baseUrl)
+
+        // 老行为不能丢：裸 IP 仍然是 4311，局域网直连和自动扫描都靠它
+        assertEquals(ServerEndpoint.DEFAULT_PORT, ServerEndpoint.parse("192.168.1.100")!!.port)
+    }
+
+    @Test
+    fun `https defaults to 443 and survives storage round trip`() {
+        val endpoint = ServerEndpoint.parse("https://pic.example.com")!!
+        assertEquals(ServerEndpoint.HTTPS_PORT, endpoint.port)
+        assertEquals(true, endpoint.secure)
+        assertEquals("https://pic.example.com:443/", endpoint.baseUrl)
+
+        // 存盘必须带 scheme，否则重启后按 IP 规则解析回 4311、协议退化成 http
+        assertEquals("https://pic.example.com:443", endpoint.storageKey)
+        assertEquals(endpoint, ServerEndpoint.parse(endpoint.storageKey))
+
+        // 老版本存的是 authority（无 scheme），要能继续读出来
+        assertEquals(ServerEndpoint("192.168.1.100", 4311), ServerEndpoint.parse("192.168.1.100:4311"))
+    }
+
+    @Test
+    fun `candidates tries the likely ports in order`() {
+        assertEquals(
+            listOf(80, 443, 4311),
+            ServerEndpoint.candidates("fluxframe.example.com").map { it.port },
+        )
+        assertEquals(
+            listOf(4311, 80),
+            ServerEndpoint.candidates("192.168.1.100").map { it.port },
+        )
+        assertEquals(
+            listOf(80, 4311),
+            ServerEndpoint.candidates("http://pic.example.com").map { it.port },
+        )
+        assertEquals(
+            listOf(443, 4311),
+            ServerEndpoint.candidates("https://pic.example.com").map { it.port },
+        )
+        // 用户写了端口就听他的，不再猜
+        assertEquals(
+            listOf(9000),
+            ServerEndpoint.candidates("pic.example.com:9000").map { it.port },
+        )
+        assertTrue(ServerEndpoint.candidates("http://").isEmpty())
     }
 
     @Test
@@ -64,6 +120,22 @@ class PureLogicTest {
         assertNull(ServerEndpoint.parse("192.168.1.100:notaport"))
         assertNull(ServerEndpoint.parse("192.168.1.100:0"))
         assertNull(ServerEndpoint.parse("192.168.1.100:70000"))
+    }
+
+    @Test
+    fun `bare ipv6 is not mistaken for host and port`() {
+        // `::1` 最后一个冒号后面是 "1"，但冒号前是空串 —— 那是 IPv6，不是端口
+        val v6 = ServerEndpoint.parse("::1")
+        assertNotNull(v6)
+        assertEquals("::1", v6!!.host)
+        assertEquals(ServerEndpoint.DEFAULT_PORT, v6.port)
+
+        assertEquals("2001:db8::1", ServerEndpoint.parse("2001:db8::1")!!.host)
+
+        val bracketed = ServerEndpoint.parse("[::1]:4311")
+        assertNotNull(bracketed)
+        assertEquals("::1", bracketed!!.host)
+        assertEquals(4311, bracketed.port)
     }
 
     @Test

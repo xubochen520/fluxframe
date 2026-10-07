@@ -144,6 +144,7 @@ docker exec fluxframe-postgres pg_dump -U postgres image_manager | gzip > ~/flux
 | `POSTGRES_PASSWORD` | 随机生成 | 数据库密码，同时用于拼 `DATABASE_URL`；改后需 `down -v` 或改库内密码 |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / `admin123` | **仅首次启动**创建管理员；登录后请立即在系统设置里改密码 |
 | `COOKIE_SECURE` | `false` | 纯 HTTP 内网访问必须为 `false`，否则浏览器不保存会话 Cookie（表现为登录后又跳回登录页）。挂 HTTPS 反代时改成 `true` |
+| `TRUST_PROXY` | `false` | 前面有 nginx / 内网穿透（frp）时设 `true`，否则来源 IP 全部记成 Docker 网关 `172.19.0.1`，审计日志里一律显示「内网」。实测经 `fluxframe.example.com` 访问：开启前记 `172.19.0.1/内网`，开启后记真实公网 IP/外网。服务直接暴露、前面没有代理时才保持 `false` |
 | `STORAGE_DIR` | `/data/storage` | 图片存放目录（容器内路径，对应 `deploy/data/storage`） |
 | `MODELS_DIR` / `LOGS_DIR` | `/data/models`、`/data/logs` | AI 引擎与日志目录，容器重建不丢 |
 | `AI_ENABLED` | `false` | 是否随服务自动拉起 llama.cpp |
@@ -167,6 +168,7 @@ docker exec fluxframe-postgres pg_dump -U postgres image_manager | gzip > ~/flux
 
 - **打不开页面**：`docker compose -f deploy/docker-compose.yml ps` 看 app 是否 `healthy`；再看 `logs app`。宿主端口被占用时改 `deploy/.env` 的 `APP_PORT` 后 `up -d`。
 - **登录后仍停在登录页**：确认 `COOKIE_SECURE=false`，并用 `http://`（不是 `https://`）访问；清掉旧 Cookie 再试。
+- **想用域名（反向代理 / 内网穿透）访问**：服务端本身不用改——监听的是 `0.0.0.0`、CORS 放行任意来源、也不校验 Host，域名请求和 IP 请求走的是同一条路。要动的只有 `TRUST_PROXY=true`（理由见上表）。客户端填地址时**别带 `:4311`**：公网入口在 80/443，4311 一般没开。原生 App 从 v2.3.1 起会按 80 → 443 → 4311 自动试探。
 - **上传图片报写入失败**：`deploy/data/storage` 属主必须是容器内 `node` 用户（uid 1000）。修复：`sudo chown -R 1000:1000 deploy/data`。
 - **B 站高清保存提示未检测到 ffmpeg**：容器内已装 ffmpeg，用 `docker exec fluxframe-app ffmpeg -version` 确认；「系统设置 → ffmpeg」里填 `/usr/bin/ffmpeg`。
 - **AI 图片标签**：默认关闭。开启后一键下载的是 Linux CPU/Vulkan 构建；本机 7.2G 内存建议只用 3B 变体，7B 容易 OOM。
