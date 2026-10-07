@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.Movie
@@ -58,6 +59,7 @@ import com.fluxframe.app.ui.theme.BrandCyan
 import com.fluxframe.app.ui.theme.BrandGreen
 import com.fluxframe.app.ui.theme.BrandIndigo
 import com.fluxframe.app.ui.theme.BrandPink
+import com.fluxframe.app.ui.theme.BrandViolet
 import com.fluxframe.app.ui.theme.LocalDarkTheme
 import com.fluxframe.app.ui.theme.onGlassColor
 import com.fluxframe.app.ui.theme.toneColor
@@ -69,6 +71,7 @@ fun OverviewScreen(
     onOpenTags: () -> Unit,
     onOpenDeepseek: () -> Unit,
     onOpenParse: () -> Unit,
+    onOpenSimilar: () -> Unit,
     onOpenImage: (String) -> Unit,
     onUpload: () -> Unit,
     onToast: (String?) -> Unit,
@@ -240,6 +243,17 @@ fun OverviewScreen(
                 QuickAction("视频提取", Icons.Filled.Movie, BrandPink, Modifier.weight(1f), onOpenParse)
                 QuickAction("标签", Icons.Filled.Label, BrandCyan, Modifier.weight(1f), onOpenTags)
             }
+        }
+
+        // ---- 星系图：单独一行，和上面三个"动作"区分开（它是"去看"，不是"去做"）----
+        item {
+            QuickAction(
+                label = "相似图星系图",
+                icon = Icons.Filled.Hub,
+                accent = BrandViolet,
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onOpenSimilar,
+            )
         }
 
         // ---- 最近上传 ----

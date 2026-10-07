@@ -2,6 +2,14 @@ package com.fluxframe.app.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.PredictiveBackHandler
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -366,7 +374,12 @@ fun LibraryScreen(
 
             // ---- 网格 ----
             when {
-                items.isEmpty() && loading -> LoadingBox(text = "正在加载媒体…")
+                /*
+                 * 首次加载不再用居中的转圈。转圈会把整页变成"卡住了"的样子，
+                 * 而实际上拉取是在后台跑的 —— 用户完全可以先切去别的页面，加载会自己继续。
+                 * 骨架屏给出内容的形状，页面看起来是"马上就来"，也仍然可以滑动与切页。
+                 */
+                items.isEmpty() && loading -> LibrarySkeleton(columns = uiPrefs.gridColumns)
 
                 items.isEmpty() && selectedTags.isNotEmpty() -> EmptyState(
                     title = "没有同时满足的项",
@@ -661,6 +674,64 @@ private fun RoundIconAction(
 /** 供其它页面复用：把标签色转成圆点颜色时可统一走这里 */
 @Composable
 fun tagDotColor(colorHex: String): Color = com.fluxframe.app.ui.components.parseColor(colorHex)
+
+/**
+ * 首次加载媒体时的骨架屏。
+ *
+ * 取代原来的居中转圈：转圈让整页看上去"卡住了"，实际上加载在后台跑，用户完全可以先切页。
+ * 骨架屏给出内容的形状（错落的卡片高度），也没挡住任何交互 —— 底栏照样能点。
+ */
+@Composable
+private fun LibrarySkeleton(columns: Int) {
+    val dark = LocalDarkTheme.current
+    val transition = rememberInfiniteTransition(label = "library-skeleton")
+    val shimmer by transition.animateFloat(
+        initialValue = 0.05f,
+        targetValue = 0.13f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "shimmer",
+    )
+    val cardColor = if (dark) Color.White.copy(alpha = shimmer) else Color.Black.copy(alpha = shimmer)
+    val safeColumns = columns.coerceIn(2, 5)
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "正在加载媒体…",
+                style = MaterialTheme.typography.labelSmall,
+                color = onGlassColor(dark, emphasis = true),
+            )
+            Spacer(Modifier.size(8.dp))
+            Text(
+                text = "可以先切到别的页面，加载会自动继续",
+                style = MaterialTheme.typography.labelSmall,
+                color = onGlassColor(dark, emphasis = false),
+            )
+        }
+        // 只画两屏的量：真数据一到就整块换掉，画满没有意义
+        repeat(4) { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                repeat(safeColumns) { column ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .aspectRatio(if ((row + column) % 3 == 0) 0.78f else 1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(cardColor),
+                    )
+                }
+            }
+        }
+    }
+}
 
 /** 未使用的图标引用，避免被误删（保留搜索/关闭的语义） */
 private val unusedIcons = listOf(Icons.Filled.Close)

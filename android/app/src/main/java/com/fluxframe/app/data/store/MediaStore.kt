@@ -5,11 +5,15 @@ import com.fluxframe.app.data.model.DashboardResponse
 import com.fluxframe.app.data.model.ImageItem
 import com.fluxframe.app.data.model.TagItem
 import com.fluxframe.app.data.repo.ALL_TAGS
+import coil.Coil
+import coil.request.ImageRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -17,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -80,6 +85,30 @@ class MediaStore(private val container: AppContainer) {
     private val _tagsLoaded = MutableStateFlow(false)
     val tagsLoaded: StateFlow<Boolean> = _tagsLoaded.asStateFlow()
 
+    /**
+     * 上一次「媒体列表成功刷新」的时刻（毫秒）。
+     *
+     * 存在的理由：登录成功时 [SessionStore] 会 [refreshAll] 一轮，紧接着 AppShell 组合时
+     * 又发起一轮 [silentRefreshAll] —— 两轮共 8 个并发请求打同一个服务端，首屏只会更慢。
+     * 有了这个时间戳，调用方就能判断"刚拉过，别再来一遍"。
+     */
+    @Volatile
+    var lastImagesLoadedAt: Long = 0L
+        private set
+
+    /** 后台预热缩略图的任务；列表一变就取消重来，避免为旧数据白干活 */
+    private var warmJob: Job? = null
+
+    /**
+     * 前台正在看媒体网格时把预热暂停。
+     *
+     * Coil 2.x 没有请求优先级（`Priority` 是 1.x 的 API，2.7 里已经不存在），
+     * 所以没法让后台预热"自动排队到后面"。既然如此就换个办法：用户真的在图库/视频库里
+     * 滚动时，暂停预热，等离开这个页面再继续 —— 效果一样，而且行为可预测。
+     */
+    @Volatile
+    var warmPaused: Boolean = false
+
     val personTags: List<TagItem> get() = _tags.value.filter { it.person }
     val normalTags: List<TagItem> get() = _tags.value.filter { !it.person }
 
@@ -130,9 +159,45 @@ class MediaStore(private val container: AppContainer) {
                 .onSuccess { items ->
                     _liveImages.value = items
                     _error.value = null
+                    lastImagesLoadedAt = System.currentTimeMillis()
+                    warmThumbnails()
                 }
                 .onFailure { error -> _error.value = error.message }
             _loading.value = false
+        }
+    }
+
+    /**
+     * 后台把前几张缩略图先抓进 Coil 的缓存。
+     *
+     * 用户反馈的「第一次点进图库会卡一小会」就出在这里：进图库那一刻，列表刚到、缩略图
+     * 一张都还没下载，于是整屏同时开始加载。改成拿列表的时候就顺手在后台预热，
+     * 等用户真的点进图库（通常还在总览页看数据），图已经在内存/磁盘缓存里，直接就出来了。
+     *
+     * 三条约束，缺一不可：
+     *  - [warmPaused] 为真时让路：用户正在图库里滚动时，预热不参与抢带宽；
+     *  - 一次只发一张、中间留间隔：预热是"顺便"，不能把带宽占满；
+     *  - 列表变了就取消：别为已经翻过去的那一屏白干。
+     */
+    fun warmThumbnails(limit: Int = WARM_LIMIT) {
+        val items = _liveImages.value.asSequence().filter { !it.isVideo }.take(limit).toList()
+        if (items.isEmpty()) return
+        warmJob?.cancel()
+        warmJob = scope.launch(Dispatchers.IO) {
+            val loader = Coil.imageLoader(container.context)
+            for (item in items) {
+                if (!isActive) return@launch
+                // 前台在用就等一等，别去抢正在滚动那几屏的带宽
+                while (warmPaused && isActive) delay(PAUSE_POLL_MS)
+                val url = container.mediaRepository.gridUrl(item)
+                if (url.isBlank()) continue
+                val request = ImageRequest.Builder(container.context)
+                    .data(url)
+                    .size(WARM_PIXELS)
+                    .build()
+                runCatching { loader.execute(request) }
+                delay(WARM_INTERVAL_MS)
+            }
         }
     }
 
@@ -170,7 +235,11 @@ class MediaStore(private val container: AppContainer) {
         val dashboardJob = async { container.mediaRepository.dashboard() }
         val trashJob = async { container.mediaRepository.images(sort = "newest", trash = true) }
 
-        imagesJob.await().onSuccess { _liveImages.value = it }
+        imagesJob.await().onSuccess {
+            _liveImages.value = it
+            lastImagesLoadedAt = System.currentTimeMillis()
+            warmThumbnails()
+        }
         tagsJob.await().onSuccess {
             _tags.value = it
             _tagsLoaded.value = true
@@ -333,3 +402,13 @@ class MediaStore(private val container: AppContainer) {
 
 /** 媒体库的种类：图片库 / 视频库 / 回收站 */
 enum class MediaKind { IMAGE, VIDEO, TRASH }
+
+/* 缩略图预热参数 */
+/** 预热多少张：约两屏，够首屏"哗"地一下出来，又不会拖太久 */
+private const val WARM_LIMIT = 48
+/** 预热时按网格卡片的目标尺寸解码，和真正显示时用同一档，缓存才命中 */
+private const val WARM_PIXELS = 320
+/** 每张之间歇一下：预热是顺便做的事，不能把带宽占满 */
+private const val WARM_INTERVAL_MS = 60L
+/** 被前台暂停时多久回头看一眼（毫秒） */
+private const val PAUSE_POLL_MS = 250L

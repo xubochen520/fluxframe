@@ -146,7 +146,7 @@ data class EmbedGraphEdge(val a: String, val b: String, val score: Double = 0.0)
 @Serializable
 data class EmbedGraphGroup(val members: List<String> = emptyList(), val size: Int = 0)
 
-/** `GET /api/embed/graph`：关系网（节点 + 相似边 + 相似分组） */
+/** `GET /api/embed/graph`：关系网（节点 + 相似边 + 相似分组 + 二维布局） */
 @Serializable
 data class EmbedGraph(
     val ready: Boolean = false,
@@ -160,6 +160,16 @@ data class EmbedGraph(
     val nodes: List<ImageItem> = emptyList(),
     val edges: List<EmbedGraphEdge> = emptyList(),
     val groups: List<EmbedGraphGroup> = emptyList(),
+    /**
+     * 星系图坐标：id → [x, y]，归一化到 [-1,1]。
+     * 由服务端 `layout.ts` 用 UMAP 式降维算好并缓存，客户端只负责画。
+     */
+    val positions: Map<String, List<Double>> = emptyMap(),
+    /** id → 主角色名（人物标签里排序第一的那个）；没打人物标签的图不在这个表里 */
+    val characters: Map<String, String> = emptyMap(),
+    /** 布局算法版本与生成时间，用于判断缓存是否过期 */
+    val layoutVersion: String = "",
+    val layoutAt: String = "",
 )
 
 /** `POST /api/embed/backfill`：把还没建指纹的图排进后台队列 */

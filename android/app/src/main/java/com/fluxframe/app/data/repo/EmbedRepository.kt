@@ -22,6 +22,9 @@ class EmbedRepository(private val container: AppContainer) {
 
     private val api get() = container.api
 
+    /** 上一次成功取到的关系网（见 [graph] 的说明） */
+    private var cachedGraph: EmbedGraph? = null
+
     /** 相似图请求的结果：正常、还在算、还是这类媒体不支持 */
     sealed interface SimilarOutcome {
         /** 拿到结果（可能是空列表 —— 库里确实没有够像的图） */
@@ -76,8 +79,24 @@ class EmbedRepository(private val container: AppContainer) {
     /** 索引概况（已建多少张、阈值、后台是否还在算） */
     suspend fun status(): Result<EmbedStatus> = apiCall { api.embedStatus() }
 
-    /** 关系网：节点 + 相似边 + 相似分组 */
-    suspend fun graph(edges: Int = 600): Result<EmbedGraph> = apiCall { api.embedGraph(edges) }
+    /**
+     * 关系网：节点 + 相似边 + 相似分组 + 二维布局。
+     *
+     * 结果在内存里留一份：关系网一次约 100KB，而用户在「星系图 / 分组列表」之间来回切、
+     * 或者点进大图再退回来都很频繁，每次都重新拉一遍既慢又白费流量。
+     * 传 [force] = true 才强制重取（下拉刷新、或改了阈值之后）。
+     */
+    suspend fun graph(edges: Int = 600, force: Boolean = false): Result<EmbedGraph> {
+        if (!force) cachedGraph?.let { return Result.success(it) }
+        val result = apiCall { api.embedGraph(edges) }
+        result.getOrNull()?.let { if (it.ready) cachedGraph = it }
+        return result
+    }
+
+    /** 阈值变了 / 新图入库后清掉缓存，下次进入重新取 */
+    fun invalidateGraph() {
+        cachedGraph = null
+    }
 
     /** 仅 ADMIN：把还没建指纹的图排进后台队列 */
     suspend fun backfill(force: Boolean = false): Result<Int> = apiCall {

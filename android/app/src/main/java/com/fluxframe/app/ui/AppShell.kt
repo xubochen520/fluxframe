@@ -69,6 +69,7 @@ import com.fluxframe.app.ui.components.FluxTopBar
 import com.fluxframe.app.ui.components.FluidCapsule
 import com.fluxframe.app.ui.components.TaskDock
 import com.fluxframe.app.ui.screens.DeepseekScreen
+import com.fluxframe.app.ui.screens.GalaxyScreen
 import com.fluxframe.app.ui.screens.LibraryScreen
 import com.fluxframe.app.ui.screens.LogsScreen
 import com.fluxframe.app.ui.screens.OverviewScreen
@@ -93,6 +94,7 @@ enum class AppRoute(val title: String) {
     VIDEOS("视频库"),
     PARSE("视频提取"),
     TAGS("智能标签"),
+    SIMILAR("相似图关系网"),
     TRASH("回收站"),
     LOGS("访问日志"),
     DEEPSEEK("DeepSeek 记账"),
@@ -102,6 +104,12 @@ enum class AppRoute(val title: String) {
 
 /** 悬浮底栏（含外边距）大约占这么高，浮动层要避开它 */
 private val BOTTOM_BAR_RESERVE = 88.dp
+
+/**
+ * 「刚刚才拉过」的时间窗：登录后 AppShell 组合时的这一轮刷新，如果图库在这么久之内
+ * 已经成功加载过，就不再重复请求（见 refreshForegroundData）。
+ */
+private const val FOREGROUND_FRESH_MS = 8_000L
 
 private val PRIMARY_ROUTES = listOf(
     AppRoute.OVERVIEW,
@@ -179,12 +187,29 @@ fun AppShell(
     // 每次首次进入主界面、以及从后台重新回到 App，都重新取图库与 DeepSeek 实时余额。
     // 图库走并发静默刷新，不把已有内容替换成加载页；余额走真实的官方接口刷新。
     fun refreshForegroundData() {
-        scope.launch { container.mediaStore.silentRefreshAll() }
+        /*
+         * 登录成功时 SessionStore 已经拉过一轮，AppShell 紧接着组合又会拉一轮 ——
+         * 两轮共 8 个并发请求打同一个服务端，首屏只会更慢（而且第一轮的结果马上被覆盖）。
+         * 这里用「上一次成功加载的时刻」挡一下：刚拉过就跳过，冷启动/久未刷新才真的去拉。
+         */
+        val fresh = System.currentTimeMillis() - container.mediaStore.lastImagesLoadedAt < FOREGROUND_FRESH_MS
+        if (!fresh) scope.launch { container.mediaStore.silentRefreshAll() }
         container.deepseekStore.forceRefresh()
         if (session.user?.isAdmin == true) container.settingsStore.refresh()
     }
 
     LaunchedEffect(Unit) { refreshForegroundData() }
+
+    /*
+     * 用户停在任何媒体网格上时暂停缩略图预热。
+     * Coil 2.x 没有请求优先级，没法让后台任务"自动排在后面"，所以用这个开关让路：
+     * 网格在屏幕上时预热完全停手，离开后继续，行为可预测也不会互相抢带宽。
+     */
+    LaunchedEffect(route) {
+        container.mediaStore.warmPaused = route == AppRoute.LIBRARY ||
+            route == AppRoute.VIDEOS ||
+            route == AppRoute.TRASH
+    }
     DisposableEffect(lifecycleOwner) {
         var sawPause = false
         val observer = LifecycleEventObserver { _, event ->
@@ -344,6 +369,7 @@ fun AppShell(
                 onOpenTags = { push(AppRoute.TAGS) },
                 onOpenDeepseek = { push(AppRoute.DEEPSEEK) },
                 onOpenParse = { push(AppRoute.PARSE) },
+                onOpenSimilar = { push(AppRoute.SIMILAR) },
                 onOpenImage = { id ->
                     val index = allMedia.indexOfFirst { it.id == id }
                     if (index >= 0) viewerMediaId = allMedia[index].id
@@ -384,6 +410,11 @@ fun AppShell(
                 onOpenMediaLibrary = { kind ->
                     push(if (kind == MediaKind.VIDEO) AppRoute.VIDEOS else AppRoute.LIBRARY)
                 },
+                onToast = { showToast(it) },
+            )
+
+            AppRoute.SIMILAR -> GalaxyScreen(
+                onOpenImage = { id -> viewerMediaId = id },
                 onToast = { showToast(it) },
             )
 
@@ -505,7 +536,8 @@ fun AppShell(
                     AppRoute.OVERVIEW -> "overview"
                     AppRoute.LIBRARY, AppRoute.TRASH, AppRoute.PERSON -> "library"
                     AppRoute.VIDEOS -> "videos"
-                    AppRoute.PARSE, AppRoute.TAGS -> "tags"
+                    // 星系图是从标签体系里长出来的（都按"内容之间的关系"组织），挂在标签这一格
+                    AppRoute.PARSE, AppRoute.TAGS, AppRoute.SIMILAR -> "tags"
                     AppRoute.LOGS, AppRoute.DEEPSEEK, AppRoute.SETTINGS -> "settings"
                 },
                 onSelect = { key ->

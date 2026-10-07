@@ -41,6 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -346,6 +347,7 @@ fun MediaCard(
     poster: VideoPosterRequest? = null,
 ) {
     val dark = LocalDarkTheme.current
+    val context = LocalContext.current
     val tokens = LocalGlassTokens.current
     val ratio = aspectRatio.coerceIn(0.45f, 2.2f)
     val density = LocalDensity.current
@@ -374,10 +376,17 @@ fun MediaCard(
                 )
 
                 else -> AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(imageUrl)
-                        .crossfade(false)
-                        .build(),
+                    /*
+                     * ImageRequest 用 remember 包住。不包的话每次重组都会 new 一个（网格滚动时
+                     * 每帧都要重组十几张卡片），虽然 Coil 会因为相等而不会重启请求，
+                     * 但这些对象全是白白产生的垃圾，滚动时持续给 GC 添活。
+                     */
+                    model = remember(imageUrl) {
+                        ImageRequest.Builder(context)
+                            .data(imageUrl)
+                            .crossfade(false)
+                            .build()
+                    },
                     contentDescription = name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
