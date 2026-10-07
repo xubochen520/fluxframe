@@ -1,6 +1,7 @@
 package com.fluxframe.app.ui.galaxy
 
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import kotlin.math.abs
 import kotlin.math.max
@@ -163,11 +164,30 @@ object GalaxyMath {
     /* ------------------------------ 命中判定 ------------------------------ */
 
     /**
-     * 找离手指最近的节点（在屏幕空间里比，[TAP_SLOP_PX] 以内才算命中）。
-     * 返回节点下标，没命中返回 -1。
+     * 命中判定要用的节点信息：世界坐标 + 原图长宽比。
+     * 长宽比是给"整张图都算点击区"用的（见 [pick]）。
+     */
+    data class PickTarget(val worldX: Float, val worldY: Float, val aspect: Float)
+
+    /**
+     * 找手指点到/靠近的那个节点。返回节点下标，没命中返回 -1。
+     *
+     * 两套判定，按缩略图可不可见切换：
+     *
+     *  · **缩略图看得见时用整张图的矩形**（[thumbAlpha] 由 [camera] 的缩放推出来）。
+     *    格子在屏幕上有 200~400px 见方，还按中心点 28px 判定的话，
+     *    点在图上任何位置都会落空 —— 用户反馈的"不好交互"就是这个。
+     *    矩形有重叠时取离手指最近的那个中心。
+     *
+     *  · **缩略图还没出来时（全景视角）退回中心点半径判定**。
+     *    那时点只有十几个像素，矩形判定反而会互相抢。
+     *
+     * 缩略图的可见度与尺寸都从 [camera] 现算，不接受调用方传进来 ——
+     * 曾经让调用方自己传，结果把"相对全景的倍数"当成了"每世界单位多少像素"传进来，
+     * 判定静默失效（缩略图明明看得见，点击却只认中心点）。少一个参数就少一类错。
      */
     fun pick(
-        positions: List<Offset>,
+        targets: List<PickTarget>,
         camera: Camera,
         viewportWidth: Float,
         viewportHeight: Float,
@@ -175,10 +195,31 @@ object GalaxyMath {
         tapY: Float,
         radius: Float = TAP_SLOP_PX,
     ): Int {
+        val visible = thumbAlpha(camera.zoom)
+        val thumbLongPx = thumbScreenPx(camera.zoom)
+        if (visible > 0.5f && thumbLongPx > 0f) {
+            var best = -1
+            var bestDistance = Float.MAX_VALUE
+            for (index in targets.indices) {
+                val target = targets[index]
+                val screen = worldToScreen(target.worldX, target.worldY, camera, viewportWidth, viewportHeight)
+                val box = thumbBoxPx(target.aspect, thumbLongPx)
+                val dx = kotlin.math.abs(screen.x - tapX)
+                val dy = kotlin.math.abs(screen.y - tapY)
+                if (dx > box.width / 2f || dy > box.height / 2f) continue
+                val distance = dx * dx + dy * dy
+                if (distance < bestDistance) {
+                    bestDistance = distance
+                    best = index
+                }
+            }
+            if (best >= 0) return best
+        }
+
         var best = -1
         var bestDistance = radius * radius
-        for (index in positions.indices) {
-            val screen = worldToScreen(positions[index].x, positions[index].y, camera, viewportWidth, viewportHeight)
+        for (index in targets.indices) {
+            val screen = worldToScreen(targets[index].worldX, targets[index].worldY, camera, viewportWidth, viewportHeight)
             val dx = screen.x - tapX
             val dy = screen.y - tapY
             val distance = dx * dx + dy * dy
@@ -192,8 +233,22 @@ object GalaxyMath {
 
     /* ------------------------------ 缩略图 LOD ------------------------------ */
 
-    /** 缩略图当前该显示的屏幕边长（px，已封顶） */
+    /** 缩略图当前该显示的屏幕边长（px，已封顶）。指的是**长边** */
     fun thumbScreenPx(zoom: Float): Float = min(THUMB_WORLD * zoom, THUMB_MAX_PX)
+
+    /**
+     * 缩略图在屏幕上的实际宽高：**长边**固定为 [longPx]，短边按原比例。
+     *
+     * 不做成正方形。二次元插画大半是 2:3 的竖图，居中裁成正方形会把构图切掉三分之一；
+     * 拉伸就更难看。保持原比例，竖图就是竖着的格子，横图就是横着的。
+     *
+     * 库里的实际比例在 0.47 ~ 2.02 之间，没有离谱的极端值；真遇到超宽横幅也照实画，
+     * 只是会变成细细一条 —— 那本来就是那张图的样子。
+     */
+    fun thumbBoxPx(aspect: Float, longPx: Float): Size {
+        val ratio = if (aspect.isFinite() && aspect > 0.05f) aspect else 1f
+        return if (ratio >= 1f) Size(longPx, longPx / ratio) else Size(longPx * ratio, longPx)
+    }
 
     /** 当前屏幕尺寸该不该换高清档（服务端的 768 变体） */
     fun prefersLargeThumb(thumbPx: Float): Boolean = thumbPx > THUMB_LARGE_AT

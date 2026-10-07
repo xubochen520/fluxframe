@@ -82,6 +82,7 @@ import com.fluxframe.app.ui.theme.onGlassColor
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.random.Random
 
@@ -93,6 +94,8 @@ private data class GalaxyNode(
     val color: Color,
     val character: String,
     val degree: Int,
+    /** 原图长宽比（宽/高）。缩略图按它定形状，不裁成正方形也不拉伸 */
+    val aspect: Float = 1f,
 )
 
 /** 一条相似边，存的是节点下标 */
@@ -101,7 +104,8 @@ private data class GalaxyEdgeRef(val a: Int, val b: Int, val score: Float)
 private data class GalaxyLayout(
     val nodes: List<GalaxyNode>,
     val edges: List<GalaxyEdgeRef>,
-    val points: List<Offset>,
+    /** 命中判定用：世界坐标 + 原图长宽比 */
+    val targets: List<GalaxyMath.PickTarget>,
 )
 
 /**
@@ -181,8 +185,9 @@ fun GalaxyScreen(
 
     // 画布尺寸或数据变化时重新取景。取景按节点实际包围盒算，不假设布局铺满 [-1,1]
     LaunchedEffect(canvasSize, layout) {
-        if (canvasSize.width <= 0f || canvasSize.height <= 0f || layout.points.isEmpty()) return@LaunchedEffect
-        val next = GalaxyMath.fitCamera(GalaxyMath.bounds(layout.points), canvasSize.width, canvasSize.height)
+        if (canvasSize.width <= 0f || canvasSize.height <= 0f || layout.targets.isEmpty()) return@LaunchedEffect
+        val points = layout.targets.map { Offset(it.worldX, it.worldY) }
+        val next = GalaxyMath.fitCamera(GalaxyMath.bounds(points), canvasSize.width, canvasSize.height)
         fit = next
         camera = next
     }
@@ -327,7 +332,7 @@ fun GalaxyScreen(
             detectTapGestures { tap ->
                 if (System.currentTimeMillis() - lastGestureAt < TAP_AFTER_GESTURE_MS) return@detectTapGestures
                 val index = GalaxyMath.pick(
-                    positions = layout.points,
+                    targets = layout.targets,
                     camera = camera,
                     viewportWidth = size.width.toFloat(),
                     viewportHeight = size.height.toFloat(),
@@ -414,12 +419,13 @@ fun GalaxyScreen(
 
             // ---- 缩略图 ----
             if (thumbAlpha > 0.05f) {
-                val half = thumbPx / 2f
                 for (index in layout.nodes.indices) {
                     val node = layout.nodes[index]
                     val center = GalaxyMath.worldToScreen(node.x, node.y, camera, size.width, size.height)
-                    if (center.x < -half || center.x > size.width + half) continue
-                    if (center.y < -half || center.y > size.height + half) continue
+                    /* 每个格子的宽高按原图比例算：长边是 thumbPx，短边按比例缩 */
+                    val box = GalaxyMath.thumbBoxPx(node.aspect, thumbPx)
+                    if (center.x < -box.width || center.x > size.width + box.width) continue
+                    if (center.y < -box.height || center.y > size.height + box.height) continue
                     val item = node.item
                     val url = if (GalaxyMath.prefersLargeThumb(thumbPx)) {
                         container.embedRepository.largeThumbUrl(item)
@@ -432,24 +438,29 @@ fun GalaxyScreen(
                     if (focusIndex >= 0 && index != focusIndex) alpha *= 0.42f
                     if (alpha <= 0.02f) continue
 
-                    val left = center.x - half
-                    val top = center.y - half
+                    val left = center.x - box.width / 2f
+                    val top = center.y - box.height / 2f
+                    /* 圆角按短边算，长条图也不会变成胶囊形 */
+                    val radius = min(cornerRadius, min(box.width, box.height) / 2f)
                     thumbnailPath.rewind()
                     thumbnailPath.addRoundRect(
                         androidx.compose.ui.geometry.RoundRect(
                             left = left,
                             top = top,
-                            right = left + thumbPx,
-                            bottom = top + thumbPx,
-                            radiusX = cornerRadius,
-                            radiusY = cornerRadius,
+                            right = left + box.width,
+                            bottom = top + box.height,
+                            radiusX = radius,
+                            radiusY = radius,
                         ),
                     )
                     clipPath(thumbnailPath) {
                         drawImage(
                             image = bitmap,
                             dstOffset = androidx.compose.ui.unit.IntOffset(left.roundToInt(), top.roundToInt()),
-                            dstSize = androidx.compose.ui.unit.IntSize(thumbPx.roundToInt(), thumbPx.roundToInt()),
+                            dstSize = androidx.compose.ui.unit.IntSize(
+                                box.width.roundToInt().coerceAtLeast(1),
+                                box.height.roundToInt().coerceAtLeast(1),
+                            ),
                             alpha = alpha,
                         )
                     }
@@ -457,8 +468,8 @@ fun GalaxyScreen(
                     drawRoundRect(
                         color = node.color.copy(alpha = alpha * 0.5f),
                         topLeft = Offset(left, top),
-                        size = Size(thumbPx, thumbPx),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadius, cornerRadius),
+                        size = Size(box.width, box.height),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius, radius),
                         style = Stroke(width = 1.2f),
                     )
                 }
@@ -855,6 +866,8 @@ private fun buildLayout(graph: EmbedGraph?, container: com.fluxframe.app.core.di
                 color = GalaxyMath.characterColor(character),
                 character = character,
                 degree = 0,
+                /* 接口没给尺寸（个别老数据/视频）时按正方形，至少不会画出个零面积的格子 */
+                aspect = if (item.width > 0 && item.height > 0) item.width.toFloat() / item.height else 1f,
             ),
         )
     }
@@ -873,6 +886,6 @@ private fun buildLayout(graph: EmbedGraph?, container: com.fluxframe.app.core.di
     return GalaxyLayout(
         nodes = decorated,
         edges = edges,
-        points = decorated.map { Offset(it.x, it.y) },
+        targets = decorated.map { GalaxyMath.PickTarget(it.x, it.y, it.aspect) },
     )
 }

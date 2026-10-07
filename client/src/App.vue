@@ -42,6 +42,12 @@ const similarForId = ref('')
 /** 上滑累计量：滚轮是离散事件，累计到阈值再拉出面板，避免轻轻一滚就弹 */
 let swipeUpAccum = 0
 const SWIPE_UP_TRIGGER = 90
+/**
+ * 下滑多少像素算「收起相似图面板」。
+ * 比上滑阈值小：面板已经打开时用户意图很明确，不需要滑那么远；
+ * 而且下滑误触的代价只是把面板收起来，比上滑误触（突然弹出一整屏）轻得多。
+ */
+const SWIPE_DOWN_TRIGGER = 70
 /** 触摸起点：移动端用下拉手势拉出面板 */
 const swipeTouchStart = ref<{ x: number; y: number } | null>(null)
 /** 「还没建指纹」的自动重查次数，防止无限轮询 */
@@ -703,22 +709,36 @@ function handlePreviewWheel(event: WheelEvent) {
 /* ---- 移动端：整层上滑拉出相似图面板（覆盖图片内外的所有空白区域）---- */
 function onPreviewTouchStart(event: TouchEvent) {
   swipeUpAccum = 0
-  if (event.touches.length !== 1) { swipeTouchStart.value = null; return }
+  swipeTouchStart.value = null
+  /* 在相似图面板**内部**起手的滑动不归这里管：那是在滚列表，不是「下滑收起」。
+     不排除的话，手指往下滚一下列表就把整个面板关掉了。 */
+  if ((event.target as HTMLElement | null)?.closest('.similar-panel')) return
+  if (event.touches.length !== 1) return
   const touch = event.touches[0]
   swipeTouchStart.value = { x: touch.clientX, y: touch.clientY }
 }
 
 function onPreviewTouchMove(event: TouchEvent) {
   const start = swipeTouchStart.value
-  /* 放大状态下拖动是「看图片细节」，不抢；框选模式下拖动是在调框，也不抢。
-     面板已打开时同理不抢（在面板里滚动不该把它重新拉出来）。 */
+  /* 放大状态下拖动是「看图片细节」，不抢；框选模式下拖动是在调框，也不抢。 */
   if (!start || event.touches.length !== 1) return
-  if (previewScale.value > 1.01 || boxMode.value || similarOpen.value) return
+  if (previewScale.value > 1.01 || boxMode.value) return
   const touch = event.touches[0]
   const dx = touch.clientX - start.x
   const dy = touch.clientY - start.y
-  /* 只认「基本竖直」的上滑：横向位移过大说明用户在横滑，不是想看相似图 */
+  /* 只认「基本竖直」的滑动：横向位移过大说明用户在横滑，不是想看/收起相似图 */
   if (Math.abs(dx) > Math.abs(dy) * 0.8) return
+
+  /* 面板已打开：下滑收起，回到大图 —— 和上滑拉出互为反操作，怎么打开的怎么关掉。
+     在面板**内部**起手的滑动不接管（那是在滚相似图列表），只认在图片区域起手的。 */
+  if (similarOpen.value) {
+    if (dy > SWIPE_DOWN_TRIGGER) {
+      swipeTouchStart.value = null
+      closeSimilar()
+    }
+    return
+  }
+
   if (dy < -SWIPE_UP_TRIGGER && selectedImage.value) {
     swipeTouchStart.value = null
     swipeUpAccum = 0

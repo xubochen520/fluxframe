@@ -112,17 +112,21 @@ class GalaxyMathTest {
 
     @Test
     fun `pick finds the node under the finger and ignores taps in empty space`() {
-        val points = listOf(Offset(0f, 0f), Offset(0.5f, 0f), Offset(0f, 0.5f))
+        val targets = listOf(
+            GalaxyMath.PickTarget(0f, 0f, 1f),
+            GalaxyMath.PickTarget(0.5f, 0f, 1f),
+            GalaxyMath.PickTarget(0f, 0.5f, 1f),
+        )
         val cam = camera()
         val target = GalaxyMath.worldToScreen(0.5f, 0f, cam, viewportWidth, viewportHeight)
-        assertEquals(1, GalaxyMath.pick(points, cam, viewportWidth, viewportHeight, target.x + 6f, target.y - 4f))
+        assertEquals(1, GalaxyMath.pick(targets, cam, viewportWidth, viewportHeight, target.x + 6f, target.y - 4f))
         // 远离所有节点：不该命中任何一个
-        assertEquals(-1, GalaxyMath.pick(points, cam, viewportWidth, viewportHeight, target.x + 400f, target.y + 400f))
+        assertEquals(-1, GalaxyMath.pick(targets, cam, viewportWidth, viewportHeight, target.x + 400f, target.y + 400f))
     }
 
     @Test
     fun `pick uses screen space so it stays correct after panning`() {
-        val points = listOf(Offset(0f, 0f), Offset(0.3f, 0.2f))
+        val targets = listOf(GalaxyMath.PickTarget(0f, 0f, 1f), GalaxyMath.PickTarget(0.3f, 0.2f, 1f))
         val cam = camera()
         val panned = GalaxyMath.panCamera(cam, dragX = 60f, dragY = 90f)
         // 平移之后，节点在屏幕上也挪了 (60, 90)，命中判定要跟着走
@@ -130,7 +134,7 @@ class GalaxyMathTest {
         val after = GalaxyMath.worldToScreen(0.3f, 0.2f, panned, viewportWidth, viewportHeight)
         assertEquals(before.x + 60f, after.x, 0.01f)
         assertEquals(before.y + 90f, after.y, 0.01f)
-        assertEquals(1, GalaxyMath.pick(points, panned, viewportWidth, viewportHeight, after.x + 3f, after.y + 3f))
+        assertEquals(1, GalaxyMath.pick(targets, panned, viewportWidth, viewportHeight, after.x + 3f, after.y + 3f))
     }
 
     @Test
@@ -171,6 +175,93 @@ class GalaxyMathTest {
         assertTrue("小的格子用 320 档就够，没必要拉 768 的白流量", !GalaxyMath.prefersLargeThumb(GalaxyMath.THUMB_LARGE_AT - 1f))
         assertTrue("320 档铺到 400px 会发虚，这时候该换 768 档", GalaxyMath.prefersLargeThumb(GalaxyMath.THUMB_LARGE_AT + 1f))
         assertTrue(GalaxyMath.prefersLargeThumb(GalaxyMath.THUMB_MAX_PX))
+    }
+
+    /* ------------------------- 缩略图形状：保持原比例 ------------------------- */
+
+    @Test
+    fun `thumbnail keeps the original aspect ratio instead of being squashed into a square`() {
+        /* 库里大半是 2:3 的竖图，居中裁成正方形会切掉三分之一的构图 */
+        val portrait = GalaxyMath.thumbBoxPx(0.67f, 400f)
+        assertEquals("长边（这里的高）等于上限", 400f, portrait.height, 0.01f)
+        assertEquals("宽按比例缩，不是 400", 268f, portrait.width, 1f)
+
+        val landscape = GalaxyMath.thumbBoxPx(1.78f, 400f)
+        assertEquals("横图的长边是宽", 400f, landscape.width, 0.01f)
+        assertEquals(224.7f, landscape.height, 1f)
+
+        val square = GalaxyMath.thumbBoxPx(1f, 400f)
+        assertEquals(400f, square.width, 0.01f)
+        assertEquals(400f, square.height, 0.01f)
+    }
+
+    @Test
+    fun `thumbnail box survives missing or nonsense dimensions`() {
+        /* 接口没给尺寸、或者给了 0，都不能算出零面积或者 NaN 的格子 */
+        for (bad in listOf(0f, -1f, Float.NaN, Float.POSITIVE_INFINITY)) {
+            val box = GalaxyMath.thumbBoxPx(bad, 200f)
+            assertTrue("比例 $bad 应该退回正方形", box.width > 0f && box.height > 0f)
+            assertEquals(200f, box.width, 0.01f)
+        }
+    }
+
+    /* --------------------- 点击判定：整张图都算点击区 --------------------- */
+
+    /** 缩略图完全显示所需的缩放：thumbScreenPx(zoom) 要超过淡入结束的 62px */
+    private fun zoomedCamera() = GalaxyMath.Camera(0f, 0f, GalaxyMath.THUMB_MAX_PX / GalaxyMath.THUMB_WORLD)
+
+    @Test
+    fun `tapping the edge of a thumbnail still hits it once thumbnails are visible`() {
+        val cam = zoomedCamera()
+        assertTrue("这个缩放必须已经能看见缩略图", GalaxyMath.thumbAlpha(cam.zoom) > 0.5f)
+        val aspect = 0.67f   // 库里最常见的 2:3 竖图
+        val targets = listOf(GalaxyMath.PickTarget(0f, 0f, aspect))
+        val box = GalaxyMath.thumbBoxPx(aspect, GalaxyMath.thumbScreenPx(cam.zoom))
+        val centre = GalaxyMath.worldToScreen(0f, 0f, cam, viewportWidth, viewportHeight)
+
+        /* 离中心 (半宽 - 4) 的地方：在整张图里，但远超原来的 28px 中心点判定 */
+        val tapX = centre.x + box.width / 2f - 4f
+        assertTrue("这个点确实在 28px 判定之外", tapX - centre.x > GalaxyMath.TAP_SLOP_PX)
+        assertEquals(
+            "缩略图看得见时，点在图上的任意位置都该命中",
+            0,
+            GalaxyMath.pick(targets, cam, viewportWidth, viewportHeight, tapX, centre.y),
+        )
+    }
+
+    @Test
+    fun `when thumbnails are hidden the hit area falls back to a small radius`() {
+        /* 全景视角：点只有十几个像素，靠得稍远一点就不该命中（否则相邻的点会互相抢） */
+        val cam = camera()
+        assertEquals("全景时看不见缩略图", 0f, GalaxyMath.thumbAlpha(cam.zoom), 0.001f)
+        val targets = listOf(GalaxyMath.PickTarget(0f, 0f, 1f))
+        val centre = GalaxyMath.worldToScreen(0f, 0f, cam, viewportWidth, viewportHeight)
+        assertEquals(-1, GalaxyMath.pick(targets, cam, viewportWidth, viewportHeight, centre.x + 60f, centre.y))
+        assertEquals(0, GalaxyMath.pick(targets, cam, viewportWidth, viewportHeight, centre.x + 8f, centre.y))
+    }
+
+    @Test
+    fun `tapping empty space beside a thumbnail still misses`() {
+        val cam = zoomedCamera()
+        val targets = listOf(GalaxyMath.PickTarget(0f, 0f, 1f))
+        val centre = GalaxyMath.worldToScreen(0f, 0f, cam, viewportWidth, viewportHeight)
+        /* 格子长边 400px，往外挪 400px 肯定在框外 */
+        val long = GalaxyMath.thumbScreenPx(cam.zoom)
+        assertEquals(-1, GalaxyMath.pick(targets, cam, viewportWidth, viewportHeight, centre.x + long, centre.y))
+    }
+
+    @Test
+    fun `overlapping thumbnails give the tap to the nearest centre`() {
+        val cam = zoomedCamera()
+        /* 两个节点挨得很近，格子会重叠 */
+        val targets = listOf(
+            GalaxyMath.PickTarget(-0.02f, 0f, 1f),
+            GalaxyMath.PickTarget(0.02f, 0f, 1f),
+        )
+        val first = GalaxyMath.worldToScreen(-0.02f, 0f, cam, viewportWidth, viewportHeight)
+        val second = GalaxyMath.worldToScreen(0.02f, 0f, cam, viewportWidth, viewportHeight)
+        assertEquals("点在谁身上就该选中谁", 0, GalaxyMath.pick(targets, cam, viewportWidth, viewportHeight, first.x, first.y))
+        assertEquals(1, GalaxyMath.pick(targets, cam, viewportWidth, viewportHeight, second.x, second.y))
     }
 
     @Test

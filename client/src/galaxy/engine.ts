@@ -40,6 +40,11 @@ export interface GalaxyNode {
   character: string
   /** 相似图数量，决定点画多大 */
   degree: number
+  /**
+   * 原图长宽比（宽/高）。缩略图按它定形状 —— 不裁成正方形，也不拉伸。
+   * 二次元插画大半是 2:3 的竖图，居中裁成正方形会切掉三分之一的构图。
+   */
+  aspect: number
 }
 
 /** 索引指向 nodes 数组下标 */
@@ -56,7 +61,7 @@ export interface GalaxyCallbacks {
 
 /** 点光晕的世界半径；屏幕半径 = 这个值 × zoom */
 const POINT_RADIUS = 0.012
-/** 缩略图的世界边长；屏幕边长 = 这个值 × zoom */
+/** 缩略图的**长边**世界尺寸；屏幕长边 = 这个值 × zoom */
 export const THUMB_SIZE = 0.042
 /** 缩略图开始淡入 / 完全显示的屏幕边长（设备像素） */
 const THUMB_FADE_FROM = 30
@@ -64,10 +69,27 @@ const THUMB_FADE_TO = 62
 /** 缩略图超过这个屏幕边长就换高分图（/variant/768） */
 const THUMB_LARGE_AT = 120
 /**
+ * 缩略图的半宽/半高：**长边**固定为 [longExtent]，短边按原比例。
+ *
+ * 不做成正方形。库里 128 张图的实际比例在 0.47~2.02 之间、大半是 2:3 的竖图，
+ * 居中裁成正方形要切掉三分之一的构图，拉伸就更难看。保持原比例，竖图就是竖着的格子。
+ *
+ * 屏幕坐标和世界坐标都能用：传进来的 [longExtent] 是哪个空间的，出来的就是哪个空间的。
+ */
+export function thumbHalfExtent(aspect: number, longExtent: number) {
+  const ratio = Number.isFinite(aspect) && aspect > 0.05 ? aspect : 1
+  return ratio >= 1
+    ? { halfW: longExtent / 2, halfH: longExtent / (2 * ratio) }
+    : { halfW: (longExtent * ratio) / 2, halfH: longExtent / 2 }
+}
+
+/**
  * 缩略图的屏幕边长上限（设备像素）。
  * 不设上限会出事：继续放大时一张缩略图能铺满半个画布（实测 68× 时边长 800px），
  * 图反而看不清了。所以超过上限就让世界尺寸随 zoom 反比缩小——表现为「图不再变大，
  * 但彼此越拉越开」，跟地图上标签恒定字号是一个道理。
+ *
+ * 这里封的是**长边**。
  */
 const THUMB_MAX_PX = 210
 /** 单帧最多画多少张缩略图：每张一次 draw call，不控数量会在中景掉帧 */
@@ -801,6 +823,33 @@ export class GalaxyEngine {
 
   private pick(cssX: number, cssY: number): number | null {
     const device = this.cssToDevice(cssX, cssY)
+
+    /*
+     * 缩略图看得见的时候（中近景），**整张图都是点击区**。
+     * 格子在屏幕上有 200~400px 见方，还按中心点 18px 判定的话，
+     * 点在图上任何位置都会落空 —— 用户反馈的"不好交互"就是这个。
+     * 矩形有重叠时取离点击处最近的那个中心。
+     */
+    if (this.thumbAlpha > 0.5) {
+      const longPx = Math.min(THUMB_SIZE * this.zoom, THUMB_MAX_PX)
+      let best: number | null = null
+      let bestDistance = Infinity
+      for (let i = 0; i < this.nodes.length; i++) {
+        const node = this.nodes[i]
+        const dx = (node.x - this.centerX) * this.zoom + this.width * 0.5 - device.x
+        const dy = (node.y - this.centerY) * this.zoom + this.height * 0.5 - device.y
+        const { halfW, halfH } = thumbHalfExtent(node.aspect, longPx)
+        if (Math.abs(dx) > halfW || Math.abs(dy) > halfH) continue
+        const distance = dx * dx + dy * dy
+        if (distance < bestDistance) {
+          bestDistance = distance
+          best = i
+        }
+      }
+      /* 命中了就用矩形判定；没命中再走下面的半径兜底（点可能与图错开一点） */
+      if (best !== null) return best
+    }
+
     const limit = PICK_RADIUS * this.dpr
     let best: number | null = null
     let bestDistance = limit * limit
@@ -1141,9 +1190,9 @@ export class GalaxyEngine {
   private drawThumbnails(thumbAlpha: number) {
     if (thumbAlpha <= 0.02 || !this.nodes.length) return
     const gl = this.gl
-    /* 缩略图在屏幕上多大：随缩放变大，但封顶（见 THUMB_MAX_PX 的说明） */
+    /* 缩略图在屏幕上多大：随缩放变大，但封顶（见 THUMB_MAX_PX 的说明）。thumbPx 是**长边** */
     const thumbPx = Math.min(THUMB_SIZE * this.zoom, THUMB_MAX_PX)
-    const half = thumbPx / this.zoom * 0.5
+    const longWorld = thumbPx / this.zoom
     const feather = 2 / Math.max(1, thumbPx)
 
     /* 只画屏幕里的；按「离屏幕中心近」排序后截断——每张缩略图一次 draw call，
@@ -1199,22 +1248,18 @@ export class GalaxyEngine {
       if (focus !== null && candidate.index !== focus) alpha *= 0.42
       if (alpha <= 0.02) continue
 
-      /* 按图片自身长宽比裁切 UV：格子始终是正方形，图片也不会被拉变形 */
-      const aspect = entry.aspect || 1
-      const u0 = aspect > 1 ? (1 - 1 / aspect) / 2 : 0
-      const v0 = aspect < 1 ? (1 - aspect) / 2 : 0
-      const u1 = aspect > 1 ? 1 - u0 : 1
-      const v1 = aspect < 1 ? 1 - v0 : 1
+      /* 格子按原图比例（长边恒定），UV 就是整张图 —— 不裁也不拉 */
+      const { halfW, halfH } = thumbHalfExtent(node.aspect, longWorld)
 
       for (let corner = 0; corner < 4; corner++) {
         const base = corner * 10
         const localX = corners[corner * 2]
         const localY = corners[corner * 2 + 1]
-        this.thumbData[base] = node.x + localX * half
-        this.thumbData[base + 1] = node.y + localY * half
-        this.thumbData[base + 2] = localX < 0 ? u0 : u1
-        /* 上传时做了 UNPACK_FLIP_Y_WEBGL，v=1 才是图片顶部 */
-        this.thumbData[base + 3] = localY < 0 ? v0 : v1
+        this.thumbData[base] = node.x + localX * halfW
+        this.thumbData[base + 1] = node.y + localY * halfH
+        /* 上传时做了 UNPACK_FLIP_Y_WEBGL，v=0 是图片顶部 */
+        this.thumbData[base + 2] = localX < 0 ? 0 : 1
+        this.thumbData[base + 3] = localY < 0 ? 0 : 1
         this.thumbData[base + 4] = localX
         this.thumbData[base + 5] = localY
         this.thumbData[base + 6] = node.color[0]

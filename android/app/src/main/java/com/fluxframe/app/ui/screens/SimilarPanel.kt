@@ -80,6 +80,13 @@ sealed interface SimilarUiState {
 internal const val SWIPE_UP_PX = 60f
 
 /**
+ * 下滑多少像素算「收起相似图」。比上滑的阈值小一点：
+ * 面板已经打开时，用户的意图很明确，不需要滑那么远；而且下滑误触的代价只是把面板收起来，
+ * 比上滑误触（突然弹出一整屏）轻得多。
+ */
+internal const val SWIPE_DOWN_PX = 48f
+
+/**
  * 相似图面板（底部升起）。
  *
  * 复用 [GlassSurface] 保持与全应用一致的毛玻璃外观；网格两列 ——

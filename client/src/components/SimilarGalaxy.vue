@@ -99,6 +99,9 @@ function build(): Built {
       color: characterColor(character),
       character,
       degree: 0,
+      /* 缩略图按原图比例画，不裁成正方形（见 engine.ts 的 thumbHalfExtent）。
+         接口没给尺寸时按正方形兜底。 */
+      aspect: item.width > 0 && item.height > 0 ? item.width / item.height : 1,
     })
   }
   const edges: GalaxyEdge[] = []

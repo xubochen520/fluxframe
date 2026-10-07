@@ -29,10 +29,12 @@ import kotlin.math.max
  * 现在每次取图都会比对「现有位图的解码尺寸」和「当前要画多大」，明显不够就重新解一张更大的；
  * 旧的那张继续显示，新的到位再替换，所以不会闪白，只会越看越清楚。
  *
- * 【为什么用 Scale.FILL】缩略图格子是正方形，而源图长宽比五花八门。
- * Coil 默认的 FIT 会把整张图塞进正方形目标里（比如 140×210），我们再把它画进 210×210，
- * 就等于横向拉伸 1.5 倍 —— 既变形又发虚。FILL 是「填满并居中裁掉多余」，
- * 解出来就是一张正方的、没有拉伸的图，解码尺寸也正好等于显示尺寸，一点不浪费。
+ * 【为什么用 Scale.FIT】格子是**按原比例**的矩形（见 GalaxyMath.thumbBoxPx），
+ * 所以这里要的是"整张图缩进目标框"，不能裁、也不能拉。
+ *
+ * 【解码尺寸按长边算】`.size(targetPx)` 配 FIT，解出来的位图长边就是 targetPx，
+ * 短边按原比例 —— 正好等于它在屏幕上要占的尺寸，一点不浪费。
+ * 第一版用 FILL 解成正方形，再画进正方格子，等于把 2:3 的竖图横着拉宽 1.5 倍，又变形又发虚。
  *
  * 【全部在主线程上记账】[bitmap] 由绘制调用，回调也切回主线程，所以这些 map 不需要加锁。
  */
@@ -78,8 +80,8 @@ class GalaxyThumbCache(private val context: Context) {
             val request = ImageRequest.Builder(appContext)
                 .data(url)
                 .size(targetPx)
-                // 填满 + 居中裁切：解出来就是一张正方图，不会在 Canvas 里被拉伸
-                .scale(Scale.FILL)
+                // 整张图缩进目标框：不裁不拉，长边正好等于 targetPx
+                .scale(Scale.FIT)
                 // 硬件位图不能可靠地画进软件层 Canvas，这里明确要一张普通位图
                 .allowHardware(false)
                 .build()

@@ -249,6 +249,9 @@ fun ViewerOverlay(
                     onToggleChrome = { chromeVisible = !chromeVisible },
                     onZoomChange = { zoomed -> if (page == pagerState.currentPage) currentZoomed = zoomed },
                     onSwipeUp = { if (page == pagerState.currentPage) loadSimilar(item) },
+                    /* 下滑收起：一上一下互为反操作，怎么打开的怎么关掉。
+                       面板没开时下滑什么也不做 —— 免得手一抖把大图也关了。 */
+                    onSwipeDown = { if (page == pagerState.currentPage) closeSimilar() },
                 )
             }
         }
@@ -415,7 +418,7 @@ private const val CHROME_TIMEOUT_MS = 3200L
 /** 双击缩放的动画时长 */
 private const val ZOOM_DURATION_MS = 340
 
-/** 图片页：双指缩放 + 双击以「点击点」为焦点放大/复位 + 单击切换浮层 + 未放大时上滑看相似图 */
+/** 图片页：双指缩放 + 双击以「点击点」为焦点放大/复位 + 单击切换浮层 + 未放大时上滑看相似图 / 下滑收起 */
 @Composable
 private fun ImagePage(
     item: ImageItem,
@@ -423,6 +426,7 @@ private fun ImagePage(
     onToggleChrome: () -> Unit,
     onZoomChange: (Boolean) -> Unit,
     onSwipeUp: () -> Unit,
+    onSwipeDown: () -> Unit,
 ) {
     val container = LocalAppContainer.current
     val scope = rememberCoroutineScope()
@@ -460,7 +464,7 @@ private fun ImagePage(
     /** 把「是否处于放大状态」同步给外层：放大时不接管上滑，拖动手势要留给看细节 */
     LaunchedEffect(scale) { onZoomChange(scale > 1.02f) }
 
-    /* 上滑看相似图的累计位移。
+    /* 上滑看相似图 / 下滑收起相似图的累计位移。
        注意：**必须搭在下面那个 detectTransformGestures 里判断**，不能另挂一个 pointerInput ——
        子节点（AsyncImage）的手势检测器会先拿到事件并消耗掉，挂在外层 Box 上的聆听器收不到任何东西
        （实测：真机手势完全没反应）。搭在现有检测器里则不存在手势竞争。 */
@@ -499,19 +503,24 @@ private fun ImagePage(
                             swipeUpAccum = 0f
                         } else {
                             offset = Offset.Zero
-                            /* 未放大时：把竖直方向的累计位移用来判定「上滑看相似图」。
+                            /* 未放大时：把竖直方向的累计位移用来判定「上滑看相似图 / 下滑收起」。
                                只用竖直分量，横向拖动交给 HorizontalPager 翻页。 */
                             swipeUpAccum = if (kotlin.math.abs(pan.y) >= kotlin.math.abs(pan.x)) {
                                 swipeUpAccum + pan.y
                             } else {
                                 0f
                             }
+                            /* pan.y 向下为正。上滑（负）拉出相似图，下滑（正）收起它 ——
+                               一上一下互为反操作，符合"怎么打开的怎么关掉"的直觉。 */
                             if (isCurrent && swipeUpAccum < -SWIPE_UP_PX) {
                                 /* 先清零再回调：detectTransformGestures 在一次滑动里会连发多次，
                                    不清零就会连续触发（实测一次上滑触发 8 次）。
                                    清零靠的是 Compose 的快照状态，回调里的重活另起协程，不阻塞手势。 */
                                 swipeUpAccum = 0f
                                 onSwipeUp()
+                            } else if (isCurrent && swipeUpAccum > SWIPE_DOWN_PX) {
+                                swipeUpAccum = 0f
+                                onSwipeDown()
                             }
                         }
                     }
