@@ -276,13 +276,26 @@ export async function dropEmbeddings(imageIds: string[]): Promise<number> {
  * 128 张图约 8 千对，纯点积毫秒级；几万张也能接受（前端只在需要时才要）。
  */
 export function computeNeighbors(index: EmbedIndex, threshold = index.threshold, limit = SIMILAR_LIMIT): Record<string, SimilarNeighbor[]> {
-  const ids = Object.keys(index.entries)
+  return neighborsOf(index.entries, threshold, limit)
+}
+
+/**
+ * 从任意一组**已 L2 归一化**的向量算邻居表。
+ * 单独抽出来是给「标签模式」用的：那里没有 CCIP 指纹，只有 TF-IDF 向量，
+ * 但检索逻辑一模一样（余弦就是点积），没必要写第二遍。
+ */
+export function neighborsOf(
+  entries: Record<string, { vec: number[] }>,
+  threshold: number,
+  limit: number,
+): Record<string, SimilarNeighbor[]> {
+  const ids = Object.keys(entries)
   const result: Record<string, SimilarNeighbor[]> = {}
   for (const id of ids) result[id] = []
   for (let i = 0; i < ids.length; i++) {
-    const a = index.entries[ids[i]].vec
+    const a = entries[ids[i]].vec
     for (let j = i + 1; j < ids.length; j++) {
-      const score = cosine(a, index.entries[ids[j]].vec)
+      const score = cosine(a, entries[ids[j]].vec)
       if (score < threshold) continue
       result[ids[i]].push({ id: ids[j], score })
       result[ids[j]].push({ id: ids[i], score })
@@ -295,32 +308,19 @@ export function computeNeighbors(index: EmbedIndex, threshold = index.threshold,
   return result
 }
 
-/** 确保邻居表已算好（首次访问时算一次并缓存） */
-export async function ensureNeighbors(): Promise<EmbedIndex> {
-  const index = await loadIndex()
-  const ids = Object.keys(index.entries)
-  const missing = ids.some((id) => !index.neighbors[id])
-  if (missing || Object.keys(index.neighbors).length !== ids.length) {
-    index.neighbors = computeNeighbors(index)
-    markDirty()
-  }
-  return index
-}
-
-/** 某张图的相似图（已排序，不含自己） */
-export async function similarTo(imageId: string, limit = SIMILAR_LIMIT): Promise<SimilarNeighbor[]> {
-  const index = await ensureNeighbors()
-  return (index.neighbors[imageId] || []).slice(0, limit)
-}
-
-/** 两两相似度矩阵 + 强连通分组，给「关系网」视图用 */
-export async function graphPayload(edgeLimit = GRAPH_EDGE_LIMIT) {
-  const index = await ensureNeighbors()
-  const ids = Object.keys(index.entries)
+/**
+ * 邻居表 → 边 + 连通分组。
+ * 视觉指纹和标签两种模式共用：分组口径（并查集）一致，界面上「相似分组」才是同一个意思。
+ */
+export function graphFromNeighbors(
+  neighbors: Record<string, SimilarNeighbor[]>,
+  ids: string[],
+  edgeLimit: number,
+) {
   const edges: Array<{ a: string; b: string; score: number }> = []
   const seen = new Set<string>()
   for (const id of ids) {
-    for (const nb of index.neighbors[id] || []) {
+    for (const nb of neighbors[id] || []) {
       const key = id < nb.id ? `${id}|${nb.id}` : `${nb.id}|${id}`
       if (seen.has(key)) continue
       seen.add(key)
@@ -357,7 +357,32 @@ export async function graphPayload(edgeLimit = GRAPH_EDGE_LIMIT) {
 
   /* 至少有一条相似边的图片数（= 所有 size>1 分组的人数）。剩下的就是「暂无相似图」的 */
   const linkedCount = groupList.reduce((sum, g) => sum + g.size, 0)
+  return { edges: trimmed, groups: groupList, linked: linkedCount }
+}
 
+/** 确保邻居表已算好（首次访问时算一次并缓存） */
+export async function ensureNeighbors(): Promise<EmbedIndex> {
+  const index = await loadIndex()
+  const ids = Object.keys(index.entries)
+  const missing = ids.some((id) => !index.neighbors[id])
+  if (missing || Object.keys(index.neighbors).length !== ids.length) {
+    index.neighbors = computeNeighbors(index)
+    markDirty()
+  }
+  return index
+}
+
+/** 某张图的相似图（已排序，不含自己） */
+export async function similarTo(imageId: string, limit = SIMILAR_LIMIT): Promise<SimilarNeighbor[]> {
+  const index = await ensureNeighbors()
+  return (index.neighbors[imageId] || []).slice(0, limit)
+}
+
+/** 两两相似度矩阵 + 强连通分组，给「关系网」视图用 */
+export async function graphPayload(edgeLimit = GRAPH_EDGE_LIMIT) {
+  const index = await ensureNeighbors()
+  const ids = Object.keys(index.entries)
+  const { edges, groups, linked } = graphFromNeighbors(index.neighbors, ids, edgeLimit)
   return {
     version: index.version,
     threshold: index.threshold,
@@ -365,11 +390,11 @@ export async function graphPayload(edgeLimit = GRAPH_EDGE_LIMIT) {
     /** 已建指纹的图片总数（含孤立的）。前端「已建指纹」应显示这个 */
     totalIndexed: ids.length,
     /** 其中真正连上了相似关系的张数 */
-    linked: linkedCount,
+    linked,
     /** 没有任何相似图的张数 */
-    isolated: ids.length - linkedCount,
-    edges: trimmed,
-    groups: groupList,
+    isolated: ids.length - linked,
+    edges,
+    groups,
   }
 }
 

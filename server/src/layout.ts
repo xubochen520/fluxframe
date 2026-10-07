@@ -616,21 +616,25 @@ export async function computeLayout(source: EmbeddingSource, options: ComputeLay
 
 /* ---------------- 磁盘缓存 ---------------- */
 
-function layoutFile() { return path.join(modelsDir(), 'embed', 'layout.json') }
+/**
+ * 每种布局各存一份。
+ * 视觉指纹与标签是两套完全不同的坐标，不能共用文件——否则切一次模式就要重算一次。
+ */
+function layoutFile(key: string) { return path.join(modelsDir(), 'embed', `layout-${key}.json`) }
 
-let cached: LayoutResult | null = null
-let inflight: Promise<LayoutResult> | null = null
+const cached = new Map<string, LayoutResult>()
+const inflight = new Map<string, Promise<LayoutResult>>()
 
-async function readLayoutFile(): Promise<LayoutResult | null> {
+async function readLayoutFile(key: string): Promise<LayoutResult | null> {
   try {
-    const parsed = JSON.parse(await readFile(layoutFile(), 'utf8')) as LayoutResult
+    const parsed = JSON.parse(await readFile(layoutFile(key), 'utf8')) as LayoutResult
     if (parsed?.version && parsed.points) return parsed
   } catch { /* 文件不存在或损坏：当作没有缓存 */ }
   return null
 }
 
-async function writeLayoutFile(result: LayoutResult) {
-  const target = layoutFile()
+async function writeLayoutFile(key: string, result: LayoutResult) {
+  const target = layoutFile(key)
   const tmp = `${target}.tmp-${process.pid}-${Date.now()}`
   await writeFile(tmp, JSON.stringify(result), 'utf8')
   await rename(tmp, target)
@@ -639,33 +643,38 @@ async function writeLayoutFile(result: LayoutResult) {
 /**
  * 拿到当前指纹集合对应的布局：内存 → 磁盘 → 现算，逐级回退。
  * 并发调用共享同一次计算，避免同时进来几个请求就把 UMAP 跑好几遍。
+ *
+ * [key] 区分不同来源的布局（'visual' / 'tags'）。
  */
-export async function ensureLayout(source: EmbeddingSource): Promise<LayoutResult> {
+export async function ensureLayout(source: EmbeddingSource, key = 'visual'): Promise<LayoutResult> {
   const sourceKey = layoutSourceKey(source)
-  if (cached && cached.version === LAYOUT_VERSION && cached.sourceKey === sourceKey) return cached
-  if (inflight) return inflight
+  const hit = cached.get(key)
+  if (hit && hit.version === LAYOUT_VERSION && hit.sourceKey === sourceKey) return hit
+  const running = inflight.get(key)
+  if (running) return running
 
-  inflight = (async () => {
-    const stored = await readLayoutFile()
+  const task = (async () => {
+    const stored = await readLayoutFile(key)
     if (stored && stored.version === LAYOUT_VERSION && stored.sourceKey === sourceKey) {
-      cached = stored
+      cached.set(key, stored)
       return stored
     }
     const result = await computeLayout(source, { previous: stored })
-    cached = result
-    try { await writeLayoutFile(result) } catch { /* 缓存写不进去不影响本次返回 */ }
+    cached.set(key, result)
+    try { await writeLayoutFile(key, result) } catch { /* 缓存写不进去不影响本次返回 */ }
     return result
   })()
 
+  inflight.set(key, task)
   try {
-    return await inflight
+    return await task
   } finally {
-    inflight = null
+    inflight.delete(key)
   }
 }
 
 /** 仅供测试/诊断：清掉内存缓存 */
-export function resetLayoutCache() { cached = null }
+export function resetLayoutCache() { cached.clear() }
 
 /* ---------------- 质量指标（验证脚本用） ---------------- */
 

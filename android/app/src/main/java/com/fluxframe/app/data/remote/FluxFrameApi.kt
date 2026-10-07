@@ -169,9 +169,16 @@ interface FluxFrameApi {
     @GET("api/embed/status")
     suspend fun embedStatus(): EmbedStatus
 
-    /** 关系网：已建指纹的图片 + 相似边 + 相似分组 */
+    /**
+     * 关系网：节点 + 相似边 + 相似分组 + 二维布局。
+     * [mode] 决定「关系」的依据：`visual` 是 CCIP 视觉指纹（长得像），
+     * `tag` 是标签的 TF-IDF 相似度（被打了同一批标记）。
+     */
     @GET("api/embed/graph")
-    suspend fun embedGraph(@Query("edges") edges: Int = 600): EmbedGraph
+    suspend fun embedGraph(
+        @Query("edges") edges: Int = 600,
+        @Query("mode") mode: String = "visual",
+    ): EmbedGraph
 
     /** 仅 ADMIN：把还没建指纹的图排进后台队列 */
     @POST("api/embed/backfill")

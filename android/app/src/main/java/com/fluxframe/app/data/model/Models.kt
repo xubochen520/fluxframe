@@ -146,12 +146,23 @@ data class EmbedGraphEdge(val a: String, val b: String, val score: Double = 0.0)
 @Serializable
 data class EmbedGraphGroup(val members: List<String> = emptyList(), val size: Int = 0)
 
+/** 关系网的依据：视觉指纹 / 标签 */
+enum class EmbedGraphMode(val wire: String, val label: String) {
+    /** CCIP 视觉指纹：「这两张图长得像不像」 */
+    VISUAL("visual", "视觉指纹"),
+
+    /** 标签的 TF-IDF 相似度：「这两张图被打了同一批标记没有」 */
+    TAG("tag", "标签"),
+}
+
 /** `GET /api/embed/graph`：关系网（节点 + 相似边 + 相似分组 + 二维布局） */
 @Serializable
 data class EmbedGraph(
     val ready: Boolean = false,
+    /** 这次返回的是哪套关系（visual / tag） */
+    val mode: String = "visual",
     val threshold: Double = 0.35,
-    /** 已建指纹的图片总数（含没有相似图的） */
+    /** 已建指纹（标签模式下 = 有标签）的图片总数（含没有相似图的） */
     val totalIndexed: Int = 0,
     /** 其中真正连上相似关系的张数 */
     val linked: Int = 0,
@@ -162,11 +173,19 @@ data class EmbedGraph(
     val groups: List<EmbedGraphGroup> = emptyList(),
     /**
      * 星系图坐标：id → [x, y]，归一化到 [-1,1]。
-     * 由服务端 `layout.ts` 用 UMAP 式降维算好并缓存，客户端只负责画。
+     * 视觉模式由服务端 `layout.ts` 用 UMAP 式降维算好并缓存；标签模式是
+     * 「图片挂到自己标签的锚点上」。客户端只负责画。
      */
     val positions: Map<String, List<Double>> = emptyMap(),
-    /** id → 主角色名（人物标签里排序第一的那个）；没打人物标签的图不在这个表里 */
+    /** id → 主标签名（视觉模式 = 主角色，标签模式 = 最有区分度的标签） */
     val characters: Map<String, String> = emptyMap(),
+    /**
+     * 标签锚点：标签名 → [x, y]。只有标签模式有。
+     * 标签模式下的星云名称直接画在这些位置上 —— 图就是围着标签聚起来的。
+     */
+    val tagAnchors: Map<String, List<Double>> = emptyMap(),
+    /** 标签模式：参与聚类的标签总数 */
+    val tagCount: Int = 0,
     /** 布局算法版本与生成时间，用于判断缓存是否过期 */
     val layoutVersion: String = "",
     val layoutAt: String = "",

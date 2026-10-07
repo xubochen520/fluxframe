@@ -1,5 +1,11 @@
 package com.fluxframe.app.ui.screens
 
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.sp
+import com.fluxframe.app.data.model.EmbedGraphMode
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -117,18 +123,25 @@ fun GalaxyScreen(
     val context = LocalContext.current
     val dark = LocalDarkTheme.current
     val scope = rememberCoroutineScope()
+    /* 画星云名称要它来排版；Compose 的文字测量有缓存，逐帧调用不会重复排版 */
+    val textMeasurer = rememberTextMeasurer()
 
     var graph by remember { mutableStateOf<EmbedGraph?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
+    /*
+     * 关系的依据：视觉指纹 / 标签。
+     * 两者的坐标与边完全不同，所以切换时要重新取数（仓库里也是按模式各缓存一份）。
+     */
+    var mode by remember { mutableStateOf(EmbedGraphMode.VISUAL) }
 
-    fun load(force: Boolean = false) {
+    fun load(force: Boolean = false, target: EmbedGraphMode = mode) {
         scope.launch {
             loading = true
-            container.embedRepository.graph(force = force)
-                .onSuccess { graph = it; error = null }
-                .onFailure { error = it.message ?: "读取关系网失败" }
-            loading = false
+            container.embedRepository.graph(mode = target, force = force)
+                .onSuccess { if (target == mode) { graph = it; error = null } }
+                .onFailure { if (target == mode) error = it.message ?: "读取关系网失败" }
+            if (target == mode) loading = false
         }
     }
 
@@ -207,6 +220,33 @@ fun GalaxyScreen(
             .sortedByDescending { it.value }
             .take(12)
             .map { it.key to it.value }
+    }
+
+    /**
+     * 星云名称。
+     *   · 标签模式：直接用服务端给的标签锚点 —— 图就是围着标签聚起来的，标在锚点上最直观。
+     *   · 视觉模式：服务端没给锚点，退回「分组的中心点 + 组里最多的那个标签」。
+     */
+    val labels = remember(layout, graph, mode) {
+        val payload = graph
+        if (payload == null) emptyList()
+        else if (mode == EmbedGraphMode.TAG && payload.tagAnchors.isNotEmpty()) {
+            val anchors = payload.tagAnchors.mapNotNull { (tag, point) ->
+                if (point.size < 2) null else tag to Offset(point[0].toFloat(), point[1].toFloat())
+            }.toMap()
+            val counts = HashMap<String, Int>()
+            for (node in layout.nodes) for (tag in node.item.tags) counts[tag] = (counts[tag] ?: 0) + 1
+            GalaxyMath.tagAnchorLabels(anchors, counts) { GalaxyMath.characterColor(it) }
+        } else {
+            val points = layout.nodes.associate { it.item.id to Offset(it.x, it.y) }
+            val primary = layout.nodes.associate { it.item.id to it.character }
+            GalaxyMath.groupLabels(
+                groups = payload.groups.map { it.members },
+                pointOf = { points[it] },
+                primaryOf = { primary[it].orEmpty() },
+                colorOf = { GalaxyMath.characterColor(it) },
+            )
+        }
     }
 
     /** 标签颜色：详情卡片里的小标签用真实颜色，不是清一色的紫 */
@@ -411,6 +451,67 @@ fun GalaxyScreen(
                     )
                 }
             }
+
+            // ---- 星云名称 ----
+            /*
+             * 缩略图一出来就把名字收掉（和网页端一致）：图已经能看出是什么了，
+             * 名字继续压在上面只是挡住内容。
+             */
+            val labelAlpha = (1f - thumbAlpha * 1.6f).coerceIn(0f, 1f)
+            if (labelAlpha > 0.02f && labels.isNotEmpty()) {
+                /*
+                 * **先量好尺寸，再剔除重叠**。
+                 *
+                 * 一开始按「字数 × 11」估算宽度，高密度屏上差了整整三倍：
+                 * 11sp 在 3x 屏上是 33px，不是 11px。框算小了，标签既会互相压住，
+                 * 也会伸出画布外被切掉（实测「小鸟游星野 · 1」右边少了个 1）。
+                 * TextMeasurer 自带缓存，量二十来个标签不心疼。
+                 */
+                val measured = labels.map { label ->
+                    label to textMeasurer.measure(
+                        text = AnnotatedString(label.text),
+                        style = TextStyle(fontSize = LABEL_FONT_SIZE_SP.sp, fontWeight = FontWeight.Medium, color = label.color.copy(alpha = labelAlpha)),
+                    )
+                }
+                val widthByKey = measured.associate { (label, layout) -> label.key to layout.size.width.toFloat() }
+                val heightPx = measured.firstOrNull()?.second?.size?.height ?: 0
+                val visible = GalaxyMath.cullLabels(
+                    labels = labels,
+                    camera = camera,
+                    viewportWidth = size.width,
+                    viewportHeight = size.height,
+                    widthOf = { label -> (widthByKey[label.key] ?: 0f) + LABEL_PADDING * 2f },
+                    height = heightPx + LABEL_PADDING,
+                )
+                /* measured 是 (Label, TextLayoutResult) 的列表，按 key 建索引才知道该画哪一个 */
+                val layoutByKey = measured.associate { (label, layout) -> label.key to layout }
+                for (label in visible) {
+                    val layout = layoutByKey[label.key] ?: continue
+                    /* cullLabels 会把贴边的名称往画布内挪，偏移量挂在 label 上带回来 */
+                    val screen = GalaxyMath.worldToScreen(label.x, label.y, camera, size.width, size.height)
+                    val boxWidth = layout.size.width + LABEL_PADDING * 2f
+                    val boxHeight = layout.size.height + LABEL_PADDING
+                    val left = screen.x + label.offsetX - boxWidth / 2f
+                    val top = screen.y + label.offsetY - boxHeight / 2f
+                    drawRoundRect(
+                        color = Color(0.03f, 0.05f, 0.10f, 0.62f * labelAlpha),
+                        topLeft = Offset(left, top),
+                        size = Size(boxWidth, boxHeight),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(boxHeight / 2f, boxHeight / 2f),
+                    )
+                    drawRoundRect(
+                        color = label.color.copy(alpha = 0.45f * labelAlpha),
+                        topLeft = Offset(left, top),
+                        size = Size(boxWidth, boxHeight),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(boxHeight / 2f, boxHeight / 2f),
+                        style = Stroke(width = 1f),
+                    )
+                    drawText(
+                        textLayoutResult = layout,
+                        topLeft = Offset(left + LABEL_PADDING, top + LABEL_PADDING / 2f),
+                    )
+                }
+            }
         }
 
         /* ------------------------------ 叠层 UI ------------------------------ */
@@ -424,9 +525,17 @@ fun GalaxyScreen(
         if (payload == null || !payload.ready || payload.nodes.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize().padding(20.dp), contentAlignment = Alignment.Center) {
                 EmptyState(
-                    title = if (payload?.ready == false) "服务端还没准备好相似图索引" else "还没有建立视觉指纹",
-                    description = "视觉指纹是「找相似图」的依据，每张图算一次（约 0.7 秒）。" +
-                        "上传新图会自动算；库里的历史图片需要在网页端或服务端的设置里点一次「建立索引」。",
+                    title = when {
+                        mode == EmbedGraphMode.TAG -> "还没有给图片打标签"
+                        payload?.ready == false -> "服务端还没准备好相似图索引"
+                        else -> "还没有建立视觉指纹"
+                    },
+                    description = if (mode == EmbedGraphMode.TAG) {
+                        "标签模式靠标签连线，库里得先有标签。上传时可以用自动打标，也可以在图片库/标签页里手动补。"
+                    } else {
+                        "视觉指纹是「找相似图」的依据，每张图算一次（约 0.7 秒）。" +
+                            "上传新图会自动算；库里的历史图片需要在网页端或服务端的设置里点一次「建立索引」。"
+                    },
                     icon = Icons.Filled.CenterFocusStrong,
                     actionLabel = "重新读取",
                     onAction = { load(force = true) },
@@ -445,6 +554,22 @@ fun GalaxyScreen(
                     onRetry = { load(force = true) },
                     onDismiss = { error = null },
                 )
+            }
+
+            /* 关系的依据：视觉指纹（长得像）/ 标签（被打了同一批标记） */
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                EmbedGraphMode.entries.forEach { candidate ->
+                    ModeChip(
+                        label = candidate.label,
+                        active = mode == candidate,
+                        onClick = {
+                            if (mode == candidate) return@ModeChip
+                            mode = candidate
+                            graph = null
+                            load(force = true, target = candidate)
+                        },
+                    )
+                }
             }
             OutlinedTextField(
                 value = query,
@@ -556,10 +681,10 @@ fun GalaxyScreen(
 
         // 提示 / 统计
         Text(
-            text = if (thumbAlpha < 0.5f) {
-                "双指缩放 · 拖动平移 · 点一下看详情（再放大些就显示缩略图）"
-            } else {
-                "双指缩放 · 拖动平移 · 点一下看详情"
+            text = buildString {
+                append(if (mode == EmbedGraphMode.TAG) "按标签连线 · " else "按视觉指纹连线 · ")
+                append("双指缩放 · 拖动平移 · 点一下看详情")
+                if (thumbAlpha < 0.5f) append("（再放大些就显示缩略图）")
             },
             style = MaterialTheme.typography.labelSmall,
             color = onGlassColor(dark, emphasis = false),
@@ -627,6 +752,23 @@ fun GalaxyScreen(
 /* ------------------------------ 小工具 ------------------------------ */
 
 @Composable
+private fun ModeChip(label: String, active: Boolean, onClick: () -> Unit) {
+    GlassSurface(
+        modifier = Modifier.clip(RoundedCornerShape(999.dp)).clickable { onClick() },
+        backdrop = false,
+        borderWidth = if (active) 1.4.dp else 0.6.dp,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (active) MaterialTheme.colorScheme.primary else onGlassColor(LocalDarkTheme.current, emphasis = false),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+    }
+}
+
+@Composable
 private fun CharacterChip(name: String, count: Int, active: Boolean, onClick: () -> Unit) {
     val color = GalaxyMath.characterColor(name)
     GlassSurface(
@@ -672,6 +814,12 @@ private fun starField(): List<Star> {
 
 /** 每个 200ms 周期最多发起多少张缩略图请求：太多会挤掉正在滑动的列表 */
 private const val MAX_REQUESTS_PER_TICK = 12
+
+/** 星云名称的字号（sp）。宽度一律实量，不要用「字数 × 字号」估 —— 那是 px 不是 sp */
+private const val LABEL_FONT_SIZE_SP = 11f
+
+/** 星云名称胶囊的内边距（px）：左右用它的两倍，上下用一倍 */
+private const val LABEL_PADDING = 8f
 
 /** 拖动/捏合结束后这么久内的「点击」一律忽略（那是手指离开时的抖动，不是点选） */
 private const val TAP_AFTER_GESTURE_MS = 220L

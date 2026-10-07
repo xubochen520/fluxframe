@@ -10,7 +10,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { ChevronRight, Focus, LoaderCircle, Minus, Plus, Search, Sparkles, X } from 'lucide-vue-next'
 import { GalaxyEngine, type GalaxyEdge, type GalaxyNode } from '../galaxy/engine'
-import type { EmbedGraphEdge, EmbedGraphGroup } from '../api'
+import type { EmbedGraphEdge, EmbedGraphGroup, EmbedGraphMode } from '../api'
 import type { ImageItem } from '../types'
 
 const props = defineProps<{
@@ -20,6 +20,13 @@ const props = defineProps<{
   positions: Record<string, [number, number]>
   characters: Record<string, string>
   threshold: number
+  /** 当前关系依据：视觉指纹 / 标签。影响文案与星云名称的来源 */
+  mode?: EmbedGraphMode
+  /**
+   * 标签锚点（只有标签模式有）：标签名 → [x, y]。
+   * 标签模式下的星云名称直接用它们——图本来就是围着标签聚起来的。
+   */
+  tagAnchors?: Record<string, [number, number]>
 }>()
 
 const emit = defineEmits<{ (event: 'open', image: ImageItem): void }>()
@@ -168,10 +175,31 @@ interface Label extends LabelAnchor { screenX: number; screenY: number }
  * 就飘到了画布下方，离它那团蓝星云十万八千里。取组内到其它成员距离和最小的那个点，
  * 标签一定落在最密的地方。
  *
- * 这个计算只跟数据有关、跟镜头无关，所以放在不含 frameTick 的 computed 里——
- * 否则每帧都要为每个分组做一次 O(候选 × 成员数) 的扫描。
+ * 标签模式下不用这套：服务端直接给了标签锚点（图本来就是围着标签聚起来的），
+ * 标在锚点上最直观，也顺便告诉用户「这团为什么在这儿」。
  */
 const labelAnchors = computed<LabelAnchor[]>(() => {
+  const anchors = props.tagAnchors
+  if (props.mode === 'tag' && anchors && Object.keys(anchors).length) {
+    /* 每个标签带一个"有多少张图带它"的计数：只有一张图的标签标出来没意义 */
+    const counts = new Map<string, number>()
+    for (const item of props.nodes) {
+      for (const tag of item.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1)
+    }
+    return Object.entries(anchors)
+      .map(([tag, point]) => ({
+        key: `tag:${tag}`,
+        text: `${tag} · ${counts.get(tag) ?? 0}`,
+        character: tag,
+        x: point[0],
+        y: point[1],
+        size: counts.get(tag) ?? 1,
+        color: `rgb(${characterColor(tag).map((v) => Math.round(v * 255)).join(',')})`,
+      }))
+      .sort((a, b) => b.size - a.size)
+      .slice(0, 26)
+  }
+
   const byId = new Map(built.value.items.map((item, index) => [item.id, index]))
   const result: LabelAnchor[] = []
   for (const group of props.groups) {
@@ -223,15 +251,37 @@ const labels = computed<Label[]>(() => {
   const kept: Label[] = []
   for (const anchor of labelAnchors.value) {
     const screen = instance.worldToScreen(anchor.x, anchor.y)
+    /*
+     * 锚点自己就在画布外：整个丢掉。
+     * 不能"贴"到边上——那会让人以为那儿有团星云，其实目标在屏幕外很远。
+     */
+    if (screen.x < 0 || screen.x > viewport.width || screen.y < 0 || screen.y > viewport.height) continue
+
     /* 中文按 11.5px 估宽：比真测量便宜，反正只有十几个标签 */
     const width = anchor.text.length * 11.5 + 20
     const height = 22
-    const box = { x1: screen.x - width / 2, y1: screen.y - height / 2, x2: screen.x + width / 2, y2: screen.y + height / 2 }
-    if (box.x2 < 0 || box.x1 > viewport.width || box.y2 < 0 || box.y1 > viewport.height) continue
+    let left = screen.x - width / 2
+    let top = screen.y - height / 2
+    /*
+     * 贴边的**往内挪**而不是丢掉，也不是留着被裁。
+     * 直接丢：最大的那团星云往往正好在画布边上，一丢就把最重要的名字丢了。
+     * 只判相交再裁：会被画布的 overflow:hidden 切掉半截（「知更鸟 · 2」变成「更鸟 · 2」）。
+     * 挪进来两个问题都没有，代价只是偏一点点。
+     */
+    let offsetX = 0
+    if (left < 0) offsetX = -left
+    else if (left + width > viewport.width) offsetX = viewport.width - (left + width)
+    let offsetY = 0
+    if (top < 0) offsetY = -top
+    else if (top + height > viewport.height) offsetY = viewport.height - (top + height)
+    left += offsetX
+    top += offsetY
+
+    const box = { x1: left, y1: top, x2: left + width, y2: top + height }
     /* 小的和已经放下的框重叠就丢掉：不然「小鸟游星野 · 3」和「3 张」会糊在一起 */
     if (placed.some((other) => !(box.x2 < other.x1 || box.x1 > other.x2 || box.y2 < other.y1 || box.y1 > other.y2))) continue
     placed.push(box)
-    kept.push({ ...anchor, screenX: screen.x, screenY: screen.y })
+    kept.push({ ...anchor, screenX: screen.x + offsetX, screenY: screen.y + offsetY })
   }
   return kept
 })
@@ -411,7 +461,7 @@ onBeforeUnmount(() => {
   engine.value = null
 })
 
-watch([() => props.nodes, () => props.edges, () => props.positions], rebuild)
+watch([() => props.nodes, () => props.edges, () => props.positions, () => props.tagAnchors], rebuild)
 </script>
 
 <template>

@@ -161,4 +161,104 @@ class GalaxyMathTest {
         val filtered = GalaxyMath.edgeAlpha(0.6f, touchesFocus = true, hasFocus = true, emphasis = 0f)
         assertTrue("被搜索过滤掉的边几乎不可见", filtered < focused * 0.2f)
     }
+
+    /* ------------------------------ 星云名称 ------------------------------ */
+
+    @Test
+    fun `tag anchors become labels sorted by how many images carry the tag`() {
+        val anchors = mapOf(
+            "白丝" to Offset(0.5f, 0.5f),
+            "可莉" to Offset(-0.5f, -0.5f),
+            "绯樱" to Offset(0f, 0f),
+        )
+        val counts = mapOf("白丝" to 21, "可莉" to 13, "绯樱" to 1)
+        val labels = GalaxyMath.tagAnchorLabels(anchors, counts) { GalaxyMath.characterColor(it) }
+        assertEquals(3, labels.size)
+        assertEquals("数量多的排前面", "白丝", labels[0].text.substringBefore(" · "))
+        assertEquals("白丝 · 21", labels[0].text)
+        assertEquals(0.5f, labels[0].x, 0.001f)
+    }
+
+    @Test
+    fun `group label sits on a member not on the empty centroid of a stretched chain`() {
+        // 三个点挤在左边、一个点孤零零在右边：质心落在两点之间的空白处，
+        // 中心点（medoid）必须落在左边那团里
+        val points = mapOf(
+            "a" to Offset(-0.9f, 0f),
+            "b" to Offset(-0.8f, 0.05f),
+            "c" to Offset(-0.85f, -0.05f),
+            "d" to Offset(0.9f, 0f),
+        )
+        val labels = GalaxyMath.groupLabels(
+            groups = listOf(listOf("a", "b", "c", "d")),
+            pointOf = { points[it] },
+            primaryOf = { "纳西妲" },
+            colorOf = { GalaxyMath.characterColor(it) },
+        )
+        assertEquals(1, labels.size)
+        assertTrue("标签必须落在左边那团里，而不是中间的空白处：x=${labels[0].x}", labels[0].x < -0.5f)
+        assertEquals("纳西妲 · 4", labels[0].text)
+    }
+
+    @Test
+    fun `group labels skip groups that are too small`() {
+        val points = mapOf("a" to Offset(0f, 0f), "b" to Offset(0.1f, 0f))
+        val labels = GalaxyMath.groupLabels(
+            groups = listOf(listOf("a", "b")),
+            pointOf = { points[it] },
+            primaryOf = { "" },
+            colorOf = { GalaxyMath.characterColor(it) },
+            minSize = 3,
+        )
+        assertTrue("只有两张的分组不配拥有名字", labels.isEmpty())
+    }
+
+    @Test
+    fun `culling keeps the bigger label and drops the one underneath it`() {
+        val camera = camera()
+        val overlapping = listOf(
+            GalaxyMath.Label("big", "纳西妲 · 36", 0f, 0f, 36, GalaxyMath.characterColor("纳西妲")),
+            GalaxyMath.Label("small", "七七 · 3", 0.01f, 0.01f, 3, GalaxyMath.characterColor("七七")),
+            GalaxyMath.Label("far", "可莉 · 13", 0.9f, 0.9f, 13, GalaxyMath.characterColor("可莉")),
+        )
+        val kept = GalaxyMath.cullLabels(overlapping, camera, viewportWidth, viewportHeight, widthOf = { 80f })
+        val keys = kept.map { it.key }
+        assertTrue("被压住的小标签要丢掉", "big" in keys && "small" !in keys)
+        assertTrue("离得远的照常保留", "far" in keys)
+    }
+
+    @Test
+    fun `culling drops labels whose anchor is off screen`() {
+        val camera = camera()
+        val labels = listOf(
+            GalaxyMath.Label("here", "白丝 · 21", 0f, 0f, 21, GalaxyMath.characterColor("白丝")),
+            GalaxyMath.Label("way-off", "猫耳 · 14", 50f, 50f, 14, GalaxyMath.characterColor("猫耳")),
+        )
+        val kept = GalaxyMath.cullLabels(labels, camera, viewportWidth, viewportHeight, widthOf = { 80f })
+        assertEquals(
+            "锚点在屏幕外的标签要整个丢掉，不能贴到边上（那会让人以为那儿有团星云）",
+            listOf("here"),
+            kept.map { it.key },
+        )
+    }
+
+    @Test
+    fun `culling nudges an edge label inside instead of clipping or dropping it`() {
+        val camera = camera()
+        /* 锚点在画布最左边但仍在画布内：名字比锚点宽，会有一半伸出去 */
+        val edge = GalaxyMath.screenToWorld(20f, viewportHeight / 2f, camera, viewportWidth, viewportHeight)
+        val width = 200f
+        val kept = GalaxyMath.cullLabels(
+            labels = listOf(GalaxyMath.Label("edge", "知更鸟 · 2", edge.x, edge.y, 2, GalaxyMath.characterColor("知更鸟"))),
+            camera = camera,
+            viewportWidth = viewportWidth,
+            viewportHeight = viewportHeight,
+            widthOf = { width },
+        )
+        assertEquals("贴边的标签应该被挪进来，而不是丢掉", listOf("edge"), kept.map { it.key })
+        val screen = GalaxyMath.worldToScreen(edge.x, edge.y, camera, viewportWidth, viewportHeight)
+        val left = screen.x + kept[0].offsetX - width / 2f
+        assertTrue("挪完之后左边不该越界：left=$left", left >= 0f)
+        assertTrue("挪完之后右边也不该越界", left + width <= viewportWidth)
+    }
 }

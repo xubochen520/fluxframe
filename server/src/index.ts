@@ -23,9 +23,11 @@ import { addReference, cropRegion, listReferences, referenceCounts, regionFromBo
 import { suggestTagsByTagger, taggerModelsReady, type TagSuggestResult } from './tagger.js'
 import {
   dropEmbeddings, embedDir, embedModelReady, embedStats, ensureNeighbors, flushIndex, graphPayload,
-  hasEmbedding, putEmbedding, setThreshold, similarTo, cosine, countIndexed, DEFAULT_SIMILARITY_THRESHOLD, SIMILAR_LIMIT,
+  graphFromNeighbors, hasEmbedding, neighborsOf, putEmbedding, setThreshold, similarTo, cosine,
+  countIndexed, DEFAULT_SIMILARITY_THRESHOLD, SIMILAR_LIMIT,
 } from './embed.js'
 import { ensureLayout } from './layout.js'
+import { TAG_GRAPH_VERSION, buildTagGraph, ensureTagLayout } from './tag-graph.js'
 
 const prisma = new PrismaClient()
 const app = Fastify({
@@ -2067,18 +2069,90 @@ app.get('/api/images/:id/similar', async (request, reply) => {
 /**
  * 关系网：节点 + 相似边 + 相似分组 + 二维布局（星系图用）。
  *
- * 与早期版本的两处差别，都是为了前端那张 WebGL 星系图：
- *   1. nodes 从「只含有关联的图」扩到「全部建了指纹且可见的图」。孤立图不是噪音，
- *      它们是星云之间稀疏的星点——少了它们，图会显得比实际更「满」，也看不出
- *      「其实一大半图没有相似图」这件事。分组列表只认 size>1，不受影响。
- *   2. 多返回 positions（二维坐标）与 characters（主角色名）。坐标由 layout.ts 算好
- *      缓存，调用方只需按 id 取；characters 用来上色、做星云标签和搜人。
+ * 两种模式，同一个接口：
+ *   · `mode=visual`（默认）——依据是 CCIP 视觉指纹。「这两张图长得像不像」，
+ *     能发现同一张图的不同裁切/换色。
+ *   · `mode=tag` ——依据是标签的 TF-IDF 相似度。「这两张图被打了同一批标记没有」，
+ *     能发现同一个作者/同一本画集/同一套服装这类看起来不像但被一起归档的东西。
+ *     它还不需要指纹模型，模型没就绪时照样能用。
+ *
+ * 其余部分两种模式完全一致：nodes 都是「全部可见的图」（孤立图不是噪音，
+ * 它们是星云之间稀疏的星点，少了它们就看不出「其实一大半图没有相似图」），
+ * 都返回 positions 与 characters（用作上色与星云名称）。
  */
 app.get('/api/embed/graph', async (request, reply) => {
   const user = await requireUser(request as AuthenticatedRequest, reply)
   if (!user) return
-  const query = z.object({ edges: z.coerce.number().int().min(50).max(3000).default(600) }).parse(request.query)
-  if (!embedModelReady()) return { ready: false, nodes: [], edges: [], groups: [], isolated: 0, positions: {}, characters: {} }
+  const query = z.object({
+    edges: z.coerce.number().int().min(50).max(3000).default(600),
+    mode: z.enum(['visual', 'tag']).default('visual'),
+  }).parse(request.query)
+
+  /* ---------------- 标签模式 ---------------- */
+  if (query.mode === 'tag') {
+    const rows = await prisma.image.findMany({
+      where: { deletedAt: null, mimeType: { startsWith: 'image/' } },
+      include: { tags: { include: { tag: true } }, variants: true },
+    })
+    const visible = rows.filter((row) => user.r18Mode || !isImageR18(row))
+    const tagRows = visible.map((row) => ({ id: row.id, tags: row.tags.map((item) => item.tag.name) }))
+
+    const tagLayout = await ensureTagLayout(tagRows)
+    const tagGraph = buildTagGraph(tagRows, tagLayout)
+    /* 边用和视觉指纹同一段检索逻辑：余弦在 L2 归一化后就是点积 */
+    const neighbors = neighborsOf(tagGraph.source.entries, tagGraph.threshold, SIMILAR_LIMIT)
+    const ids = Object.keys(tagGraph.source.entries)
+    const graph = graphFromNeighbors(neighbors, ids, query.edges)
+
+    const nodes = visible.map((row) => imageDto(row))
+    const allowed = new Set(nodes.map((node) => node.id))
+    const visibleEdges = graph.edges.filter((edge) => allowed.has(edge.a) && allowed.has(edge.b))
+    const linkedIds = new Set<string>()
+    for (const edge of visibleEdges) { linkedIds.add(edge.a); linkedIds.add(edge.b) }
+    const visibleGroups = graph.groups
+      .map((group) => ({ members: group.members.filter((member) => allowed.has(member)) }))
+      .map((group) => ({ members: group.members, size: group.members.length }))
+      .filter((group) => group.size > 1 && group.members.some((member) => linkedIds.has(member)))
+    const visibleLinked = visibleGroups.reduce((sum, group) => sum + group.size, 0)
+
+    const positions: Record<string, [number, number]> = {}
+    const characters: Record<string, string> = {}
+    for (const node of nodes) {
+      const point = tagGraph.positions[node.id]
+      if (point) positions[node.id] = point
+    }
+    for (const row of visible) {
+      const primary = tagGraph.primaryTags[row.id]
+      if (primary) characters[row.id] = primary
+    }
+
+    return {
+      ready: true,
+      mode: 'tag',
+      version: tagGraph.version,
+      threshold: tagGraph.threshold,
+      layoutVersion: TAG_GRAPH_VERSION,
+      layoutAt: tagLayout.updatedAt,
+      nodes,
+      edges: visibleEdges,
+      groups: visibleGroups,
+      positions,
+      characters,
+      /* 标签锚点：客户端把标签名画在这里，一眼看出这团是什么 */
+      tagAnchors: Object.fromEntries(
+        Object.entries(tagGraph.tagAnchors).filter(([tag]) => visible.some((row) => row.tags.some((item) => item.tag.name === tag))),
+      ),
+      tagCount: tagGraph.tagCount,
+      totalIndexed: tagGraph.covered,
+      linked: visibleLinked,
+      isolated: Math.max(0, tagGraph.covered - visibleLinked),
+    }
+  }
+
+  /* ---------------- 视觉指纹模式 ---------------- */
+  if (!embedModelReady()) {
+    return { ready: false, mode: 'visual', nodes: [], edges: [], groups: [], isolated: 0, positions: {}, characters: {}, tagAnchors: {} }
+  }
   const index = await ensureNeighborsForUser(user)
   const graph = await graphPayload(query.edges)
 
@@ -2121,12 +2195,15 @@ app.get('/api/embed/graph', async (request, reply) => {
   const totalIndexed = await countIndexed()
   return {
     ready: true,
+    mode: 'visual',
     ...graph,
     nodes,
     edges: visibleEdges,
     groups: visibleGroups,
     positions,
     characters,
+    /* 视觉模式没有标签锚点，客户端退回用分组中心点当标签位置 */
+    tagAnchors: {},
     layoutVersion: layout.version,
     layoutAt: layout.updatedAt,
     totalIndexed,

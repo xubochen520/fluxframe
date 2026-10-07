@@ -112,8 +112,12 @@ export interface EmbedStatusPayload {
 }
 export interface EmbedGraphEdge { a: string; b: string; score: number }
 export interface EmbedGraphGroup { members: string[]; size: number }
+/** 关系网的依据：视觉指纹 / 标签 */
+export type EmbedGraphMode = 'visual' | 'tag'
 export interface EmbedGraphPayload {
   ready: boolean
+  /** 这次返回的是哪套关系 */
+  mode?: EmbedGraphMode
   version?: string
   threshold?: number
   updatedAt?: string
@@ -122,14 +126,22 @@ export interface EmbedGraphPayload {
   groups: EmbedGraphGroup[]
   /**
    * 星系图坐标：id → [x, y]，归一化到 [-1,1]（保持长宽比）。
-   * 由服务端 layout.ts 用 UMAP 式降维算好并缓存，前端只负责画。
+   * 视觉模式由服务端 layout.ts 用 UMAP 式降维算好并缓存；标签模式是
+   * 「图片挂到自己标签的锚点上」。前端只负责画。
    */
   positions: Record<string, [number, number]>
-  /** id → 主角色名（人物标签里排序第一的那个）；没打人物标签的图不在这个表里 */
+  /** id → 主标签名（视觉模式=主角色，标签模式=最有区分度的标签）；用作上色与筛选 */
   characters: Record<string, string>
+  /**
+   * 标签锚点：标签名 → [x, y]。只有标签模式有。
+   * 标签模式下星云名称直接画在这些位置上——图就是围着标签聚起来的，标出锚点最直观。
+   */
+  tagAnchors?: Record<string, [number, number]>
+  /** 标签模式：参与聚类的标签总数 */
+  tagCount?: number
   layoutVersion?: string
   layoutAt?: string
-  /** 已建指纹的图片总数（含没有相似图的） */
+  /** 已建指纹（标签模式下 = 有标签）的图片总数含没有相似图的 */
   totalIndexed?: number
   /** 其中真正连上相似关系的张数 */
   linked?: number
@@ -224,8 +236,13 @@ export const api = {
   similarImages: (imageId: string, limit = 24) =>
     request<SimilarImagesPayload>(`/api/images/${imageId}/similar?limit=${limit}`),
   embedStatus: () => request<EmbedStatusPayload>('/api/embed/status'),
-  /** 关系网：节点 + 相似边 + 相似分组 */
-  embedGraph: (edges = 600) => request<EmbedGraphPayload>(`/api/embed/graph?edges=${edges}`),
+  /**
+   * 关系网：节点 + 相似边 + 相似分组 + 二维布局。
+   * [mode] 决定「关系」的依据：`visual` 是 CCIP 视觉指纹（长得像），
+   * `tag` 是标签的 TF-IDF 相似度（被打了同一批标记）。
+   */
+  embedGraph: (edges = 600, mode: EmbedGraphMode = 'visual') =>
+    request<EmbedGraphPayload>(`/api/embed/graph?edges=${edges}&mode=${mode}`),
   /** 把还没建指纹的图片排进后台队列 */
   embedBackfill: (force = false) =>
     request<{ ok: true; queued: number; scanning: boolean }>('/api/embed/backfill', { method: 'POST', body: JSON.stringify({ force }) }),

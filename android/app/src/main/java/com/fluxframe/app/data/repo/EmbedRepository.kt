@@ -5,10 +5,14 @@ import com.fluxframe.app.core.net.apiCall
 import com.fluxframe.app.data.model.EmbedBackfillRequest
 import com.fluxframe.app.data.model.EmbedCalibration
 import com.fluxframe.app.data.model.EmbedGraph
+import com.fluxframe.app.data.model.EmbedGraphMode
 import com.fluxframe.app.data.model.EmbedStatus
 import com.fluxframe.app.data.model.EmbedThresholdRequest
 import com.fluxframe.app.data.model.ImageItem
 import kotlinx.coroutines.delay
+
+/** 标签模式下默认要多少条边：一条边就是一个确凿的共同标签，不是噪声，可以多连一些 */
+private const val TAG_EDGE_LIMIT = 1000
 
 /**
  * 相似图 / 关系网（服务端 CCIP 视觉指纹）。
@@ -22,8 +26,8 @@ class EmbedRepository(private val container: AppContainer) {
 
     private val api get() = container.api
 
-    /** 上一次成功取到的关系网（见 [graph] 的说明） */
-    private var cachedGraph: EmbedGraph? = null
+    /** 上一次成功取到的关系网，按模式各存一份（见 [graph] 的说明） */
+    private val cachedGraphs = mutableMapOf<EmbedGraphMode, EmbedGraph>()
 
     /** 相似图请求的结果：正常、还在算、还是这类媒体不支持 */
     sealed interface SimilarOutcome {
@@ -82,20 +86,27 @@ class EmbedRepository(private val container: AppContainer) {
     /**
      * 关系网：节点 + 相似边 + 相似分组 + 二维布局。
      *
-     * 结果在内存里留一份：关系网一次约 100KB，而用户在「星系图 / 分组列表」之间来回切、
-     * 或者点进大图再退回来都很频繁，每次都重新拉一遍既慢又白费流量。
-     * 传 [force] = true 才强制重取（下拉刷新、或改了阈值之后）。
+     * [mode] 决定「关系」的依据（见 [EmbedGraphMode]）。两种模式各缓存一份：
+     * 关系网一次约 100KB，而用户在「星系图 / 分组列表」之间来回切、或者点进大图再退回来
+     * 都很频繁，每次都重新拉一遍既慢又白费流量。传 [force] = true 才强制重取
+     * （下拉刷新、改了阈值之后、或者切换模式）。
      */
-    suspend fun graph(edges: Int = 600, force: Boolean = false): Result<EmbedGraph> {
-        if (!force) cachedGraph?.let { return Result.success(it) }
-        val result = apiCall { api.embedGraph(edges) }
-        result.getOrNull()?.let { if (it.ready) cachedGraph = it }
+    suspend fun graph(
+        edges: Int = 600,
+        mode: EmbedGraphMode = EmbedGraphMode.VISUAL,
+        force: Boolean = false,
+    ): Result<EmbedGraph> {
+        if (!force) cachedGraphs[mode]?.let { return Result.success(it) }
+        /* 标签模式的边是"确凿的共同标签"而不是噪声，所以默认连得比视觉模式多 */
+        val limit = if (mode == EmbedGraphMode.TAG) maxOf(edges, TAG_EDGE_LIMIT) else edges
+        val result = apiCall { api.embedGraph(limit, mode.wire) }
+        result.getOrNull()?.let { if (it.ready) cachedGraphs[mode] = it }
         return result
     }
 
     /** 阈值变了 / 新图入库后清掉缓存，下次进入重新取 */
     fun invalidateGraph() {
-        cachedGraph = null
+        cachedGraphs.clear()
     }
 
     /** 仅 ADMIN：把还没建指纹的图排进后台队列 */

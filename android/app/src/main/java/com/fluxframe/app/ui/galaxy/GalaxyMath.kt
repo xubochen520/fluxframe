@@ -236,4 +236,150 @@ object GalaxyMath {
         val dy = a.y - b.y
         return sqrt(dx * dx + dy * dy)
     }
+
+    /**
+     * 星云名称：世界坐标 + 文字 + 颜色。
+     * [offsetX]/[offsetY] 是 [cullLabels] 把它往画布内挪的像素量，绘制时加上即可。
+     */
+    data class Label(
+        val key: String,
+        val text: String,
+        val x: Float,
+        val y: Float,
+        val weight: Int,
+        val color: Color,
+        val offsetX: Float = 0f,
+        val offsetY: Float = 0f,
+    )
+
+    /**
+     * 标签模式的星云名称：直接标在服务端给的**标签锚点**上。
+     * 标签模式下的图本来就是围着标签聚起来的，标在锚点上既准确，也顺手解释了"这团为什么在这儿"。
+     */
+    fun tagAnchorLabels(
+        anchors: Map<String, Offset>,
+        counts: Map<String, Int>,
+        limit: Int = 26,
+        colorOf: (String) -> Color,
+    ): List<Label> = anchors.entries
+        .map { (tag, point) ->
+            Label(
+                key = "tag:$tag",
+                text = "$tag · ${counts[tag] ?: 0}",
+                x = point.x,
+                y = point.y,
+                weight = counts[tag] ?: 1,
+                color = colorOf(tag),
+            )
+        }
+        .sortedByDescending { it.weight }
+        .take(limit)
+
+    /**
+     * 视觉模式的星云名称：取分组的**中心点（medoid）**，不是质心。
+     *
+     * 并查集分组可能是拉得很长的链，质心会落到两团之间的空白处 ——
+     * 网页端实测「纳西妲 · 37」就飘到了画布另一边，离它那团星云十万八千里。
+     * 取组内到其它成员距离和最小的那个点，标签一定落在最密的地方。
+     */
+    fun groupLabels(
+        groups: List<List<String>>,
+        pointOf: (String) -> Offset?,
+        primaryOf: (String) -> String,
+        minSize: Int = 3,
+        limit: Int = 22,
+        colorOf: (String) -> Color,
+    ): List<Label> {
+        val result = ArrayList<Label>()
+        for (members in groups) {
+            val points = members.mapNotNull { id -> pointOf(id)?.let { id to it } }
+            if (points.size < minSize) continue
+
+            /* 候选最多取 80 个：再大的分组也不需要全扫 */
+            val step = maxOf(1, points.size / 80)
+            var anchor = points[0].second
+            var bestScore = Double.MAX_VALUE
+            var index = 0
+            while (index < points.size) {
+                var sum = 0.0
+                for (other in points) {
+                    val dx = (other.second.x - points[index].second.x).toDouble()
+                    val dy = (other.second.y - points[index].second.y).toDouble()
+                    sum += dx * dx + dy * dy
+                }
+                if (sum < bestScore) { bestScore = sum; anchor = points[index].second }
+                index += step
+            }
+
+            val tally = HashMap<String, Int>()
+            for (id in members) {
+                val primary = primaryOf(id)
+                if (primary.isNotEmpty()) tally[primary] = (tally[primary] ?: 0) + 1
+            }
+            val best = tally.maxByOrNull { it.value }
+            result.add(
+                Label(
+                    key = "${members.first()}-${points.size}",
+                    text = if (best != null) "${best.key} · ${points.size}" else "${points.size} 张",
+                    x = anchor.x,
+                    y = anchor.y,
+                    weight = points.size,
+                    color = if (best != null) colorOf(best.key) else Color(0.80f, 0.84f, 0.88f),
+                ),
+            )
+        }
+        return result.sortedByDescending { it.weight }.take(limit)
+    }
+
+    /**
+     * 把名称收进画布：互相压住的丢掉（大的优先保留），贴边的**往内挪**而不是丢掉。
+     *
+     * 为什么不是直接丢：最大的那团星云往往正好在画布边上，一丢就把最重要的名字丢了
+     * （实测首屏「纳西妲 · 37」就是这么消失的）。只判相交再裁又会切掉半截
+     * （「知更鸟 · 2」变成「更鸟 · 2」）。挪进来两个问题都没有，代价只是偏一点点。
+     *
+     * [widthOf] 传文字宽度估算 —— 十几个标签不值得真去测量排版。
+     */
+    fun cullLabels(
+        labels: List<Label>,
+        camera: Camera,
+        viewportWidth: Float,
+        viewportHeight: Float,
+        widthOf: (Label) -> Float,
+        height: Float = 22f,
+    ): List<Label> {
+        val placed = ArrayList<FloatArray>(labels.size)
+        val kept = ArrayList<Label>(labels.size)
+        for (label in labels) {
+            val screen = worldToScreen(label.x, label.y, camera, viewportWidth, viewportHeight)
+            /*
+             * 锚点自己就在画布外：整个丢掉。
+             * 不能"贴"到边上——那会让人以为那儿有团星云，其实目标在屏幕外很远。
+             */
+            if (screen.x < 0f || screen.x > viewportWidth || screen.y < 0f || screen.y > viewportHeight) continue
+
+            val halfWidth = widthOf(label) / 2f
+            var left = screen.x - halfWidth
+            var top = screen.y - height / 2f
+            val right = left + halfWidth * 2f
+            val bottom = top + height
+
+            var offsetX = 0f
+            if (left < 0f) offsetX = -left else if (right > viewportWidth) offsetX = viewportWidth - right
+            var offsetY = 0f
+            if (top < 0f) offsetY = -top else if (bottom > viewportHeight) offsetY = viewportHeight - bottom
+
+            left += offsetX
+            top += offsetY
+            val x1 = left
+            val y1 = top
+            val x2 = left + halfWidth * 2f
+            val y2 = top + height
+            if (placed.any { other -> !(x2 < other[0] || x1 > other[2] || y2 < other[1] || y1 > other[3]) }) continue
+            placed.add(floatArrayOf(x1, y1, x2, y2))
+            /* 偏移量随标签带回去，调用方直接用即可，不必再算一次 */
+            kept.add(label.copy(offsetX = offsetX, offsetY = offsetY))
+        }
+        return kept
+    }
 }
