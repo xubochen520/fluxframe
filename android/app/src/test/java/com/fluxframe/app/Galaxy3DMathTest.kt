@@ -244,4 +244,55 @@ class Galaxy3DMathTest {
         assertTrue("+y 在上", point.y < viewportHeight / 2f)
         assertTrue("坐标必须是有限数", point.x.isFinite() && point.y.isFinite() && point.scale.isFinite())
     }
+
+    /* --------------------- 起始视角：解出来而不是写死 --------------------- */
+
+    /** 一团拉长的、还偏心的点云 —— 正是降维结果的典型形状 */
+    private fun cloud(): List<FloatArray> = List(80) { index ->
+        val t = index / 79f
+        floatArrayOf(
+            (t - 0.5f) * 1.9f + 0.25f,
+            kotlin.math.sin(t * 6.2f) * 0.35f - 0.15f,
+            (t - 0.5f) * 0.5f + 0.1f,
+        )
+    }
+
+    @Test
+    fun `solved initial view puts the whole cloud on screen`() {
+        val points = cloud()
+        for (aspect in listOf(2f, 1f, 0.5f)) {
+            val width = 1000f * aspect
+            val height = 1000f
+            val view = Galaxy3DMath.solveInitialView(points, viewportAspect = aspect, fill = 0.82f)
+            val camera = Galaxy3DMath.Camera(view.yaw, view.pitch, view.distance, view.targetX, view.targetY, view.targetZ)
+            var offScreen = 0
+            for (point in points) {
+                val projected = Galaxy3DMath.projectPoint(point[0], point[1], point[2], camera, width, height)
+                if (projected.depth <= 0.06f) offScreen++
+                if (projected.x < 0f || projected.x > width) offScreen++
+                if (projected.y < 0f || projected.y > height) offScreen++
+            }
+            assertEquals("画布比例 $aspect 时不该有点跑到画面外", 0, offScreen)
+        }
+    }
+
+    @Test
+    fun `solved initial view centres on the bounding box not the origin`() {
+        /* 这团云明显偏在 +x 上：目标点要是还用原点，画面就会偏到一边 */
+        val view = Galaxy3DMath.solveInitialView(cloud(), viewportAspect = 1f)
+        assertTrue("目标点该落在包围盒中心附近，实际 ${view.targetX}", view.targetX > 0.15f)
+    }
+
+    @Test
+    fun `solved initial view differs between a wide and a tall canvas`() {
+        /* 横屏和竖屏"摆得最开"的角度不一样：这正是不能写死一个常数的原因。
+           （不去比谁退得更远 —— 竖屏有可能挑到一个"本身就细长"的角度，反而离得更近，
+           那正是解算的意义所在。） */
+        val points = cloud()
+        val wide = Galaxy3DMath.solveInitialView(points, viewportAspect = 2f)
+        val tall = Galaxy3DMath.solveInitialView(points, viewportAspect = 0.5f)
+        val sameAngle = kotlin.math.abs(wide.yaw - tall.yaw) < 0.01f && kotlin.math.abs(wide.pitch - tall.pitch) < 0.01f
+        assertTrue("画布比例变了，起始角度也该跟着变", !sameAngle)
+        assertTrue("距离必须是有限的正数", wide.distance.isFinite() && wide.distance > 0f && tall.distance > 0f)
+    }
 }

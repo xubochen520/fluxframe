@@ -19,6 +19,7 @@ import {
   depthAlpha,
   dolly,
   fitDistance,
+  solveInitialView,
   lerpCamera,
   orbit,
   pick3,
@@ -329,19 +330,30 @@ export class Galaxy3DEngine {
     /* 每条边两个端点：位置(3) + 元数据(2) */
     this.edgeData = new Float32Array(edges.length * 2 * 5)
 
-    /*
-     * 取景半径用「95 分位」而不是最远点：一张离群的孤立图就能把包围球撑大一截，
-     * 结果整个星系缩成中间一小团。少数极端点允许出画。
-     */
-    const radii = nodes.map((node) => Math.hypot(node.x, node.y, node.z)).sort((a, b) => a - b)
-    const radius = radii.length ? radii[Math.min(radii.length - 1, Math.floor(radii.length * 0.95))] : 1
-    /* 初始视角：实测库里这一版的云在 y 轴拉得最长（跨度 2.0 对 1.28/0.90），
-       正对着看就是竖着一条。转 55° 让长轴斜过来，首屏构图平衡得多。 */
-    this.homeCamera = { yaw: 0.96, pitch: 0.30, distance: fitDistance(radius, 0.80, FOCAL), targetX: 0, targetY: 0, targetZ: 0 }
+    /* 起始视角按当前画布形状算出来：写死角度的话，坐标朝向或窗口比例一变就不合适了 */
+    this.homeCamera = this.solveHome()
     this.camera = { ...this.homeCamera }
 
     this.attachEvents()
     this.resize()
+  }
+
+  /**
+   * 算起始视角。画布比例会影响"摆得最开"的角度，所以窗口尺寸变了要重算 ——
+   * 但只在**用户没有自己转过**的时候才动镜头，否则会把人家转好的视角顶掉。
+   */
+  private solveHome() {
+    const rect = this.canvas.getBoundingClientRect()
+    const aspect = rect.height > 1 ? rect.width / rect.height : 16 / 9
+    const solved = solveInitialView(this.nodes, aspect, 0.82)
+    return {
+      yaw: solved.yaw,
+      pitch: solved.pitch,
+      distance: solved.distance,
+      targetX: solved.targetX,
+      targetY: solved.targetY,
+      targetZ: solved.targetZ,
+    }
   }
 
   /* ------------------------------ 事件 ------------------------------ */

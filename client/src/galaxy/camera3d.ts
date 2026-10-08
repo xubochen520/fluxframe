@@ -102,10 +102,143 @@ export function projectPoint(
  * 早先漏了 focal 这一项，算出来的距离偏小 1.65 倍 —— 表现是星系上下被切掉一截。
  *
  * 与视口尺寸无关（w/h 在推导里约掉了），所以窗口怎么变取景都一样。
+ *
+ * 不过它是**按包围球**算的，对拉长的星云偏保守（球装得下，画面四周会空一圈）。
+ * 现在起始视角改用 [solveInitialView] 直接按投影出来的轮廓算，这个函数只留给兜底。
  */
 export function fitDistance(radius: number, fill = 0.78, focal = FOCAL): number {
   const safeRadius = radius > 0.0001 ? radius : 1
   return clampDistance((safeRadius * focal) / Math.max(0.2, fill))
+}
+
+export interface InitialView {
+  yaw: number
+  pitch: number
+  distance: number
+  targetX: number
+  targetY: number
+  targetZ: number
+}
+
+/**
+ * 挑一个「摆得最开」的起始视角，并算出正好装下它的距离。
+ *
+ * 【为什么不能写死一个角度】原先起始角是个常数（0.96）。那个值是照着当时那版三维布局
+ * 调出来的；后来给三维的坐标轴做了对齐（见服务端 solveAlignment），朝向一变，
+ * 同一个角度就变得又偏又小 —— 实测投影宽高比从 1.95 掉到 1.43。
+ * 起始角本来就和数据、和画布形状绑在一起，写死迟早会不对，所以改成算出来。
+ *
+ * 打分两件事：**投影的宽高比要贴着画布**（不浪费两边），**整体还要够大**。
+ *
+ * 目标点取包围盒中心而不是原点：降维只保证包围盒居中，重心未必在原点，
+ * 差一点画面就会偏到一边去。
+ */
+export function solveInitialView(
+  points: Array<{ x: number; y: number; z: number }>,
+  viewportAspect: number,
+  fill = 0.82,
+): InitialView {
+  if (!points.length) return { yaw: 0.6, pitch: 0.25, distance: 3, targetX: 0, targetY: 0, targetZ: 0 }
+
+  let minX = Infinity, maxX = -Infinity
+  let minY = Infinity, maxY = -Infinity
+  let minZ = Infinity, maxZ = -Infinity
+  for (const point of points) {
+    if (point.x < minX) minX = point.x
+    if (point.x > maxX) maxX = point.x
+    if (point.y < minY) minY = point.y
+    if (point.y > maxY) maxY = point.y
+    if (point.z < minZ) minZ = point.z
+    if (point.z > maxZ) maxZ = point.z
+  }
+  const targetX = (minX + maxX) / 2
+  const targetY = (minY + maxY) / 2
+  const targetZ = (minZ + maxZ) / 2
+
+  const aspect = viewportAspect > 0.05 ? viewportAspect : 1
+  /** 给定视角下，投影到屏幕平面上的宽高（世界单位） */
+  const extentAt = (yaw: number, pitch: number) => {
+    const cy = Math.cos(yaw)
+    const sy = Math.sin(yaw)
+    const cp = Math.cos(pitch)
+    const sp = Math.sin(pitch)
+    let loX = Infinity, hiX = -Infinity, loY = Infinity, hiY = -Infinity
+    for (const point of points) {
+      const dx = point.x - targetX
+      const dy = point.y - targetY
+      const dz = point.z - targetZ
+      const x1 = dx * cy + dz * sy
+      const z1 = -dx * sy + dz * cy
+      const y1 = dy * cp - z1 * sp
+      if (x1 < loX) loX = x1
+      if (x1 > hiX) hiX = x1
+      if (y1 < loY) loY = y1
+      if (y1 > hiY) hiY = y1
+    }
+    return { width: hiX - loX, height: hiY - loY }
+  }
+
+  let bestYaw = 0
+  let bestPitch = 0
+  let bestScore = Infinity
+  let bestExtent = { width: 1, height: 1 }
+  /* 每 15° 一档就够：再细也看不出区别，而这里要跑上百次 */
+  for (let yawStep = 0; yawStep < 24; yawStep++) {
+    const yaw = (yawStep * Math.PI) / 12
+    for (let pitchStep = -30; pitchStep <= 30; pitchStep += 10) {
+      const pitch = (pitchStep * Math.PI) / 180
+      const extent = extentAt(yaw, pitch)
+      if (extent.width <= 0 || extent.height <= 0) continue
+      const score = Math.abs(Math.log((extent.width / extent.height) / aspect)) - 0.25 * Math.log(extent.width * extent.height)
+      if (score < bestScore) {
+        bestScore = score
+        bestYaw = yaw
+        bestPitch = pitch
+        bestExtent = extent
+      }
+    }
+  }
+
+  /*
+   * 距离：屏幕尺寸 = 世界尺寸 × focal / distance × min(W,H)/2，
+   * 要求 width × scale ≤ W × fill 且 height × scale ≤ H × fill，
+   * 把 W = aspect × H 代进去化简，H 会被约掉 —— 所以结果只跟画布**比例**有关，
+   * 跟窗口多大无关。
+   *
+   * 但这个解析式只按「所有点都待在 distance 这个深度上」估的。实际上近处的点透视更大、
+   * 会顶出画面（实测 2:1 的画布上有 14 个点跑到框外）。所以再迭代几轮：
+   * 把点真的投影一遍，按最大溢出量把相机往后推，几轮就收敛。
+   */
+  const probeWidth = 1000 * aspect
+  const probeHeight = 1000
+  let distance = clampDistance(
+    (FOCAL * Math.min(aspect, 1)) / (2 * Math.max(0.2, fill)) * Math.max(bestExtent.width / aspect, bestExtent.height),
+  )
+  for (let iteration = 0; iteration < 8; iteration++) {
+    const probe: Camera3D = {
+      yaw: bestYaw,
+      pitch: bestPitch,
+      distance,
+      targetX,
+      targetY,
+      targetZ,
+    }
+    let worst = 0
+    for (const point of points) {
+      const projected = projectPoint(point.x, point.y, point.z, probe, probeWidth, probeHeight)
+      if (projected.depth <= 0.06) { worst = Infinity; break }
+      const kx = Math.abs(projected.x - probeWidth / 2) / (probeWidth / 2)
+      const ky = Math.abs(projected.y - probeHeight / 2) / (probeHeight / 2)
+      if (kx > worst) worst = kx
+      if (ky > worst) worst = ky
+    }
+    if (worst <= fill + 0.001) break
+    const next = clampDistance(distance * Math.min(3, worst / fill))
+    if (next <= distance + 0.0001) break
+    distance = next
+  }
+
+  return { yaw: bestYaw, pitch: bestPitch, distance, targetX, targetY, targetZ }
 }
 
 /**

@@ -131,6 +131,130 @@ object Galaxy3DMath {
         return sorted[index].coerceAtLeast(0.0001f)
     }
 
+    /** 起始视角：环绕角、俯仰角、距离，以及看向哪里 */
+    data class InitialView(
+        val yaw: Float,
+        val pitch: Float,
+        val distance: Float,
+        val targetX: Float,
+        val targetY: Float,
+        val targetZ: Float,
+    )
+
+    /**
+     * 挑一个「摆得最开」的起始视角，并算出正好装下它的距离。与网页端 `solveInitialView` 同一套。
+     *
+     * 【为什么不能写死一个角度】原先起始角是个常数（0.96）。那个值是照着当时那版三维布局
+     * 调出来的；后来给三维的坐标轴做了对齐（服务端 `solveAlignment`），朝向一变，
+     * 同一个角度就变得又偏又小 —— 实测投影宽高比从 1.95 掉到 1.43。
+     * 起始角本来就和数据、和画布形状绑在一起，写死迟早会不对。
+     *
+     * 打分两件事：**投影的宽高比要贴着画布**（不浪费两边），**整体还要够大**。
+     * 目标点取包围盒中心而不是原点：降维只保证包围盒居中，重心未必在原点，
+     * 差一点画面就会偏到一边去。
+     */
+    fun solveInitialView(points: List<FloatArray>, viewportAspect: Float, fill: Float = 0.82f): InitialView {
+        if (points.isEmpty()) return InitialView(0.6f, 0.25f, 3f, 0f, 0f, 0f)
+
+        var minX = Float.MAX_VALUE
+        var maxX = -Float.MAX_VALUE
+        var minY = Float.MAX_VALUE
+        var maxY = -Float.MAX_VALUE
+        var minZ = Float.MAX_VALUE
+        var maxZ = -Float.MAX_VALUE
+        for (point in points) {
+            if (point[0] < minX) minX = point[0]
+            if (point[0] > maxX) maxX = point[0]
+            if (point[1] < minY) minY = point[1]
+            if (point[1] > maxY) maxY = point[1]
+            if (point[2] < minZ) minZ = point[2]
+            if (point[2] > maxZ) maxZ = point[2]
+        }
+        val targetX = (minX + maxX) / 2f
+        val targetY = (minY + maxY) / 2f
+        val targetZ = (minZ + maxZ) / 2f
+        val aspect = if (viewportAspect > 0.05f) viewportAspect else 1f
+        val safeFill = max(0.2f, fill)
+
+        var bestYaw = 0f
+        var bestPitch = 0f
+        var bestScore = Float.MAX_VALUE
+        var bestWidth = 1f
+        var bestHeight = 1f
+        /* 每 15° 一档就够：再细也看不出区别，而这里要跑上百次 */
+        for (yawStep in 0 until 24) {
+            val yaw = yawStep * (Math.PI.toFloat() / 12f)
+            val cosYaw = cos(yaw)
+            val sinYaw = sin(yaw)
+            var pitchStep = -30
+            while (pitchStep <= 30) {
+                val pitch = pitchStep * (Math.PI.toFloat() / 180f)
+                val cosPitch = cos(pitch)
+                val sinPitch = sin(pitch)
+                var loX = Float.MAX_VALUE
+                var hiX = -Float.MAX_VALUE
+                var loY = Float.MAX_VALUE
+                var hiY = -Float.MAX_VALUE
+                for (point in points) {
+                    val dx = point[0] - targetX
+                    val dy = point[1] - targetY
+                    val dz = point[2] - targetZ
+                    val x1 = dx * cosYaw + dz * sinYaw
+                    val z1 = -dx * sinYaw + dz * cosYaw
+                    val y1 = dy * cosPitch - z1 * sinPitch
+                    if (x1 < loX) loX = x1
+                    if (x1 > hiX) hiX = x1
+                    if (y1 < loY) loY = y1
+                    if (y1 > hiY) hiY = y1
+                }
+                val width = hiX - loX
+                val height = hiY - loY
+                if (width > 0f && height > 0f) {
+                    val score = abs(kotlin.math.ln(width / height / aspect)) - 0.25f * kotlin.math.ln(width * height)
+                    if (score < bestScore) {
+                        bestScore = score
+                        bestYaw = yaw
+                        bestPitch = pitch
+                        bestWidth = width
+                        bestHeight = height
+                    }
+                }
+                pitchStep += 10
+            }
+        }
+
+        /*
+         * 距离：屏幕尺寸 = 世界尺寸 × focal / distance × min(W,H)/2，
+         * 把 W = aspect × H 代进去化简，H 会被约掉 —— 结果只跟画布**比例**有关，跟屏幕多大无关。
+         *
+         * 但这个解析式只按「所有点都待在 distance 这个深度上」估的。实际上近处的点透视更大、
+         * 会顶出画面（实测 2:1 的画布上有 14 个点跑到框外）。所以再迭代几轮：
+         * 把点真的投影一遍，按最大溢出量把相机往后推，几轮就收敛。
+         */
+        var distance = clampDistance(FOCAL * min(aspect, 1f) / (2f * safeFill) * max(bestWidth / aspect, bestHeight))
+        val probeWidth = 1000f * aspect
+        val probeHeight = 1000f
+        var iteration = 0
+        while (iteration < 8) {
+            val probe = Camera(bestYaw, bestPitch, distance, targetX, targetY, targetZ)
+            var worst = 0f
+            for (point in points) {
+                val projected = projectPoint(point[0], point[1], point[2], probe, probeWidth, probeHeight)
+                if (projected.depth <= 0.06f) { worst = Float.MAX_VALUE; break }
+                val kx = abs(projected.x - probeWidth / 2f) / (probeWidth / 2f)
+                val ky = abs(projected.y - probeHeight / 2f) / (probeHeight / 2f)
+                worst = max(worst, max(kx, ky))
+            }
+            if (worst <= safeFill + 0.001f) break
+            val next = clampDistance(distance * min(3f, worst / safeFill))
+            if (next <= distance + 0.0001f) break
+            distance = next
+            iteration++
+        }
+
+        return InitialView(bestYaw, bestPitch, distance, targetX, targetY, targetZ)
+    }
+
     /** 拖动 → 环绕。横向反向：手指往右拖，星系跟着往右转（内容跟手） */
     fun orbit(camera: Camera, dxPixels: Float, dyPixels: Float): Camera = camera.copy(
         yaw = camera.yaw - dxPixels * ORBIT_RADIANS_PER_PX,

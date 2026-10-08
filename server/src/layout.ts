@@ -777,13 +777,130 @@ export async function computeLayout3(source: EmbeddingSource, options: ComputeLa
   return { version: LAYOUT3_VERSION, sourceKey, count: n, updatedAt: new Date().toISOString(), points, computeMs: Date.now() - started }
 }
 
+/* ---------------------- 把三维的朝向对齐到二维 ---------------------- */
+
+/**
+ * 三维布局的坐标轴相对于二维该怎么摆：`out[i] = in[perm[i]] * signs[i]`。
+ * 也就是对坐标轴做一次「带符号的置换」—— 只换轴、只翻方向，**不改任何距离与结构**。
+ */
+export interface AxisAlignment {
+  perm: [number, number, number]
+  signs: [number, number, number]
+}
+
+/** 皮尔逊相关系数；某一维没有方差时返回 0（不会出现 0/0） */
+function correlation(a: number[], b: number[]): number {
+  const n = Math.min(a.length, b.length)
+  if (!n) return 0
+  let meanA = 0
+  let meanB = 0
+  for (let i = 0; i < n; i++) { meanA += a[i]; meanB += b[i] }
+  meanA /= n
+  meanB /= n
+  let cov = 0
+  let varA = 0
+  let varB = 0
+  for (let i = 0; i < n; i++) {
+    const da = a[i] - meanA
+    const db = b[i] - meanB
+    cov += da * db
+    varA += da * da
+    varB += db * db
+  }
+  const denom = Math.sqrt(varA * varB)
+  return denom > 1e-12 ? cov / denom : 0
+}
+
+/**
+ * 求出「把三维坐标轴对齐到二维」的那个置换与符号。
+ *
+ * 【为什么需要它】三维是**另一次独立降维**（种子不同）。UMAP 这类方法给出的坐标系
+ * 朝向是任意的 —— 旋转、镜像都不影响它自己的目标函数，所以出来的图和二维那张
+ * 没有任何朝向关系。实测本库：
+ *
+ *     视觉模式  corr(2D.x, 3D.y) = -0.983   corr(2D.y, 3D.x) = +0.961
+ *     标签模式  corr(2D.y, 3D.y) = -0.627
+ *
+ * 也就是说从二维切到三维，整个星系会**转 90° 再翻个个儿**，用户看到的就是
+ * 「坐标写反了」。而二维那张图是早就调好、用户也认得的，所以拿它当基准。
+ *
+ * 【为什么是带符号置换，不是更复杂的变换】转置/镜像本来就不改变任何点对距离，
+ * 是纯粹换了个参考系；三维结构一点没动，只是摆正了。真做 Procrustes 反而会把
+ * 三维压向二维、丢掉多出来的那一维。
+ *
+ * 只在**同时**出现在两份布局里的点上算相关，缺一边的点不参与。
+ */
+export function solveAlignment(
+  points3: Record<string, [number, number, number]>,
+  reference: Record<string, [number, number]>,
+): AxisAlignment {
+  const ids = Object.keys(points3).filter((id) => reference[id])
+  const fallback: AxisAlignment = { perm: [0, 1, 2], signs: [1, 1, 1] }
+  if (ids.length < 3) return fallback
+
+  const axes: number[][] = [[], [], []]
+  const refX: number[] = []
+  const refY: number[] = []
+  for (const id of ids) {
+    const point = points3[id]
+    axes[0].push(point[0])
+    axes[1].push(point[1])
+    axes[2].push(point[2])
+    refX.push(reference[id][0])
+    refY.push(reference[id][1])
+  }
+
+  /* 六个相关系数先算好：后面 24 种组合全靠它们打分，不用重复扫点 */
+  const withX = axes.map((axis) => correlation(axis, refX))
+  const withY = axes.map((axis) => correlation(axis, refY))
+
+  let best: AxisAlignment = fallback
+  let bestScore = -Infinity
+  /* 谁当 x、谁当 y（剩下那个自然是 z），各自还可以翻个方向 —— 6 × 4 = 24 种 */
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) {
+      if (i === j) continue
+      for (const signX of [1, -1]) {
+        for (const signY of [1, -1]) {
+          const score = withX[i] * signX + withY[j] * signY
+          if (score <= bestScore) continue
+          bestScore = score
+          const rest = [0, 1, 2].find((k) => k !== i && k !== j) ?? 0
+          best = { perm: [i, j, rest], signs: [signX, signY, 1] }
+        }
+      }
+    }
+  }
+  return best
+}
+
+/** 按 [alignment] 换轴翻向。同一批数据要用**同一个** alignment，否则图片会和它的标签锚点脱开 */
+export function applyAlignment(
+  points: Record<string, [number, number, number]>,
+  alignment: AxisAlignment,
+): Record<string, [number, number, number]> {
+  if (alignment.perm[0] === 0 && alignment.perm[1] === 1 && alignment.perm[2] === 2
+    && alignment.signs[0] === 1 && alignment.signs[1] === 1 && alignment.signs[2] === 1) {
+    return points
+  }
+  const { perm, signs } = alignment
+  const out: Record<string, [number, number, number]> = {}
+  for (const [id, point] of Object.entries(points)) {
+    out[id] = [
+      point[perm[0]] * signs[0],
+      point[perm[1]] * signs[1],
+      point[perm[2]] * signs[2],
+    ]
+  }
+  return out
+}
+
 /**
  * 三维布局的内存 + 磁盘缓存，形状与 [ensureLayout] 一致。
  * 每种模式（视觉指纹 / 标签）各存一份，key 沿用 'visual' / 'tags'。
  */
 const cached3 = new Map<string, Layout3Result>()
 const inflight3 = new Map<string, Promise<Layout3Result>>()
-
 function layout3File(key: string) { return path.join(modelsDir(), 'embed', `layout3-${key}.json`) }
 
 export async function ensureLayout3(source: EmbeddingSource, key = 'visual'): Promise<Layout3Result> {

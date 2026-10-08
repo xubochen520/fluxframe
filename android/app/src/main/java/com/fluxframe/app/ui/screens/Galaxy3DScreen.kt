@@ -156,7 +156,8 @@ fun Galaxy3DScreen(
     val thumbs = remember { GalaxyThumbCache(context) }
     DisposableEffect(Unit) { onDispose { thumbs.clear() } }
 
-    var camera by remember { mutableStateOf(Galaxy3DMath.Camera(SPIN_START_YAW, 0.30f, 3f)) }
+    var camera by remember { mutableStateOf(Galaxy3DMath.Camera(0.6f, 0.25f, 3f)) }
+    var homeCamera by remember { mutableStateOf(Galaxy3DMath.Camera(0.6f, 0.25f, 3f)) }
     var homeDistance by remember { mutableFloatStateOf(3f) }
     var focusedIndex by remember { mutableIntStateOf(-1) }
     var frameTick by remember { mutableLongStateOf(0L) }
@@ -173,10 +174,9 @@ fun Galaxy3DScreen(
 
     LaunchedEffect(canvasSize, layout) {
         if (canvasSize.width <= 0f || canvasSize.height <= 0f || layout.nodes.isEmpty()) return@LaunchedEffect
-        val radii = layout.nodes.map { sqrt(it.x * it.x + it.y * it.y + it.z * it.z) }
-        val distance = Galaxy3DMath.fitDistance(Galaxy3DMath.fitRadius(radii), 0.80f)
-        homeDistance = distance
-        camera = Galaxy3DMath.Camera(SPIN_START_YAW, 0.30f, distance)
+        homeCamera = solveHome(canvasSize, layout)
+        homeDistance = homeCamera.distance
+        camera = homeCamera
         focusedIndex = -1
     }
 
@@ -252,11 +252,7 @@ fun Galaxy3DScreen(
 
     fun resetView() {
         focusedIndex = -1
-        focus.animation = FocusAnimation(
-            from = camera,
-            to = Galaxy3DMath.Camera(SPIN_START_YAW, 0.30f, homeDistance),
-            startedAt = System.nanoTime(),
-        )
+        focus.animation = FocusAnimation(from = camera, to = homeCamera, startedAt = System.nanoTime())
     }
 
     /** 点击时现算一遍投影找命中：一百多个点，一次点击算一遍完全无所谓 */
@@ -600,10 +596,25 @@ fun Galaxy3DScreen(
     }
 }
 
-/* ------------------------------ 内部状态 ------------------------------ */
+/**
+ * 算起始视角。画布比例会影响"摆得最开"的角度，所以竖屏和横屏会得到不同的角度 ——
+ * 写死一个常数的话，坐标朝向或屏幕方向一变就不合适了（实测宽高比会从 1.95 掉到 1.43）。
+ */
+private fun solveHome(canvas: Size, layout: Layout3D): Galaxy3DMath.Camera {
+    val aspect = if (canvas.height > 1f) canvas.width / canvas.height else 0.5f
+    val points = layout.nodes.map { floatArrayOf(it.x, it.y, it.z) }
+    val solved = Galaxy3DMath.solveInitialView(points, aspect, 0.82f)
+    return Galaxy3DMath.Camera(
+        yaw = solved.yaw,
+        pitch = solved.pitch,
+        distance = solved.distance,
+        targetX = solved.targetX,
+        targetY = solved.targetY,
+        targetZ = solved.targetZ,
+    )
+}
 
-/** 起始环绕角：本库这一版的云在 y 轴拉得最长，正对着看是竖着一条；转 55° 让长轴斜过来 */
-private const val SPIN_START_YAW = 0.96f
+/* ------------------------------ 内部状态 ------------------------------ */
 
 private class FocusState {
     var animation: FocusAnimation? = null

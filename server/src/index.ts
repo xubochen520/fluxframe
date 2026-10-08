@@ -26,7 +26,7 @@ import {
   graphFromNeighbors, hasEmbedding, neighborsOf, putEmbedding, setThreshold, similarTo, cosine,
   countIndexed, DEFAULT_SIMILARITY_THRESHOLD, SIMILAR_LIMIT,
 } from './embed.js'
-import { ensureLayout, ensureLayout3, LAYOUT3_VERSION } from './layout.js'
+import { applyAlignment, ensureLayout, ensureLayout3, solveAlignment, LAYOUT3_VERSION } from './layout.js'
 import { TAG_GRAPH_VERSION, buildTagGraph, ensureTagLayout, ensureTagLayout3, tagPositions3 } from './tag-graph.js'
 
 const prisma = new PrismaClient()
@@ -2123,8 +2123,18 @@ app.get('/api/embed/graph', async (request, reply) => {
     for (const group of visibleGroups) for (const member of group.members) linkedIds.add(member)
     const visibleLinked = linkedIds.size
 
+    /*
+     * 三维锚点的朝向是独立的，必须**对齐到二维**再摆图片，否则切视图时整个星系会转 90° 翻个个儿
+     * （见 layout.ts 里 solveAlignment 的说明）。锚点和图片位置要用同一个变换 ——
+     * 不然图片会和自己的标签锚点脱开。
+     */
     const anchors3 = want3d ? await ensureTagLayout3(tagRows) : null
-    const placed3 = anchors3 ? tagPositions3(tagRows, anchors3) : null
+    const placed3 = anchors3
+      ? applyAlignment(
+          tagPositions3(tagRows, anchors3),
+          solveAlignment(anchors3.points, tagLayout.points),
+        )
+      : null
 
     const positions: Record<string, number[]> = {}
     const characters: Record<string, string> = {}
@@ -2170,7 +2180,9 @@ app.get('/api/embed/graph', async (request, reply) => {
 
   /* 布局是纯计算 + 磁盘缓存，和邻居表的懒算一样按需触发 */
   const layout = await ensureLayout(index)
-  const layout3 = want3d ? await ensureLayout3(index) : null
+  const raw3 = want3d ? await ensureLayout3(index) : null
+  /* 同上：三维的朝向要对齐到二维那张已经调好、用户也认得的图 */
+  const layout3 = raw3 ? { ...raw3, points: applyAlignment(raw3.points, solveAlignment(raw3.points, layout.points)) } : null
 
   const rows = await prisma.image.findMany({
     where: { id: { in: Object.keys(index.entries) }, deletedAt: null },
