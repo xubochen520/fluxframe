@@ -166,6 +166,8 @@ data class EmbedGraph(
     val ready: Boolean = false,
     /** 这次返回的是哪套关系（visual / tag） */
     val mode: String = "visual",
+    /** 这次返回的是几维坐标（2d / 3d） */
+    val space: String = "2d",
     val threshold: Double = 0.35,
     /** 已建指纹（标签模式下 = 有标签）的图片总数（含没有相似图的） */
     val totalIndexed: Int = 0,

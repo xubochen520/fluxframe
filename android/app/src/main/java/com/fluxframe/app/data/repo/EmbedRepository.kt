@@ -26,8 +26,8 @@ class EmbedRepository(private val container: AppContainer) {
 
     private val api get() = container.api
 
-    /** 上一次成功取到的关系网，按模式各存一份（见 [graph] 的说明） */
-    private val cachedGraphs = mutableMapOf<EmbedGraphMode, EmbedGraph>()
+    /** 上一次成功取到的关系网，按「模式 + 坐标系」各存一份（见 [graph] 的说明） */
+    private val cachedGraphs = mutableMapOf<String, EmbedGraph>()
 
     /** 相似图请求的结果：正常、还在算、还是这类媒体不支持 */
     sealed interface SimilarOutcome {
@@ -94,13 +94,16 @@ class EmbedRepository(private val container: AppContainer) {
     suspend fun graph(
         edges: Int = 600,
         mode: EmbedGraphMode = EmbedGraphMode.VISUAL,
+        space: String = "2d",
         force: Boolean = false,
     ): Result<EmbedGraph> {
-        if (!force) cachedGraphs[mode]?.let { return Result.success(it) }
+        /* 缓存按「模式 + 坐标系」分开：二维和三维是两套完全不同的坐标，共用一份会串 */
+        val key = mode.wire + ":" + space
+        if (!force) cachedGraphs[key]?.let { return Result.success(it) }
         /* 标签模式的边是"确凿的共同标签"而不是噪声，所以默认连得比视觉模式多 */
         val limit = if (mode == EmbedGraphMode.TAG) maxOf(edges, TAG_EDGE_LIMIT) else edges
-        val result = apiCall { api.embedGraph(limit, mode.wire) }
-        result.getOrNull()?.let { if (it.ready) cachedGraphs[mode] = it }
+        val result = apiCall { api.embedGraph(limit, mode.wire, space) }
+        result.getOrNull()?.let { if (it.ready) cachedGraphs[key] = it }
         return result
     }
 

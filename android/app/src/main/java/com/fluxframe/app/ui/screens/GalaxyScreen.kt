@@ -74,6 +74,7 @@ import com.fluxframe.app.ui.components.ErrorBar
 import com.fluxframe.app.ui.components.GlassIconButton
 import com.fluxframe.app.ui.components.LoadingBox
 import com.fluxframe.app.ui.components.TagChip
+import com.fluxframe.app.ui.galaxy.Galaxy3DMath
 import com.fluxframe.app.ui.galaxy.GalaxyMath
 import com.fluxframe.app.ui.galaxy.GalaxyThumbCache
 import com.fluxframe.app.ui.glass.GlassSurface
@@ -82,6 +83,7 @@ import com.fluxframe.app.ui.theme.onGlassColor
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.random.Random
@@ -122,6 +124,9 @@ private data class GalaxyLayout(
 fun GalaxyScreen(
     onOpenImage: (String) -> Unit,
     onToast: (String?) -> Unit,
+    /** 关系的依据。由外层持有，这样在二维/三维之间切换时不会丢掉用户的选择 */
+    mode: EmbedGraphMode,
+    onModeChange: (EmbedGraphMode) -> Unit,
 ) {
     val container = LocalAppContainer.current
     val context = LocalContext.current
@@ -133,19 +138,23 @@ fun GalaxyScreen(
     var graph by remember { mutableStateOf<EmbedGraph?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
-    /*
-     * 关系的依据：视觉指纹 / 标签。
-     * 两者的坐标与边完全不同，所以切换时要重新取数（仓库里也是按模式各缓存一份）。
-     */
-    var mode by remember { mutableStateOf(EmbedGraphMode.VISUAL) }
 
-    fun load(force: Boolean = false, target: EmbedGraphMode = mode) {
+    /*
+     * 「请求的是哪个模式」单独用一个 State 记着，**不能拿外面的 mode 参数来比**：
+     * mode 现在是外层传进来的（切二维/三维时不会被重置），它要等重组之后才是新值，
+     * 而协程回来的时候读到的还是旧的那一份 —— 于是结果被当成"过期响应"丢掉，
+     * 页面永远停在「正在载入」。这个是状态上提时引入的，踩过一次。
+     */
+    var pendingMode by remember { mutableStateOf(mode) }
+
+    fun load(force: Boolean = false, target: EmbedGraphMode = pendingMode) {
+        pendingMode = target
         scope.launch {
             loading = true
             container.embedRepository.graph(mode = target, force = force)
-                .onSuccess { if (target == mode) { graph = it; error = null } }
-                .onFailure { if (target == mode) error = it.message ?: "读取关系网失败" }
-            if (target == mode) loading = false
+                .onSuccess { if (pendingMode == target) { graph = it; error = null } }
+                .onFailure { if (pendingMode == target) error = it.message ?: "读取关系网失败" }
+            if (pendingMode == target) loading = false
         }
     }
 
@@ -498,8 +507,13 @@ fun GalaxyScreen(
                 }
                 val widthByKey = measured.associate { (label, layout) -> label.key to layout.size.width.toFloat() }
                 val heightPx = measured.firstOrNull()?.second?.size?.height ?: 0
+                /*
+                 * 标签名分级显示：缩小时只留图最多的几个（满屏名字会糊成一片、还盖住星云），
+                 * 放大时一个个放出来。labels 已经按权重降序排好，取前 N 个即可。
+                 */
+                val budget = Galaxy3DMath.labelBudget(camera.zoom / max(0.001f, fit.zoom), labels.size)
                 val visible = GalaxyMath.cullLabels(
-                    labels = labels,
+                    labels = labels.take(budget),
                     camera = camera,
                     viewportWidth = size.width,
                     viewportHeight = size.height,
@@ -587,7 +601,7 @@ fun GalaxyScreen(
                         active = mode == candidate,
                         onClick = {
                             if (mode == candidate) return@ModeChip
-                            mode = candidate
+                            onModeChange(candidate)
                             graph = null
                             load(force = true, target = candidate)
                         },

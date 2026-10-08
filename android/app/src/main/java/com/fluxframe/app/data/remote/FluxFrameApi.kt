@@ -178,6 +178,8 @@ interface FluxFrameApi {
     suspend fun embedGraph(
         @Query("edges") edges: Int = 600,
         @Query("mode") mode: String = "visual",
+        /** 星系视图用几维坐标：2d 总览 / 3d 星系空间 */
+        @Query("space") space: String = "2d",
     ): EmbedGraph
 
     /** 仅 ADMIN：把还没建指纹的图排进后台队列 */

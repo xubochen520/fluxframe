@@ -69,7 +69,7 @@ import com.fluxframe.app.ui.components.FluxTopBar
 import com.fluxframe.app.ui.components.FluidCapsule
 import com.fluxframe.app.ui.components.TaskDock
 import com.fluxframe.app.ui.screens.DeepseekScreen
-import com.fluxframe.app.ui.screens.GalaxyScreen
+import com.fluxframe.app.ui.screens.SimilarRoute
 import com.fluxframe.app.ui.screens.LibraryScreen
 import com.fluxframe.app.ui.screens.LogsScreen
 import com.fluxframe.app.ui.screens.OverviewScreen
@@ -413,7 +413,8 @@ fun AppShell(
                 onToast = { showToast(it) },
             )
 
-            AppRoute.SIMILAR -> GalaxyScreen(
+            /* 二维/三维两种画法的包装页：模式在这层共享，切视图不会把用户的选择重置掉 */
+            AppRoute.SIMILAR -> SimilarRoute(
                 onOpenImage = { id -> viewerMediaId = id },
                 onToast = { showToast(it) },
             )
