@@ -255,10 +255,26 @@ object Galaxy3DMath {
         return InitialView(bestYaw, bestPitch, distance, targetX, targetY, targetZ)
     }
 
-    /** 拖动 → 环绕。横向反向：手指往右拖，星系跟着往右转（内容跟手） */
+    /**
+     * 拖动 → 环绕。与网页端 `orbit` 同一套。
+     *
+     * 【两个方向都是「内容跟手」，和二维那张星图一个约定】
+     *   · 横向：手指往右拖，星系跟着往右转 → yaw 减小。
+     *   · 纵向：手指往下拖，**靠近相机的那一侧跟着往下走** → pitch 减小。
+     *
+     * 纵向的符号一开始写反了：pitch 增大时近侧会往上跑，于是手指往下拖、内容往上走。
+     * 推导（拿一个位于目标前方、也就是离相机最近的点的屏幕落点来判断）：
+     *
+     *     近侧点 p = (0, 0, -1)，相机在 -z 一侧，depth = distance - 1
+     *     pitch = 0     → y1 = 0                → 落在画面正中
+     *     pitch = +0.75 → y1 = -sin(0.75) < 0   → 跑到**上方**
+     *     pitch = -0.75 → y1 = +sin(0.75) > 0   → 跑到**下方**
+     *
+     * 所以要让内容跟手，就得在 dy 前面放负号。水平方向本来是对的，别一起改了。
+     */
     fun orbit(camera: Camera, dxPixels: Float, dyPixels: Float): Camera = camera.copy(
         yaw = camera.yaw - dxPixels * ORBIT_RADIANS_PER_PX,
-        pitch = clampPitch(camera.pitch + dyPixels * ORBIT_RADIANS_PER_PX),
+        pitch = clampPitch(camera.pitch - dyPixels * ORBIT_RADIANS_PER_PX),
     )
 
     /** 缩放：factor < 1 拉近。距离是乘性的，所以每一格缩放的"感觉"在任何距离下都一样 */

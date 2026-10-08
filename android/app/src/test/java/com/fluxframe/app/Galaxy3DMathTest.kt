@@ -110,12 +110,47 @@ class Galaxy3DMathTest {
         assertEquals(-100f * Galaxy3DMath.ORBIT_RADIANS_PER_PX, moved.yaw, 0.0001f)
     }
 
+    /*
+     * 下面两条是「内容跟手」的**落点**验证 —— 光看 yaw/pitch 的符号是看不出对错的，
+     * 得把点真的投到屏幕上，看它往哪边跑。这两条就是冲着"上下滑动反了"那个 bug 来的。
+     */
+
+    @Test
+    fun `dragging down brings the near side down with the finger`() {
+        val cam = camera(distance = 2.5f)
+        /* 相机在 -z 一侧，所以 (0,0,-1) 是离相机最近的点 —— 拖它最能看出跟不跟手 */
+        val before = Galaxy3DMath.projectPoint(0f, 0f, -1f, cam, viewportWidth, viewportHeight)
+        val after = Galaxy3DMath.projectPoint(
+            0f, 0f, -1f, Galaxy3DMath.orbit(cam, 0f, 120f), viewportWidth, viewportHeight,
+        )
+        assertTrue("往下拖之后近侧应当更靠下：${before.y} → ${after.y}", after.y > before.y)
+    }
+
+    @Test
+    fun `dragging up brings the near side up with the finger`() {
+        val cam = camera(distance = 2.5f)
+        val before = Galaxy3DMath.projectPoint(0f, 0f, -1f, cam, viewportWidth, viewportHeight)
+        val after = Galaxy3DMath.projectPoint(
+            0f, 0f, -1f, Galaxy3DMath.orbit(cam, 0f, -120f), viewportWidth, viewportHeight,
+        )
+        assertTrue("往上拖之后近侧应当更靠上：${before.y} → ${after.y}", after.y < before.y)
+    }
+
+    @Test
+    fun `dragging right brings the near side right with the finger`() {
+        val cam = camera(distance = 2.5f)
+        val before = Galaxy3DMath.projectPoint(0f, 0f, -1f, cam, viewportWidth, viewportHeight)
+        val after = Galaxy3DMath.projectPoint(
+            0f, 0f, -1f, Galaxy3DMath.orbit(cam, 120f, 0f), viewportWidth, viewportHeight,
+        )
+        assertTrue("往右拖之后近侧应当更靠右：${before.x} → ${after.x}", after.x > before.x)
+    }
+
     @Test
     fun `pitch is clamped so the camera never flips over`() {
-        val up = Galaxy3DMath.orbit(camera(), 0f, 10000f)
-        val down = Galaxy3DMath.orbit(camera(), 0f, -10000f)
-        assertEquals(Galaxy3DMath.PITCH_LIMIT, up.pitch, 0.0001f)
-        assertEquals(-Galaxy3DMath.PITCH_LIMIT, down.pitch, 0.0001f)
+        /* dy 为正 = 手指往下拖。往下拖到死只到 -PITCH_LIMIT，往上拖到死只到 +PITCH_LIMIT */
+        assertEquals("往下拖到底", -Galaxy3DMath.PITCH_LIMIT, Galaxy3DMath.orbit(camera(), 0f, 10000f).pitch, 0.0001f)
+        assertEquals("往上拖到底", Galaxy3DMath.PITCH_LIMIT, Galaxy3DMath.orbit(camera(), 0f, -10000f).pitch, 0.0001f)
     }
 
     @Test
