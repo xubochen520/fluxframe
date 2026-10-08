@@ -23,7 +23,7 @@
  *   本来就不区分，会落在同一点。用黄金角螺线把它们摊开：确定性、不重叠、整体仍在原地。
  */
 import { embedDir } from './embed.js'
-import { computeLayout, type EmbeddingSource, type LayoutResult } from './layout.js'
+import { computeLayout, computeLayout3, type EmbeddingSource, type Layout3Result, type LayoutResult } from './layout.js'
 import { readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
@@ -46,6 +46,22 @@ export interface TagRow {
   tags: string[]
 }
 
+/**
+ * 一个「关系」。
+ *
+ * 标签模式下关系就是标签本身 —— **一张图有几个标签，就同时属于几个关系**。
+ * 这跟并查集连通分量是两回事：连通分量会把「纳西妲 + 白丝」的图只归到其中一组
+ * （谁先合并算谁的），而用户想看到的是它在两个关系里都出现。
+ */
+export interface TagGroup {
+  /** 关系名 = 标签名 */
+  label: string
+  members: string[]
+  size: number
+  /** 这个标签的 IDF 权重：越稀有的标签，关系越"紧" */
+  weight: number
+}
+
 export interface TagGraphResult {
   version: string
   threshold: number
@@ -57,6 +73,8 @@ export interface TagGraphResult {
   primaryTags: Record<string, string>
   /** 图片的 TF-IDF 向量（已 L2 归一化），交给 neighborsOf 算边 */
   source: EmbeddingSource
+  /** 关系列表：**可重叠**，按图片数从多到少 */
+  groups: TagGroup[]
   /** 标签总数与图片总数，前端展示用 */
   tagCount: number
   /** 参与计算的图片数（有标签的） */
@@ -149,6 +167,17 @@ export function buildTagGraph(rows: TagRow[], tagLayout: LayoutResult): TagGraph
     primaryTags[row.id] = best
   }
 
+  /* ---- 关系 = 标签：一个标签一个关系，可重叠 ---- */
+  const groups: TagGroup[] = []
+  for (const tag of vocabulary) {
+    const members = usable.filter((row) => row.tags.includes(tag)).map((row) => row.id).sort()
+    /* 只有一张图的标签算不上「关系」，列出来只是噪音 */
+    if (members.length < 2) continue
+    groups.push({ label: tag, members, size: members.length, weight: idf(tag) })
+  }
+  /* 图多的排前面：客户端的标签名分级显示直接按这个顺序取前 N 个 */
+  groups.sort((a, b) => b.size - a.size || a.label.localeCompare(b.label))
+
   return {
     version: TAG_GRAPH_VERSION,
     threshold: TAG_SIMILARITY_THRESHOLD,
@@ -156,23 +185,130 @@ export function buildTagGraph(rows: TagRow[], tagLayout: LayoutResult): TagGraph
     tagAnchors,
     primaryTags,
     source: { version: TAG_GRAPH_VERSION, entries },
+    groups,
     tagCount: vocabulary.length,
     covered: total,
   }
 }
 
-/* ---------------- 标签锚点布局的缓存 ---------------- */
+/* ---------------- 三维版：给 3D 星系视图用 ---------------- */
 
-interface TagLayoutCache {
+/**
+ * 三维标签锚点 + 图片位置。
+ *
+ * 与二维同一套语义（先排标签、再把图片挂到自己标签的加权重心上），只是多了一个自由度。
+ * 【为什么不在三维里直接对图片的标签向量跑降维】二维那边已经踩过：128 张图只有约 40 种
+ * 不同的标签组合，向量大量重合，降维会缩成一坨。挂锚点则天然分散。
+ *
+ * 重合的图片用**黄金角球面**摊开（二维是黄金角螺线）：
+ * 球面螺旋保证摊出来的点均匀、不重叠，而且确定性 —— 同一批数据每次都是同一个结果。
+ */
+function tagLayout3File() { return path.join(embedDir(), 'layout3-tag-anchors.json') }
+
+let tagLayout3Cache: TagLayoutCache<Layout3Result> | null = null
+let tagLayout3Inflight: Promise<Layout3Result> | null = null
+
+export async function ensureTagLayout3(rows: TagRow[]): Promise<Layout3Result> {
+  const usable = rows.filter((row) => row.tags.length > 0)
+  const vocabulary = [...new Set(usable.flatMap((row) => row.tags))].sort()
+  const vocabularyKey = `${vocabulary.length}|${vocabulary.join(',')}`
+  if (tagLayout3Cache && tagLayout3Cache.version === TAG_GRAPH_VERSION && tagLayout3Cache.vocabularyKey === vocabularyKey) {
+    return tagLayout3Cache.layout
+  }
+  if (tagLayout3Inflight) return tagLayout3Inflight
+
+  tagLayout3Inflight = (async () => {
+    try {
+      const parsed = JSON.parse(await readFile(tagLayout3File(), 'utf8')) as TagLayoutCache<Layout3Result>
+      if (parsed?.version === TAG_GRAPH_VERSION && parsed.vocabularyKey === vocabularyKey && parsed.layout?.points) {
+        tagLayout3Cache = parsed
+        return parsed.layout
+      }
+    } catch { /* 没有缓存就算一次 */ }
+
+    const entries: Record<string, { vec: number[]; sha256: string }> = {}
+    for (const tag of vocabulary) {
+      const vector: number[] = usable.map((row) => (row.tags.includes(tag) ? 1 : 0))
+      let norm = Math.sqrt(vector.reduce((sum: number, value: number) => sum + value * value, 0)) || 1
+      entries[tag] = { vec: vector.map((value) => value / norm), sha256: `tag:${tag}` }
+    }
+    const layout = await computeLayout3({ version: TAG_GRAPH_VERSION, entries })
+    tagLayout3Cache = { version: TAG_GRAPH_VERSION, vocabularyKey, layout }
+    try {
+      const target = tagLayout3File()
+      const tmp = `${target}.tmp-${process.pid}-${Date.now()}`
+      await writeFile(tmp, JSON.stringify(tagLayout3Cache), 'utf8')
+      await rename(tmp, target)
+    } catch { /* 缓存写不进去不影响本次返回 */ }
+    return layout
+  })()
+
+  try {
+    return await tagLayout3Inflight
+  } finally {
+    tagLayout3Inflight = null
+  }
+}
+
+/** 图片的三维位置 = 自己标签锚点的 IDF 加权重心；重合的按黄金角球面摊开 */
+export function tagPositions3(rows: TagRow[], tagLayout: Layout3Result): Record<string, [number, number, number]> {
+  const usable = rows.filter((row) => row.tags.length > 0)
+  const total = usable.length
+  const df = new Map<string, number>()
+  for (const row of usable) for (const tag of new Set(row.tags)) df.set(tag, (df.get(tag) ?? 0) + 1)
+  const idf = (tag: string) => smoothIdf(total, df.get(tag) ?? 0)
+
+  const buckets = new Map<string, TagRow[]>()
+  for (const row of usable) {
+    const key = [...new Set(row.tags)].sort().join('\u0000')
+    if (!buckets.has(key)) buckets.set(key, [])
+    buckets.get(key)!.push(row)
+  }
+
+  const result: Record<string, [number, number, number]> = {}
+  for (const [, bucket] of buckets) {
+    let sumX = 0
+    let sumY = 0
+    let sumZ = 0
+    let sumWeight = 0
+    for (const tag of new Set(bucket[0].tags)) {
+      const anchor = tagLayout.points[tag]
+      if (!anchor) continue
+      const weight = idf(tag)
+      sumX += anchor[0] * weight
+      sumY += anchor[1] * weight
+      sumZ += anchor[2] * weight
+      sumWeight += weight
+    }
+    const base: [number, number, number] = sumWeight > 0 ? [sumX / sumWeight, sumY / sumWeight, sumZ / sumWeight] : [0, 0, 0]
+    bucket.forEach((row, index) => {
+      if (index === 0) { result[row.id] = base; return }
+      /* 黄金角球面螺旋：均匀、确定、不重叠 */
+      const t = (index + 0.5) / bucket.length
+      const y = 1 - 2 * t
+      const ring = Math.sqrt(Math.max(0, 1 - y * y))
+      const theta = GOLDEN_ANGLE * index
+      const radius = SPIRAL_SPACING * Math.cbrt(index)
+      result[row.id] = [
+        base[0] + Math.cos(theta) * ring * radius,
+        base[1] + y * radius,
+        base[2] + Math.sin(theta) * ring * radius,
+      ]
+    })
+  }
+  return result
+}
+
+interface TagLayoutCache<T> {
   version: string
   /** 词表内容指纹：标签集合变了才需要重排锚点 */
   vocabularyKey: string
-  layout: LayoutResult
+  layout: T
 }
 
 function tagLayoutFile() { return path.join(embedDir(), 'layout-tag-anchors.json') }
 
-let tagLayoutCache: TagLayoutCache | null = null
+let tagLayoutCache: TagLayoutCache<LayoutResult> | null = null
 let tagLayoutInflight: Promise<LayoutResult> | null = null
 
 /**
@@ -195,7 +331,7 @@ export async function ensureTagLayout(rows: TagRow[]): Promise<LayoutResult> {
 
   tagLayoutInflight = (async () => {
     try {
-      const parsed = JSON.parse(await readFile(tagLayoutFile(), 'utf8')) as TagLayoutCache
+      const parsed = JSON.parse(await readFile(tagLayoutFile(), 'utf8')) as TagLayoutCache<LayoutResult>
       if (parsed?.version === TAG_GRAPH_VERSION && parsed.vocabularyKey === vocabularyKey && parsed.layout?.points) {
         tagLayoutCache = parsed
         return parsed.layout

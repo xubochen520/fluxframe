@@ -17,7 +17,8 @@ const props = defineProps<{
   nodes: ImageItem[]
   edges: EmbedGraphEdge[]
   groups: EmbedGraphGroup[]
-  positions: Record<string, [number, number]>
+  /** 二维坐标 [x, y]；类型放宽成 number[] 是因为三维视图共用同一份 payload 类型 */
+  positions: Record<string, number[]>
   characters: Record<string, string>
   threshold: number
   /** 当前关系依据：视觉指纹 / 标签。影响文案与星云名称的来源 */

@@ -26,8 +26,8 @@ import {
   graphFromNeighbors, hasEmbedding, neighborsOf, putEmbedding, setThreshold, similarTo, cosine,
   countIndexed, DEFAULT_SIMILARITY_THRESHOLD, SIMILAR_LIMIT,
 } from './embed.js'
-import { ensureLayout } from './layout.js'
-import { TAG_GRAPH_VERSION, buildTagGraph, ensureTagLayout } from './tag-graph.js'
+import { ensureLayout, ensureLayout3, LAYOUT3_VERSION } from './layout.js'
+import { TAG_GRAPH_VERSION, buildTagGraph, ensureTagLayout, ensureTagLayout3, tagPositions3 } from './tag-graph.js'
 
 const prisma = new PrismaClient()
 const app = Fastify({
@@ -2086,7 +2086,10 @@ app.get('/api/embed/graph', async (request, reply) => {
   const query = z.object({
     edges: z.coerce.number().int().min(50).max(3000).default(600),
     mode: z.enum(['visual', 'tag']).default('visual'),
+    /** 星系视图用几维坐标：2D 总览 / 3D 星系空间 */
+    space: z.enum(['2d', '3d']).default('2d'),
   }).parse(request.query)
+  const want3d = query.space === '3d'
 
   /* ---------------- 标签模式 ---------------- */
   if (query.mode === 'tag') {
@@ -2107,18 +2110,26 @@ app.get('/api/embed/graph', async (request, reply) => {
     const nodes = visible.map((row) => imageDto(row))
     const allowed = new Set(nodes.map((node) => node.id))
     const visibleEdges = graph.edges.filter((edge) => allowed.has(edge.a) && allowed.has(edge.b))
-    const linkedIds = new Set<string>()
-    for (const edge of visibleEdges) { linkedIds.add(edge.a); linkedIds.add(edge.b) }
-    const visibleGroups = graph.groups
-      .map((group) => ({ members: group.members.filter((member) => allowed.has(member)) }))
-      .map((group) => ({ members: group.members, size: group.members.length }))
-      .filter((group) => group.size > 1 && group.members.some((member) => linkedIds.has(member)))
-    const visibleLinked = visibleGroups.reduce((sum, group) => sum + group.size, 0)
 
-    const positions: Record<string, [number, number]> = {}
+    /*
+     * 关系 = 标签，**可重叠**：一张图有几个标签就属于几个关系。
+     * 不在这里做并查集 —— 那会把「纳西妲 + 白丝」的图只算进其中一组。
+     */
+    const visibleGroups = tagGraph.groups
+      .map((group) => ({ label: group.label, weight: group.weight, members: group.members.filter((member) => allowed.has(member)) }))
+      .map((group) => ({ label: group.label, weight: group.weight, members: group.members, size: group.members.length }))
+      .filter((group) => group.size > 1)
+    const linkedIds = new Set<string>()
+    for (const group of visibleGroups) for (const member of group.members) linkedIds.add(member)
+    const visibleLinked = linkedIds.size
+
+    const anchors3 = want3d ? await ensureTagLayout3(tagRows) : null
+    const placed3 = anchors3 ? tagPositions3(tagRows, anchors3) : null
+
+    const positions: Record<string, number[]> = {}
     const characters: Record<string, string> = {}
     for (const node of nodes) {
-      const point = tagGraph.positions[node.id]
+      const point = want3d ? placed3?.[node.id] : tagGraph.positions[node.id]
       if (point) positions[node.id] = point
     }
     for (const row of visible) {
@@ -2129,10 +2140,11 @@ app.get('/api/embed/graph', async (request, reply) => {
     return {
       ready: true,
       mode: 'tag',
+      space: query.space,
       version: tagGraph.version,
       threshold: tagGraph.threshold,
-      layoutVersion: TAG_GRAPH_VERSION,
-      layoutAt: tagLayout.updatedAt,
+      layoutVersion: want3d ? LAYOUT3_VERSION : TAG_GRAPH_VERSION,
+      layoutAt: want3d ? anchors3?.updatedAt : tagLayout.updatedAt,
       nodes,
       edges: visibleEdges,
       groups: visibleGroups,
@@ -2151,13 +2163,14 @@ app.get('/api/embed/graph', async (request, reply) => {
 
   /* ---------------- 视觉指纹模式 ---------------- */
   if (!embedModelReady()) {
-    return { ready: false, mode: 'visual', nodes: [], edges: [], groups: [], isolated: 0, positions: {}, characters: {}, tagAnchors: {} }
+    return { ready: false, mode: 'visual', space: query.space, nodes: [], edges: [], groups: [], isolated: 0, positions: {}, characters: {}, tagAnchors: {} }
   }
   const index = await ensureNeighborsForUser(user)
   const graph = await graphPayload(query.edges)
 
   /* 布局是纯计算 + 磁盘缓存，和邻居表的懒算一样按需触发 */
   const layout = await ensureLayout(index)
+  const layout3 = want3d ? await ensureLayout3(index) : null
 
   const rows = await prisma.image.findMany({
     where: { id: { in: Object.keys(index.entries) }, deletedAt: null },
@@ -2179,9 +2192,11 @@ app.get('/api/embed/graph', async (request, reply) => {
   const visibleLinked = visibleGroups.reduce((sum, group) => sum + group.size, 0)
 
   /* 只回可见节点的坐标与主角色；被 R18 过滤掉的图连坐标都不该出现 */
-  const positions: Record<string, [number, number]> = {}
+  const positions: Record<string, number[]> = {}
   const characters: Record<string, string> = {}
-  for (const node of nodes) positions[node.id] = layout.points[node.id] ?? [0, 0]
+  for (const node of nodes) {
+    positions[node.id] = (want3d ? layout3?.points[node.id] : layout.points[node.id]) ?? (want3d ? [0, 0, 0] : [0, 0])
+  }
   for (const row of visible) {
     /* 主角色 = 该图身上第一个人物标签（按名字排序，保证同一张图每次结果一致） */
     const persons = row.tags
@@ -2196,6 +2211,7 @@ app.get('/api/embed/graph', async (request, reply) => {
   return {
     ready: true,
     mode: 'visual',
+    space: query.space,
     ...graph,
     nodes,
     edges: visibleEdges,
@@ -2204,8 +2220,8 @@ app.get('/api/embed/graph', async (request, reply) => {
     characters,
     /* 视觉模式没有标签锚点，客户端退回用分组中心点当标签位置 */
     tagAnchors: {},
-    layoutVersion: layout.version,
-    layoutAt: layout.updatedAt,
+    layoutVersion: want3d ? LAYOUT3_VERSION : layout.version,
+    layoutAt: (want3d ? layout3?.updatedAt : layout.updatedAt),
     totalIndexed,
     /* 「孤立」按全库口径算，与上面两项保持自洽 */
     linked: visibleLinked,

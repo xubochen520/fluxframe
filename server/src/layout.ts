@@ -614,6 +614,213 @@ export async function computeLayout(source: EmbeddingSource, options: ComputeLay
   }
 }
 
+/* ============================ 三维布局 ============================ */
+
+/**
+ * 三维版本。**刻意不去改上面那套二维代码**：二维那张图是调了很久才好看的
+ * （邻数、负采样、学习率、归一化都试过好几轮），把 DIM 塞进热循环既会让它变慢，
+ * 也可能悄悄改掉它的结果。所以三维这套是**另起的一份**，复用的只有与维度无关的部分：
+ * `buildMatrix`（输入向量）、`buildKnn`、`buildGraph`（kNN 图）、`principalComponents`（本来就支持任意维数）。
+ *
+ * 布局质量与二维同源（同一张 kNN 图、同一套吸引/排斥），所以三维里的邻域关系和二维是一致的，
+ * 只是多了一个自由度；加上客户端的缓慢自转，转动时能看出真实的立体结构，而不是"纸片加噪声"。
+ */
+export const LAYOUT3_VERSION = `${LAYOUT_VERSION}/3d`
+
+export type Points3 = Record<string, [number, number, number]>
+
+export interface Layout3Result {
+  version: string
+  sourceKey: string
+  count: number
+  updatedAt: string
+  points: Points3
+  computeMs: number
+}
+
+/** 三维冷启动：前三个主成分，各维标准差归一。不做热启动 —— 三维缓存本来就算得少 */
+function initialEmbedding3(matrix: Matrix, rng: () => number): Float32Array {
+  const { n } = matrix
+  const position = new Float32Array(n * 3)
+  const components = principalComponents(matrix, 3, rng)
+  for (let c = 0; c < 3; c++) {
+    const values = components[c]
+    let sum = 0
+    for (let i = 0; i < n; i++) sum += values[i]
+    const mean = sum / n
+    let variance = 0
+    for (let i = 0; i < n; i++) variance += (values[i] - mean) ** 2
+    const std = Math.sqrt(variance / n) || 1
+    for (let i = 0; i < n; i++) position[i * 3 + c] = ((values[i] - mean) / std) * 10
+  }
+  return position
+}
+
+/** 与二维同款的负采样 SGD，只是坐标从 (x,y) 变成 (x,y,z) */
+async function optimiseLayout3(graph: SparseGraph, position: Float32Array, n: number, epochs: number, rng: () => number, initialAlpha: number) {
+  const { starts, nbrs, schedule } = graph
+  const order = new Int32Array(n)
+  for (let i = 0; i < n; i++) order[i] = i
+  for (let epoch = 0; epoch < epochs; epoch++) {
+    for (let i = n - 1; i > 0; i--) {
+      const j = (rng() * (i + 1)) | 0
+      const swap = order[i]
+      order[i] = order[j]
+      order[j] = swap
+    }
+    const alpha = initialAlpha * (1 - epoch / epochs)
+    for (let index = 0; index < n; index++) {
+      const i = order[index]
+      const ib = i * 3
+      for (let e = starts[i]; e < starts[i + 1]; e++) {
+        if (schedule[e] > epoch) continue
+        const jb = nbrs[e] * 3
+        const dx = position[ib] - position[jb]
+        const dy = position[ib + 1] - position[jb + 1]
+        const dz = position[ib + 2] - position[jb + 2]
+        const d2 = dx * dx + dy * dy + dz * dz
+        if (d2 <= 0) continue
+        const coefficient = (-2 * CURVE_A * CURVE_B * Math.pow(d2, CURVE_B - 1)) / (CURVE_A * Math.pow(d2, CURVE_B) + 1)
+        const gradX = clipGradient(coefficient * dx)
+        const gradY = clipGradient(coefficient * dy)
+        const gradZ = clipGradient(coefficient * dz)
+        position[ib] += gradX * alpha
+        position[ib + 1] += gradY * alpha
+        position[ib + 2] += gradZ * alpha
+        position[jb] -= gradX * alpha
+        position[jb + 1] -= gradY * alpha
+        position[jb + 2] -= gradZ * alpha
+
+        for (let sample = 0; sample < NEGATIVE_SAMPLES; sample++) {
+          const j = (rng() * n) | 0
+          if (j === i) continue
+          const nb = j * 3
+          const rx = position[ib] - position[nb]
+          const ry = position[ib + 1] - position[nb + 1]
+          const rz = position[ib + 2] - position[nb + 2]
+          const rd2 = rx * rx + ry * ry + rz * rz
+          if (rd2 <= 0) continue
+          const repel = (2 * REPULSION_GAMMA * CURVE_B) / ((0.001 + rd2) * (CURVE_A * Math.pow(rd2, CURVE_B) + 1))
+          position[ib] += clipGradient(repel * rx) * alpha
+          position[ib + 1] += clipGradient(repel * ry) * alpha
+          position[ib + 2] += clipGradient(repel * rz) * alpha
+        }
+      }
+    }
+    if ((epoch & 31) === 31) await tick()
+  }
+}
+
+/**
+ * 平移到原点、**等比**缩放到 [-1,1]（三轴同一个 scale，保住真实形状）。
+ *
+ * 不各轴独立拉伸：那会把一个扁盘拉成球，转起来就看不出结构了。
+ * 但真扁到某个程度也不好看，所以给最扁的那一维兜一个下限（见 MIN_AXIS_SPAN）。
+ */
+const MIN_AXIS_SPAN = 0.45
+
+function normaliseLayout3(position: Float32Array, n: number) {
+  const min = [Infinity, Infinity, Infinity]
+  const max = [-Infinity, -Infinity, -Infinity]
+  for (let i = 0; i < n; i++) {
+    for (let d = 0; d < 3; d++) {
+      const value = position[i * 3 + d]
+      if (value < min[d]) min[d] = value
+      if (value > max[d]) max[d] = value
+    }
+  }
+  const centre = [0, 1, 2].map((d) => (min[d] + max[d]) / 2)
+  const spans = [0, 1, 2].map((d) => max[d] - min[d])
+  const extent = Math.max(...spans) || 1
+  const scale = 2 / extent
+  for (let i = 0; i < n; i++) {
+    for (let d = 0; d < 3; d++) {
+      let value = (position[i * 3 + d] - centre[d]) * scale
+      /* 太扁的那一维按比例放大到下限，免得整个星系是一张纸 */
+      if (spans[d] / extent < MIN_AXIS_SPAN) value /= Math.max(spans[d] / extent, 0.001) * (1 / MIN_AXIS_SPAN)
+      position[i * 3 + d] = value
+    }
+  }
+}
+
+/**
+ * 算三维布局。
+ *
+ * 与二维一样：纯计算 + 磁盘缓存，结果按 sourceKey 判断能否复用。
+ */
+export async function computeLayout3(source: EmbeddingSource, options: ComputeLayoutOptions = {}): Promise<Layout3Result> {
+  const started = Date.now()
+  const ids = Object.keys(source.entries).sort()
+  const sourceKey = layoutSourceKey(source)
+  const n = ids.length
+  const empty = { version: LAYOUT3_VERSION, sourceKey, count: n, updatedAt: new Date().toISOString(), computeMs: 0 }
+  if (n === 0) return { ...empty, points: {} }
+  if (n === 1) return { ...empty, points: { [ids[0]]: [0, 0, 0] } }
+
+  const rng = mulberry32(options.seed ?? hashString(`${LAYOUT3_VERSION}|${sourceKey}`))
+  const epochs = options.epochs ?? epochsFor(n)
+  const matrix = buildMatrix(source, ids, rng)
+  const knn = await buildKnn(matrix, NEIGHBORS)
+  const graph = buildGraph(knn, matrix.n, epochs)
+  const position = initialEmbedding3(matrix, rng)
+  await optimiseLayout3(graph, position, matrix.n, epochs, rng, options.initialAlpha ?? INITIAL_ALPHA)
+  normaliseLayout3(position, matrix.n)
+
+  const points: Points3 = {}
+  for (let i = 0; i < n; i++) {
+    points[ids[i]] = [
+      Number(position[i * 3].toFixed(4)),
+      Number(position[i * 3 + 1].toFixed(4)),
+      Number(position[i * 3 + 2].toFixed(4)),
+    ]
+  }
+  return { version: LAYOUT3_VERSION, sourceKey, count: n, updatedAt: new Date().toISOString(), points, computeMs: Date.now() - started }
+}
+
+/**
+ * 三维布局的内存 + 磁盘缓存，形状与 [ensureLayout] 一致。
+ * 每种模式（视觉指纹 / 标签）各存一份，key 沿用 'visual' / 'tags'。
+ */
+const cached3 = new Map<string, Layout3Result>()
+const inflight3 = new Map<string, Promise<Layout3Result>>()
+
+function layout3File(key: string) { return path.join(modelsDir(), 'embed', `layout3-${key}.json`) }
+
+export async function ensureLayout3(source: EmbeddingSource, key = 'visual'): Promise<Layout3Result> {
+  const sourceKey = layoutSourceKey(source)
+  const hit = cached3.get(key)
+  if (hit && hit.version === LAYOUT3_VERSION && hit.sourceKey === sourceKey) return hit
+  const running = inflight3.get(key)
+  if (running) return running
+
+  const task = (async () => {
+    try {
+      const stored = JSON.parse(await readFile(layout3File(key), 'utf8')) as Layout3Result
+      if (stored?.version === LAYOUT3_VERSION && stored.sourceKey === sourceKey && stored.points) {
+        cached3.set(key, stored)
+        return stored
+      }
+    } catch { /* 没有缓存就算一次 */ }
+
+    const result = await computeLayout3(source)
+    cached3.set(key, result)
+    try {
+      const target = layout3File(key)
+      const tmp = `${target}.tmp-${process.pid}-${Date.now()}`
+      await writeFile(tmp, JSON.stringify(result), 'utf8')
+      await rename(tmp, target)
+    } catch { /* 缓存写不进去不影响本次返回 */ }
+    return result
+  })()
+
+  inflight3.set(key, task)
+  try {
+    return await task
+  } finally {
+    inflight3.delete(key)
+  }
+}
+
 /* ---------------- 磁盘缓存 ---------------- */
 
 /**

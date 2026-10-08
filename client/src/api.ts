@@ -114,10 +114,14 @@ export interface EmbedGraphEdge { a: string; b: string; score: number }
 export interface EmbedGraphGroup { members: string[]; size: number }
 /** 关系网的依据：视觉指纹 / 标签 */
 export type EmbedGraphMode = 'visual' | 'tag'
+/** 星系视图的坐标系：二维总览 / 三维星系空间 */
+export type EmbedGraphSpace = '2d' | '3d'
 export interface EmbedGraphPayload {
   ready: boolean
   /** 这次返回的是哪套关系 */
   mode?: EmbedGraphMode
+  /** 这次返回的是几维坐标 */
+  space?: EmbedGraphSpace
   version?: string
   threshold?: number
   updatedAt?: string
@@ -129,7 +133,7 @@ export interface EmbedGraphPayload {
    * 视觉模式由服务端 layout.ts 用 UMAP 式降维算好并缓存；标签模式是
    * 「图片挂到自己标签的锚点上」。前端只负责画。
    */
-  positions: Record<string, [number, number]>
+  positions: Record<string, number[]>
   /** id → 主标签名（视觉模式=主角色，标签模式=最有区分度的标签）；用作上色与筛选 */
   characters: Record<string, string>
   /**
@@ -241,8 +245,8 @@ export const api = {
    * [mode] 决定「关系」的依据：`visual` 是 CCIP 视觉指纹（长得像），
    * `tag` 是标签的 TF-IDF 相似度（被打了同一批标记）。
    */
-  embedGraph: (edges = 600, mode: EmbedGraphMode = 'visual') =>
-    request<EmbedGraphPayload>(`/api/embed/graph?edges=${edges}&mode=${mode}`),
+  embedGraph: (edges = 600, mode: EmbedGraphMode = 'visual', space: EmbedGraphSpace = '2d') =>
+    request<EmbedGraphPayload>(`/api/embed/graph?edges=${edges}&mode=${mode}&space=${space}`),
   /** 把还没建指纹的图片排进后台队列 */
   embedBackfill: (force = false) =>
     request<{ ok: true; queued: number; scanning: boolean }>('/api/embed/backfill', { method: 'POST', body: JSON.stringify({ force }) }),

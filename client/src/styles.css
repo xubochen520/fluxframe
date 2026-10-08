@@ -237,6 +237,60 @@
 
 /* 星云名称：位置由 JS 逐帧写入 transform，所以这里只定样式 */
 .galaxy-labels { position: absolute; inset: 0; pointer-events: none; }
+/* 三维视图里标签位置每帧都在变，所以用 transform 定位（left/top 会触发重排，转动时会掉帧） */
+.galaxy-label-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.galaxy3d .galaxy-label {
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%);
+  will-change: transform;
+}
+/* 三维视图：画布上要接指针事件（拖动旋转），标签层本身不接 */
+.galaxy3d .galaxy-canvas { cursor: grab; touch-action: none; }
+.galaxy3d .galaxy-canvas:active { cursor: grabbing; }
+
+/* 相框：推近之后定格看这一张 */
+.galaxy-frame {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.galaxy-frame-inner {
+  pointer-events: auto;
+  width: min(46%, 420px);
+  /* 相框整体不许超出星系容器：图片用 flex 撑，容器多高都不会顶出去 */
+  max-height: calc(100% - 28px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(8, 12, 24, .82);
+  border: 1px solid rgba(148, 176, 255, .32);
+  box-shadow: 0 26px 70px rgba(0, 0, 0, .62), 0 0 0 1px rgba(255, 255, 255, .04) inset;
+  backdrop-filter: blur(10px);
+}
+.galaxy-frame-inner img { display: block; width: 100%; min-height: 0; flex: 1; object-fit: contain; background: #0a0f1e; }
+.galaxy-frame-bar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; flex: none; }
+.galaxy-frame-text { flex: 1; min-width: 0; }
+.galaxy-frame-text strong { display: block; font-size: 12px; color: #eaf0ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.galaxy-frame-text small { display: block; margin-top: 2px; font-size: 11px; color: rgba(214, 224, 244, .6); }
+.ghost-button-sm { margin-left: 8px; padding: 2px 8px; font-size: 11px; }
+.frame-enter-active, .frame-leave-active { transition: opacity .28s ease, transform .28s cubic-bezier(.2, .8, .3, 1); }
+.frame-enter-from, .frame-leave-to { opacity: 0; transform: scale(.92); }
+.galaxy-webgl-error {
+  position: absolute;
+  inset: auto 16px 16px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(60, 16, 24, .86);
+  border: 1px solid rgba(255, 130, 140, .4);
+  color: #ffdfe4;
+  font-size: 12px;
+}
+.galaxy-webgl-error p { margin: 4px 0 0; opacity: .82; }
+
 .galaxy-label {
   position: absolute;
   left: 0;
