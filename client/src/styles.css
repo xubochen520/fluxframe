@@ -276,7 +276,43 @@
 .galaxy-frame-text { flex: 1; min-width: 0; }
 .galaxy-frame-text strong { display: block; font-size: 12px; color: #eaf0ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .galaxy-frame-text small { display: block; margin-top: 2px; font-size: 11px; color: rgba(214, 224, 244, .6); }
-.ghost-button-sm { margin-left: 8px; padding: 2px 8px; font-size: 11px; }
+/* 这个类以前只用不定义，于是渲染成浏览器默认的灰按钮（用户截图里那个丑东西就是它） */
+.ghost-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, .045);
+  color: #c3cbdd;
+  font-size: 11px;
+  transition: .18s;
+}
+.ghost-button:hover { background: rgba(167, 139, 250, .18); border-color: rgba(167, 139, 250, .42); color: #fff; }
+.ghost-button-sm { margin-left: 8px; padding: 3px 9px; font-size: 10px; }
+
+/* 大图的左右切换：和关闭按钮同一套语言（玻璃、圆角、细边） */
+.preview-nav {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 3;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #dfe5f1;
+  background: rgba(21, 28, 50, .74);
+  border: 1px solid rgba(157, 171, 210, .22);
+  backdrop-filter: blur(14px);
+  transition: .18s;
+}
+.preview-nav:hover { background: rgba(167, 139, 250, .24); border-color: rgba(167, 139, 250, .48); color: #fff; transform: translateY(-50%) scale(1.06); }
+.preview-nav.prev { left: 22px; }
+.preview-nav.next { right: 22px; }
 .frame-enter-active, .frame-leave-active { transition: opacity .28s ease, transform .28s cubic-bezier(.2, .8, .3, 1); }
 .frame-enter-from, .frame-leave-to { opacity: 0; transform: scale(.92); }
 .galaxy-webgl-error {

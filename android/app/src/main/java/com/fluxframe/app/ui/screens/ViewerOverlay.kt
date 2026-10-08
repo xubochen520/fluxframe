@@ -37,6 +37,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
@@ -252,6 +254,42 @@ fun ViewerOverlay(
                     /* 下滑收起：一上一下互为反操作，怎么打开的怎么关掉。
                        面板没开时下滑什么也不做 —— 免得手一抖把大图也关了。 */
                     onSwipeDown = { if (page == pagerState.currentPage) closeSimilar() },
+                )
+            }
+        }
+
+        /*
+         * ---- 左右切换（跟顶部栏一起自动隐藏）----
+         * 和顶部/底部那两排用同一个 GlassIconButton，样式自然是统一的；
+         * 从三维星系点进来时，翻的就是那张图的相似图（见 AppShell 传进来的列表）。
+         */
+        AnimatedVisibility(
+            visible = chromeVisible && images.size > 1,
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                GlassIconButton(
+                    icon = Icons.Filled.KeyboardArrowLeft,
+                    contentDescription = "上一张",
+                    onClick = {
+                        val target = (pagerState.currentPage - 1 + images.size) % images.size
+                        scope.launch { pagerState.animateScrollToPage(target) }
+                    },
+                )
+                GlassIconButton(
+                    icon = Icons.Filled.KeyboardArrowRight,
+                    contentDescription = "下一张",
+                    onClick = {
+                        val target = (pagerState.currentPage + 1) % images.size
+                        scope.launch { pagerState.animateScrollToPage(target) }
+                    },
                 )
             }
         }

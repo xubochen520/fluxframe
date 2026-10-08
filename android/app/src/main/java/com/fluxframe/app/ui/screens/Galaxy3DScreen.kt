@@ -171,6 +171,17 @@ fun Galaxy3DScreen(
     /* 推近动画。用普通对象持有：它不驱动 UI，驱动 UI 的是 camera */
     val focus = remember { FocusState() }
     var lastGestureAt by remember { mutableLongStateOf(0L) }
+    /*
+     * 推近结束后要打开的那张图。交给一个独立的 effect 去调 onOpenImage ——
+     * 帧循环里直接调会把"打开大图"这种重活塞进渲染帧，而且那边读到的 layout 可能是旧的。
+     */
+    var pendingOpen by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(pendingOpen) {
+        pendingOpen?.let { id ->
+            pendingOpen = null
+            onOpenImage(id)
+        }
+    }
 
     LaunchedEffect(canvasSize, layout) {
         if (canvasSize.width <= 0f || canvasSize.height <= 0f || layout.nodes.isEmpty()) return@LaunchedEffect
@@ -198,6 +209,8 @@ fun Galaxy3DScreen(
                     val t = (now - running.startedAt).toFloat() / FOCUS3D_NANOS
                     camera = if (t >= 1f) {
                         focus.animation = null
+                        /* 镜头停住了再叫大图 —— 用户要的是"先推近，等它几乎停下再打开" */
+                        running.openItemId?.let { pendingOpen = it }
                         running.to
                     } else {
                         Galaxy3DMath.lerpCamera(running.from, running.to, t)
@@ -247,6 +260,7 @@ fun Galaxy3DScreen(
             from = camera,
             to = Galaxy3DMath.cinematicTarget(camera, node.x, node.y, node.z),
             startedAt = System.nanoTime(),
+            openItemId = node.item.id,
         )
     }
 
@@ -539,60 +553,6 @@ fun Galaxy3DScreen(
             modifier = Modifier.align(Alignment.BottomEnd).padding(14.dp),
         )
 
-        /* 相框：推近之后定格看这一张 */
-        val focusedNode = layout.nodes.getOrNull(focusedIndex)
-        if (focusedNode != null) {
-            Box(modifier = Modifier.align(Alignment.Center), contentAlignment = Alignment.Center) {
-                GlassSurface(
-                    modifier = Modifier.fillMaxWidth(0.84f),
-                    shape = RoundedCornerShape(18.dp),
-                    backdrop = true,
-                    contentPadding = PaddingValues(0.dp),
-                ) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(container.embedRepository.largeThumbUrl(focusedNode.item))
-                                .crossfade(true)
-                                .build(),
-                            contentDescription = focusedNode.item.name,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxWidth().padding(10.dp),
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 10.dp, bottom = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = focusedNode.item.name,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    text = focusedNode.character.ifEmpty { "未标注" },
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color.White.copy(alpha = 0.62f),
-                                    maxLines = 1,
-                                )
-                            }
-                            Text(
-                                text = "打开",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable { onOpenImage(focusedNode.item.id) }
-                                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                            )
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -624,6 +584,11 @@ private class FocusAnimation(
     val from: Galaxy3DMath.Camera,
     val to: Galaxy3DMath.Camera,
     val startedAt: Long,
+    /**
+     * 推近走完之后自动打开的那张图。回全景时是 null ——
+     * 不区分的话每次点「回到全景」都会顺手弹一次大图。
+     */
+    val openItemId: String? = null,
 )
 
 private data class Label3D(

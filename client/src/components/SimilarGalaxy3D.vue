@@ -38,7 +38,6 @@ const built = computed(() => build())
 const tooltip = ref<{ x: number; y: number; index: number } | null>(null)
 const selectedId = ref<string | null>(null)
 const focusedId = ref<string | null>(null)
-const frameOpen = ref(false)
 const gyroOn = ref(false)
 const webglError = ref('')
 /** 每帧上报的相机状态；只用于标签分级与按钮文案，不参与渲染 */
@@ -169,7 +168,15 @@ function createEngine() {
       },
       onFocusChange: (index) => {
         focusedId.value = index === null ? null : built.value.items[index]?.id ?? null
-        frameOpen.value = index !== null
+      },
+      /*
+       * 推近动画走完再把大图叫起来 —— 用户要的是"先电影镜头切近，等它几乎停下，
+       * 再打开大图"，而不是推近的同时甩一个相框出来。
+       * 这里是唯一会 emit open 的地方：点选只负责把镜头推过去。
+       */
+      onFocusSettled: (index) => {
+        const item = built.value.items[index]
+        if (item) emit('open', item)
       },
       onView: (state) => { view.value = state },
     })
@@ -265,15 +272,7 @@ onBeforeUnmount(() => {
 
 function resetView() {
   engine.value?.resetView()
-  frameOpen.value = false
   focusedId.value = null
-}
-
-/** 相框里那张图：打开大图查看器 */
-function openFocused() {
-  const item = focused.value
-  if (!item) return
-  emit('open', item)
 }
 
 /**
@@ -319,25 +318,8 @@ const tooltipItem = computed(() => (tooltip.value ? built.value.items[tooltip.va
       <p>{{ webglError }}。可以切回上面的「星系图」看二维版本。</p>
     </div>
 
-    <!-- 相框：推近之后定格看这一张 -->
-    <transition name="frame">
-      <div v-if="frameOpen && focused" class="galaxy-frame" @click.stop>
-        <div class="galaxy-frame-inner">
-          <img :src="focused.thumbLarge || focused.thumb" :alt="focused.name" />
-          <div class="galaxy-frame-bar">
-            <div class="galaxy-frame-text">
-              <strong>{{ focused.name }}</strong>
-              <small>{{ characterOf(focused) || '未标注' }}{{ focused.width ? ` · ${focused.width}×${focused.height}` : '' }}</small>
-            </div>
-            <button class="ghost-button" @click="openFocused">打开</button>
-            <button class="ghost-button" @click="resetView">回到全景</button>
-          </div>
-        </div>
-      </div>
-    </transition>
-
     <div class="galaxy-hint">
-      拖动旋转 · 滚轮/双指缩放 · 点一张图推近看 · 双击打开
+      拖动旋转 · 滚轮/双指缩放 · 点一张图推近并打开
       <button v-if="!gyroOn" class="ghost-button ghost-button-sm" @click="toggleGyro">开启陀螺仪视差</button>
     </div>
 
@@ -348,7 +330,7 @@ const tooltipItem = computed(() => (tooltip.value ? built.value.items[tooltip.va
     </div>
 
     <teleport to="body">
-      <div v-if="tooltipItem && !frameOpen" class="galaxy-tip" :style="{ left: `${tooltip!.x + 14}px`, top: `${tooltip!.y + 14}px` }">
+      <div v-if="tooltipItem" class="galaxy-tip" :style="{ left: `${tooltip!.x + 14}px`, top: `${tooltip!.y + 14}px` }">
         <strong>{{ tooltipItem.name }}</strong>
         <small>{{ characterOf(tooltipItem) || '未标注' }}</small>
       </div>

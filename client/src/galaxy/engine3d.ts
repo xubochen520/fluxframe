@@ -52,6 +52,8 @@ export interface Engine3DCallbacks {
   onOpen?: (index: number) => void
   onView?: (state: { distance: number; yaw: number; focused: boolean }) => void
   onFocusChange?: (index: number | null) => void
+  /** 推近动画走完（镜头停住了）。用来接着打开大图 —— 见 SimilarGalaxy3D 的用法 */
+  onFocusSettled?: (index: number) => void
 }
 
 /* ------------------------------ 着色器 ------------------------------ */
@@ -559,6 +561,11 @@ export class Galaxy3DEngine {
         this.camera = { ...this.focusTo }
         this.focusFrom = null
         this.focusTo = null
+        /*
+         * 只有"推近到某张图"才通知。回全景也是一段动画，但它会把 focused 置空 ——
+         * 不区分的话每次点「回到全景」都会顺手弹一次大图。
+         */
+        if (this.focused !== null) this.callbacks.onFocusSettled?.(this.focused)
       } else {
         this.camera = lerpCamera(this.focusFrom, this.focusTo, t)
       }

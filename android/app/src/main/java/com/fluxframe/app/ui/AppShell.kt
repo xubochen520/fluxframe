@@ -60,6 +60,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.fluxframe.app.data.store.MediaKind
+import com.fluxframe.app.data.model.ImageItem
+import com.fluxframe.app.data.repo.EmbedRepository
 import com.fluxframe.app.data.store.UploadPhase
 import com.fluxframe.app.ui.components.BottomNavItem
 import com.fluxframe.app.ui.components.CompactIconButton
@@ -145,6 +147,12 @@ fun AppShell(
     // 用稳定媒体 ID 而不是列表下标记住查看项。后台刷新/排序后下标会变化，
     // 这正是以前退出再进入偶尔跳到另一张图的原因。
     var viewerMediaId by remember { mutableStateOf<String?>(null) }
+    /*
+     * 从星图点进来时，左右切换翻的是**这张图的相似图**（和网页端一致）——
+     * 在二维/三维星系里，用户想看的就是"这张的亲戚"，翻整库没有意义。
+     * 空列表表示没走这条路，那就退回按当前页面翻。
+     */
+    var galaxyViewerItems by remember { mutableStateOf<List<ImageItem>>(emptyList()) }
     var toast by remember { mutableStateOf<String?>(null) }
     val pagerState = rememberPagerState(
         initialPage = PRIMARY_ROUTES.indexOf(route).coerceAtLeast(0),
@@ -415,7 +423,18 @@ fun AppShell(
 
             /* 二维/三维两种画法的包装页：模式在这层共享，切视图不会把用户的选择重置掉 */
             AppRoute.SIMILAR -> SimilarRoute(
-                onOpenImage = { id -> viewerMediaId = id },
+                onOpenImage = { id ->
+                    viewerMediaId = id
+                    /* 先把这张自己放进去，否则按 id 找下标会是 -1、箭头永远不出现 */
+                    galaxyViewerItems = images.filter { it.id == id }
+                    scope.launch {
+                        container.embedRepository.similar(id).onSuccess { outcome ->
+                            if (outcome is EmbedRepository.SimilarOutcome.Ok && viewerMediaId == id) {
+                                galaxyViewerItems = images.filter { it.id == id } + outcome.items
+                            }
+                        }
+                    }
+                },
                 onToast = { showToast(it) },
             )
 
@@ -573,11 +592,13 @@ fun AppShell(
 
         // ---- 全屏查看器（覆盖整个界面）----
         // 翻页列表必须与当前页面渲染的列表完全一致，否则"看到的"和"滑到的"会对不上
-        val viewerItems = when (route) {
-            AppRoute.TRASH -> trash
-            AppRoute.VIDEOS -> videos
+        val viewerItems = when {
+            /* 从星图进来的优先用它自己的那一列 */
+            route == AppRoute.SIMILAR && galaxyViewerItems.isNotEmpty() -> galaxyViewerItems
+            route == AppRoute.TRASH -> trash
+            route == AppRoute.VIDEOS -> videos
             // 总览是图文混排的信息流，翻页也按全量走
-            AppRoute.OVERVIEW -> allMedia
+            route == AppRoute.OVERVIEW -> allMedia
             else -> images
         }
         ViewerOverlay(
