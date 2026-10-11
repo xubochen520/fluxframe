@@ -337,3 +337,240 @@ const tooltipItem = computed(() => (tooltip.value ? built.value.items[tooltip.va
     </teleport>
   </div>
 </template>
+
+<style scoped>
+/* ============================================================================
+   3D 星系空间（深空舞台 + 发光节点 + 玻璃控件），与二维那张图共用同一套舞台语言。
+   舞台底色、星云、尘埃、连线、节点光晕都由 WebGL 画（galaxy/engine3d.ts），
+   这里只负责 DOM 层：星云名、提示、缩放按钮、悬停气泡。
+============================================================================ */
+.galaxy {
+  /* 深空玻璃的局部令牌：舞台始终是深空，浅色主题下也保持深色玻璃 */
+  --galaxy-ink: #f2f4fb;
+  --galaxy-ink-2: rgba(226, 232, 248, .74);
+  --galaxy-ink-3: rgba(206, 215, 242, .52);
+  --galaxy-glass: rgba(9, 12, 26, .74);
+  --galaxy-glass-solid: rgba(11, 14, 30, .9);
+  --galaxy-glass-raise: rgba(14, 18, 38, .92);
+  --galaxy-line: rgba(255, 255, 255, .16);
+  --galaxy-line-soft: rgba(255, 255, 255, .1);
+  --galaxy-line-strong: rgba(255, 255, 255, .3);
+  --galaxy-hl: inset 0 1px 0 rgba(255, 255, 255, .16);
+
+  position: relative;
+  height: clamp(460px, calc(100vh - 340px), 980px);
+  min-height: 300px;
+  overflow: hidden;
+  border-radius: var(--r-xl);
+  border: 1px solid var(--stroke);
+  isolation: isolate;
+  background:
+    radial-gradient(68% 58% at 16% 2%, color-mix(in srgb, var(--accent-1) 34%, transparent), transparent 62%),
+    radial-gradient(58% 54% at 88% 98%, color-mix(in srgb, var(--accent-2) 24%, transparent), transparent 62%),
+    radial-gradient(46% 46% at 74% 6%, color-mix(in srgb, var(--accent-3) 16%, transparent), transparent 66%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-1) 78%, #000), color-mix(in srgb, var(--bg-0) 86%, #000));
+  box-shadow: var(--shadow-2), 0 40px 90px -60px color-mix(in srgb, var(--accent-1) 55%, transparent);
+}
+
+/* 浅色主题下阴影里的主色辉光收敛一点（舞台本身仍是深空） */
+:root[data-theme='light'] .galaxy {
+  box-shadow: var(--shadow-2), 0 40px 90px -70px color-mix(in srgb, var(--accent-1) 40%, transparent);
+}
+
+.galaxy-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* 三维视图里画布要接指针事件（拖动旋转），标签层本身不接 */
+  touch-action: none;
+  cursor: grab;
+}
+.galaxy-canvas:active { cursor: grabbing; }
+
+/* 四边往里收，让星系自然融进舞台而不是被硬边裁断 */
+.galaxy::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(126% 122% at 50% 46%, transparent 58%, color-mix(in srgb, #000 46%, transparent));
+  box-shadow: inset 0 0 0 1px var(--galaxy-line-soft);
+}
+
+/* ----------------------------- 星云名称 ----------------------------- */
+.galaxy-label-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+}
+/* 三维视图里标签位置每帧都在变，所以用 transform 定位（left/top 会触发重排，转动时会掉帧） */
+.galaxy-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, currentColor 46%, transparent);
+  border-radius: var(--r-pill);
+  background: var(--galaxy-glass);
+  -webkit-backdrop-filter: blur(6px) saturate(1.3);
+  backdrop-filter: blur(6px) saturate(1.3);
+  box-shadow: var(--galaxy-hl);
+  font: 600 11px/1 var(--font-display);
+  letter-spacing: .02em;
+  white-space: nowrap;
+  text-shadow: 0 1px 10px color-mix(in srgb, #000 80%, transparent);
+  transform: translate(-50%, -50%);
+  will-change: transform;
+  transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.galaxy-label:hover { background: var(--galaxy-glass-raise); transform: translate(-50%, -50%) scale(1.05); }
+
+/* ------------------------------ 缩放控件 ------------------------------ */
+.galaxy-zoom {
+  position: absolute;
+  z-index: 3;
+  right: 12px;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.galaxy-zoom button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--galaxy-line);
+  border-radius: var(--r-sm);
+  background: var(--galaxy-glass);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(12px) saturate(1.4);
+  box-shadow: var(--galaxy-hl), var(--shadow-1);
+  color: var(--galaxy-ink-2);
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.galaxy-zoom button:hover { color: #fff; border-color: color-mix(in srgb, var(--accent-1) 60%, transparent); }
+.galaxy-zoom button:active { transform: scale(.94); }
+
+/* -------------------------------- 提示 -------------------------------- */
+.galaxy-hint {
+  position: absolute;
+  z-index: 3;
+  left: 14px;
+  bottom: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  max-width: calc(100% - 28px);
+  padding: 6px 8px 6px 12px;
+  border: 1px solid var(--galaxy-line-soft);
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--galaxy-glass-solid) 78%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  color: var(--galaxy-ink-3);
+  font: 500 10.5px var(--font-mono);
+  letter-spacing: .02em;
+}
+/* 陀螺仪按钮在提示条里：深空玻璃自己的配色（全局 .ghost-button 是给页面用的） */
+.galaxy-hint .ghost-button {
+  height: 26px;
+  padding: 0 11px;
+  border-color: var(--galaxy-line);
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, .08);
+  color: var(--galaxy-ink-2);
+  font-size: 11px;
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.galaxy-hint .ghost-button:hover {
+  background: color-mix(in srgb, var(--accent-1) 32%, var(--galaxy-glass-solid));
+  border-color: color-mix(in srgb, var(--accent-1) 58%, transparent);
+  color: #fff;
+}
+.galaxy-hint .ghost-button:active { transform: scale(.96); }
+
+/* ----------------------------- 悬停气泡 ----------------------------- */
+/* Teleport 到 body：作用域标记还在，但拿不到 .galaxy 上的局部令牌，所以用到的值原样再写一次 */
+.galaxy-tip {
+  --galaxy-ink: #f2f4fb;
+  --galaxy-ink-3: rgba(206, 215, 242, .52);
+  --galaxy-glass-solid: rgba(11, 14, 30, .9);
+  --galaxy-line: rgba(255, 255, 255, .16);
+  --galaxy-hl: inset 0 1px 0 rgba(255, 255, 255, .16);
+  position: fixed;
+  z-index: 40;
+  min-width: 130px;
+  max-width: 240px;
+  padding: 9px 12px;
+  border: 1px solid var(--galaxy-line);
+  border-radius: var(--r-md);
+  background: var(--galaxy-glass-solid);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow: var(--galaxy-hl), var(--shadow-2);
+  color: var(--galaxy-ink);
+  pointer-events: none;
+}
+.galaxy-tip strong {
+  display: block;
+  color: var(--galaxy-ink);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.galaxy-tip small { display: block; margin-top: 4px; color: var(--galaxy-ink-3); font: 500 10.5px var(--font-mono); }
+
+/* ------------------------------ 失败态 ------------------------------ */
+.galaxy-webgl-error {
+  position: absolute;
+  z-index: 3;
+  inset: auto 16px 16px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, transparent);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--danger) 16%, var(--galaxy-glass-solid));
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  box-shadow: var(--galaxy-hl), var(--shadow-1);
+  color: #ffe6ea;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.galaxy-webgl-error strong { display: block; font-weight: 600; }
+.galaxy-webgl-error p { margin: 5px 0 0; opacity: .85; }
+
+/* ------------------------------- 响应式 ------------------------------- */
+@media (max-width: 720px) {
+  .galaxy {
+    height: clamp(400px, calc(100vh - 300px), 720px);
+    border-radius: var(--r-lg);
+  }
+  /* 手机端全局禁用 backdrop-filter（性能守则），玻璃靠 tint 与高光 */
+  .galaxy-label,
+  .galaxy-zoom button,
+  .galaxy-hint,
+  .galaxy-tip,
+  .galaxy-webgl-error {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .galaxy-label { background: var(--galaxy-glass-solid); }
+  .galaxy-zoom button { width: 32px; height: 32px; background: var(--galaxy-glass-solid); }
+  /* 提示条在手机上会盖住画布：字号收小，文案与按钮都保留 */
+  .galaxy-hint { background: var(--galaxy-glass-solid); font-size: 10px; }
+  .galaxy-tip { display: none; }
+}
+</style>

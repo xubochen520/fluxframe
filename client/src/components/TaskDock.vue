@@ -83,6 +83,10 @@ async function onOpenDownload(id: number) {
 </template>
 
 <style scoped>
+/* ============================================================
+   全局任务坞（左下角）· 极光玻璃
+   位置逻辑不变；卡片改为玻璃原语，进度条走极光渐变
+   ============================================================ */
 .task-dock {
   position: fixed; left: 20px; bottom: 20px; z-index: 26;
   display: flex; flex-direction: column; gap: 9px;
@@ -91,72 +95,47 @@ async function onOpenDownload(id: number) {
 }
 .task-card {
   pointer-events: auto;
-  border: 1px solid rgba(157, 171, 210, .2);
-  border-radius: 13px;
-  background: rgba(16, 22, 40, .97);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, .42);
+  position: relative;
   padding: 12px 13px 11px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--stroke);
+  background: var(--glass-fill);
+  box-shadow: var(--edge-hl), var(--shadow-1), 0 22px 44px -34px var(--glow);
+  -webkit-backdrop-filter: blur(20px) saturate(1.5); backdrop-filter: blur(20px) saturate(1.5);
+  animation: rise var(--t-slow) var(--ease) backwards;
 }
-.task-card.error { border-color: rgba(248, 113, 113, .32); }
-.task-card.done { border-color: rgba(74, 222, 128, .26); }
+.task-card.error { border-color: color-mix(in srgb, var(--danger) 34%, transparent); }
+.task-card.done { border-color: color-mix(in srgb, var(--success) 30%, transparent); }
 .task-head { display: flex; align-items: flex-start; gap: 10px; }
-.task-ico {
-  width: 26px; height: 26px; flex: none; border-radius: 8px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: rgba(167, 139, 250, .13); color: #b7a5ff;
-}
-.task-card.done .task-ico { background: rgba(74, 222, 128, .13); color: #6ee7a2; }
-.task-card.error .task-ico { background: rgba(248, 113, 113, .13); color: #fb8294; }
+.task-ico { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 27px; height: 27px; border-radius: 10px; background: var(--accent-soft); color: var(--accent-ink); box-shadow: inset 0 1px 0 var(--highlight); }
+.task-card.done .task-ico { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
+.task-card.error .task-ico { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
 .task-tx { flex: 1; min-width: 0; }
-.task-tx b {
-  display: block; font-size: 12px; font-weight: 500; color: #dfe4ef;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.task-tx small {
-  display: block; margin-top: 3px; font-size: 10.5px; line-height: 1.45;
-  color: #8b96ad; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.task-card.done .task-tx small { color: #7ce7a5; }
-.task-card.error .task-tx small { color: #fda4af; }
-.task-x {
-  flex: none; width: 22px; height: 22px; border-radius: 6px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: transparent; color: #6d7894;
-}
-.task-x:hover { background: rgba(255, 255, 255, .07); color: #cfd6e6; }
-.task-bar {
-  height: 5px; margin-top: 10px; border-radius: 6px;
-  background: rgba(255, 255, 255, .07); overflow: hidden;
-}
-.task-bar i {
-  display: block; height: 100%; border-radius: 6px;
-  background: linear-gradient(90deg, #22d3ee, #a78bfa, #e15aa6);
-  transition: width .18s ease;
-}
-.task-bar i.indet { animation: task-indet 1.15s ease-in-out infinite alternate; }
-.task-bar i.fill-ok { width: 100%; background: linear-gradient(90deg, #34d399, #6ee7a2); }
-.task-bar i.fill-err { width: 100%; background: rgba(248, 113, 113, .55); }
+.task-tx b { display: block; color: var(--text-1); font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.task-tx small { display: block; margin-top: 3px; color: var(--text-3); font-size: 10.5px; line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.task-card.done .task-tx small { color: color-mix(in oklab, var(--success) 72%, var(--text-1)); }
+.task-card.error .task-tx small { color: var(--danger); }
+.task-x { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 24px; height: 24px; border-radius: 8px; color: var(--text-3); transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.task-x:hover { background: var(--field-hover); color: var(--text-1); }
+.task-bar { height: 5px; margin-top: 11px; overflow: hidden; border-radius: var(--r-pill); background: var(--track); }
+.task-bar i { display: block; height: 100%; border-radius: inherit; background: var(--aurora-grad); transition: width var(--t-fast) var(--ease); }
+.task-bar i.indet { animation: task-indet 1.15s var(--ease) infinite alternate; }
+.task-bar i.fill-ok { width: 100%; background: linear-gradient(90deg, var(--success), color-mix(in oklab, var(--success) 55%, var(--accent-2))); }
+.task-bar i.fill-err { width: 100%; background: color-mix(in srgb, var(--danger) 62%, transparent); }
 @keyframes task-indet {
   from { transform: translateX(-110%); }
   to { transform: translateX(320%); }
 }
 .task-acts { display: flex; gap: 8px; margin-top: 11px; }
-.task-btn {
-  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  padding: 7px 10px; border-radius: 8px;
-  background: rgba(255, 255, 255, .05); color: #aab3c8; font-size: 11px;
-  transition: .16s;
-}
-.task-btn:hover { background: rgba(255, 255, 255, .1); color: #fff; }
-.task-btn.task-go { background: rgba(167, 139, 250, .16); color: #cfc3ff; }
-.task-btn.task-go:hover { background: rgba(167, 139, 250, .26); }
+.task-btn { display: inline-flex; align-items: center; justify-content: center; flex: 1; gap: 6px; height: 30px; padding: 0 10px; border-radius: var(--r-pill); border: 1px solid var(--stroke); background: var(--field); color: var(--text-2); font-size: 11.5px; font-weight: 500; transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease); }
+.task-btn:hover { background: var(--field-hover); border-color: var(--stroke-strong); color: var(--text-1); }
+.task-btn:active { transform: scale(.97); }
+.task-btn.task-go { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-ink); }
+.task-btn.task-go:hover { background: color-mix(in srgb, var(--accent-1) 24%, transparent); }
 .spin { animation: task-spin .9s linear infinite; }
 @keyframes task-spin { to { transform: rotate(360deg); } }
 @media (max-width: 720px) {
-  .task-dock {
-    left: 12px; right: 12px; bottom: calc(70px + env(safe-area-inset-bottom));
-    width: auto; max-width: none;
-  }
-  .task-card { padding: 11px 12px 10px; }
+  .task-dock { left: 12px; right: 12px; bottom: calc(70px + env(safe-area-inset-bottom)); width: auto; max-width: none; }
+  .task-card { padding: 11px 12px 10px; -webkit-backdrop-filter: none; backdrop-filter: none; background: var(--surface-strong); }
 }
 </style>

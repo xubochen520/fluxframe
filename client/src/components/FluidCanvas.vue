@@ -17,6 +17,7 @@ let updateColors: (() => void) | undefined
 let wake: (() => void) | undefined
 let resizeObserver: ResizeObserver | undefined
 let abort: AbortController | undefined
+let themeObserver: MutationObserver | undefined
 let rafId = 0
 let scheduled = false
 let destroyed = false
@@ -27,7 +28,6 @@ let lastDraw = 0
 let lastActivity = 0
 let targetFps = 60
 let speedFactor = 1
-let edgeColor = props.edgeColor
 let edgeX = 0
 let edgeXAt = Number.NEGATIVE_INFINITY
 
@@ -36,6 +36,54 @@ function hexToRgb(hex: string) {
   const normalized = value.length === 3 ? value.split('').map((part) => part + part).join('') : value
   const number = Number.parseInt(normalized, 16)
   return [((number >> 16) & 255) / 255, ((number >> 8) & 255) / 255, (number & 255) / 255] as const
+}
+
+/* ===== 只改配色参数：自适应档位（像素预算 / 帧率分档 / 空闲冻结 / 后台暂停）一概不动 ===== */
+
+/** 色彩空间用的三原色是归一化 RGB 三元组（与上方 hexToRgb 的返回形状一致） */
+type Rgb = readonly [number, number, number]
+
+/**
+ * 浅色主题下页面底色是亮的，着色器仍按「加色/滤色」的直觉给颜色会被冲淡，
+ * 所以浅色时把配色压暗一档并抬一点饱和度：叠在亮底上反而更实。
+ * 只做一次，帧内不参与。
+ */
+function normalizeRgb(rgb: Rgb, dark: boolean): Rgb {
+  if (dark) return rgb
+  const max = Math.max(rgb[0], rgb[1], rgb[2])
+  const min = Math.min(rgb[0], rgb[1], rgb[2])
+  const lightness = (max + min) / 2
+  const span = max - min
+  const saturation = span < 1e-4 ? 0 : span / (1 - Math.abs(2 * lightness - 1))
+  const targetL = Math.min(lightness * 0.78, 0.6)
+  const targetS = Math.min(1, saturation * 1.12 + 0.06)
+  const chroma = (1 - Math.abs(2 * targetL - 1)) * targetS
+  const h = span < 1e-4 ? 0 : ((max === rgb[0] ? (rgb[1] - rgb[2]) / span : max === rgb[1] ? (rgb[2] - rgb[0]) / span + 2 : (rgb[0] - rgb[1]) / span + 4) + 6) % 6
+  const x = chroma * (1 - Math.abs((h % 2) - 1))
+  const m = targetL - chroma / 2
+  const sector: Rgb[] = [[chroma, x, 0], [x, chroma, 0], [0, chroma, x], [0, x, chroma], [x, 0, chroma], [chroma, 0, x]]
+  const picked = sector[Math.floor(h) % 6]
+  return [picked[0] + m, picked[1] + m, picked[2] + m] as const
+}
+
+/** 已归一化的配色缓存：键是「原始配色 + 明暗」的指纹，命中就不重算 */
+let paletteKey = ''
+let palette: { colors: Rgb[]; edge: Rgb; alpha: number } = {
+  colors: [[0.31, 0.275, 0.9], [0.024, 0.71, 0.831], [0.957, 0.447, 0.714]],
+  edge: [0.024, 0.71, 0.831],
+  alpha: 0.62,
+}
+
+function resolvePalette(dark: boolean) {
+  const key = `${dark ? 'dark' : 'light'}|${props.palette.slice(0, 3).join(',')}|${props.edgeColor}`
+  if (key === paletteKey) return palette
+  paletteKey = key
+  const colors: Rgb[] = []
+  for (const value of props.palette.slice(0, 3)) colors.push(normalizeRgb(hexToRgb(value), dark))
+  /* 服务端只给了一两个颜色时，缺的位沿用默认极光色，别掉成纯黑 */
+  while (colors.length < 3) colors.push(normalizeRgb(hexToRgb(['#4f46e5', '#06b6d4', '#f472b6'][colors.length]), dark))
+  palette = { colors, edge: normalizeRgb(hexToRgb(props.edgeColor), dark), alpha: dark ? 0.62 : 0.78 }
+  return palette
 }
 
 onMounted(() => {
@@ -76,6 +124,7 @@ onMounted(() => {
     uniform vec3 uEdgeColor;
     uniform float uEdgeX;
     uniform float uEdgeStrength;
+    uniform float uAlpha;
     out vec4 color;
     float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
     float noise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f); return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y); }
@@ -87,7 +136,7 @@ onMounted(() => {
       float edgeGlow=exp(-abs(gl_FragCoord.x-uEdgeX*uResolution.x)/13.0)*uEdgeStrength;
       float edgeFlow=.58+.42*sin(t*1.7+uv.y*5.0+n*3.0);
       rgb=mix(rgb,uEdgeColor,clamp(edgeGlow*edgeFlow,0.0,.94));
-      float alpha=.22+.22*smoothstep(.15,.95,n)+edgeGlow*.14; color=vec4(rgb*alpha,.62);
+      float alpha=.22+.22*smoothstep(.15,.95,n)+edgeGlow*.14; color=vec4(rgb*alpha,uAlpha);
     }
   `
   const compile = (type: number, source: string) => { const shader = gl.createShader(type)!; gl.shaderSource(shader, source); gl.compileShader(shader); return shader }
@@ -99,6 +148,7 @@ onMounted(() => {
   let edgeColorLoc: WebGLUniformLocation | null = null
   let edgeXLoc: WebGLUniformLocation | null = null
   let edgeStrLoc: WebGLUniformLocation | null = null
+  let alphaLoc: WebGLUniformLocation | null = null
 
   const createProgram = () => {
     const program = gl.createProgram()!
@@ -120,6 +170,7 @@ onMounted(() => {
     edgeColorLoc = gl.getUniformLocation(program, 'uEdgeColor')
     edgeXLoc = gl.getUniformLocation(program, 'uEdgeX')
     edgeStrLoc = gl.getUniformLocation(program, 'uEdgeStrength')
+    alphaLoc = gl.getUniformLocation(program, 'uAlpha')
     return true
   }
 
@@ -140,9 +191,12 @@ onMounted(() => {
 
   const setColors = () => {
     if (!speedLoc) return
-    props.palette.slice(0, 3).forEach((value, index) => { const rgb = hexToRgb(value); const loc = colorLocs[index]; if (loc) gl.uniform3f(loc, rgb[0], rgb[1], rgb[2]) })
-    const accent = hexToRgb(edgeColor)
-    if (edgeColorLoc) gl.uniform3f(edgeColorLoc, accent[0], accent[1], accent[2])
+    /* 明暗只在换主题时才读一次；归一化配色带指纹缓存，重算不发生在帧内 */
+    const dark = document.documentElement.dataset.theme !== 'light'
+    const next = resolvePalette(dark)
+    next.colors.forEach((rgb, index) => { const loc = colorLocs[index]; if (loc) gl.uniform3f(loc, rgb[0], rgb[1], rgb[2]) })
+    if (edgeColorLoc) gl.uniform3f(edgeColorLoc, next.edge[0], next.edge[1], next.edge[2])
+    if (alphaLoc) gl.uniform1f(alphaLoc, next.alpha)
     gl.uniform1f(speedLoc, props.speed * speedFactor)
     updateEdge(performance.now())
   }
@@ -214,10 +268,16 @@ onMounted(() => {
   el.addEventListener('webglcontextlost', onContextLost, { signal })
   el.addEventListener('webglcontextrestored', onContextRestored, { signal })
 
+  /* 深色 / 浅色切换时配色要跟着换（只重设 uniform，不重开上下文、不动档位） */
+  if (typeof MutationObserver !== 'undefined') {
+    themeObserver = new MutationObserver(() => { setColors(); doWake() })
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+  }
+
   if (!paused && !reducedMotion()) doWake()
 })
 
-watch(() => [props.palette, props.speed, props.edgeColor, props.edgeHighlight], () => { edgeColor = props.edgeColor; updateColors?.() }, { deep: true })
+watch(() => [props.palette, props.speed, props.edgeColor, props.edgeHighlight], () => { updateColors?.() }, { deep: true })
 watch(() => props.paused, (value) => {
   paused = value
   if (value) {
@@ -230,9 +290,92 @@ watch(() => props.paused, (value) => {
 onBeforeUnmount(() => {
   destroyed = true
   if (scheduled) cancelAnimationFrame(rafId)
+  themeObserver?.disconnect()
+  themeObserver = undefined
   resizeObserver?.disconnect()
   abort?.abort()
 })
 </script>
 
 <template><canvas ref="canvas" :class="['fluid-canvas', { 'fluid-canvas-inline': inline }]" aria-hidden="true" /></template>
+
+<style scoped>
+/* 画布本体（旧的全局 .fluid-canvas 已经随 styles.css 一起下线，这里补回来）。
+   只定位置、透明度与遮罩：渲染规模、帧率、空闲冻结仍全部由脚本里的档位控制。 */
+.fluid-canvas {
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  opacity: .5;
+  pointer-events: none;
+  /* 左右两端渐隐，让极光从中间自然过渡到页面底色 */
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 24%, #000 76%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0%, #000 24%, #000 76%, transparent 100%);
+}
+
+/* 作为壳层背景（.app-fluid-background）时叠在深色底上发光 */
+.fluid-canvas.app-fluid-background {
+  opacity: .82;
+  mix-blend-mode: screen;
+  filter: saturate(1.2);
+}
+
+/* 设置页里的内联预览：填满 .fluid-preview 预览框，不做遮罩 */
+.fluid-canvas.fluid-canvas-inline {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 1;
+  border-radius: inherit;
+  -webkit-mask-image: none;
+  mask-image: none;
+  mix-blend-mode: normal;
+  filter: none;
+}
+
+/* 设置页的预览框：给内联画布一个定位父级（原样式随 settings.css 下线） */
+:deep(.fluid-preview) {
+  position: relative;
+  min-height: 220px;
+  overflow: hidden;
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-md);
+  background: var(--media-bg);
+}
+
+:deep(.fluid-preview-caption) {
+  position: absolute;
+  left: 17px;
+  bottom: 14px;
+  z-index: 1;
+  color: var(--text-1);
+  font: 500 11px var(--font-mono);
+  letter-spacing: .08em;
+  text-shadow: 0 2px 12px var(--bg-0);
+}
+
+:deep(.fluid-disabled) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* 浅色主题：底色是亮的，改用正常混合，压住亮度免得糊成一片大白 */
+:root[data-theme='light'] .fluid-canvas.app-fluid-background {
+  opacity: .62;
+  mix-blend-mode: normal;
+  filter: saturate(1.25);
+}
+
+/* 减少动效：静态一帧，降低存在感 */
+:root[data-motion='reduced'] .fluid-canvas.app-fluid-background {
+  opacity: .58;
+}
+</style>

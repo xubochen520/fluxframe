@@ -580,3 +580,520 @@ watch([() => props.nodes, () => props.edges, () => props.positions, () => props.
     </template>
   </div>
 </template>
+
+<style scoped>
+/* ============================================================================
+   深空舞台 + 发光节点 + 玻璃控件。
+   舞台底色与星云本体由 WebGL 画（galaxy/engine.ts），这里只负责：
+     · 舞台的兜底底色与两团极光晕（画布首帧之前、以及画布边缘的过渡）
+     · DOM 控件：星云名、工具栏、缩放、提示、选中卡片、悬停气泡
+   控件（工具栏 / 缩放 / 卡片 / 气泡）统一走「深空玻璃」：白字白描边，
+   深色与浅色主题下都成立——舞台本身始终是深空，浅色下也照样压得住。
+============================================================================ */
+.galaxy {
+  /* 深空玻璃的局部令牌：整套界面只有这一个舞台，浅色主题下也保持深色玻璃 */
+  --galaxy-ink: #f2f4fb;
+  --galaxy-ink-2: rgba(226, 232, 248, .74);
+  --galaxy-ink-3: rgba(206, 215, 242, .52);
+  --galaxy-glass: rgba(9, 12, 26, .74);
+  --galaxy-glass-solid: rgba(11, 14, 30, .9);
+  --galaxy-glass-raise: rgba(14, 18, 38, .92);
+  --galaxy-line: rgba(255, 255, 255, .16);
+  --galaxy-line-soft: rgba(255, 255, 255, .1);
+  --galaxy-line-strong: rgba(255, 255, 255, .3);
+  --galaxy-hl: inset 0 1px 0 rgba(255, 255, 255, .16);
+
+  position: relative;
+  height: clamp(460px, calc(100vh - 340px), 980px);
+  min-height: 300px;
+  overflow: hidden;
+  border-radius: var(--r-xl);
+  border: 1px solid var(--stroke);
+  isolation: isolate;
+  /* 兜底层：深空渐变 + 角上的两团极光雾（正式星云由 WebGL 画在上面） */
+  background:
+    radial-gradient(68% 58% at 16% 2%, color-mix(in srgb, var(--accent-1) 34%, transparent), transparent 62%),
+    radial-gradient(58% 54% at 88% 98%, color-mix(in srgb, var(--accent-2) 24%, transparent), transparent 62%),
+    radial-gradient(46% 46% at 74% 6%, color-mix(in srgb, var(--accent-3) 16%, transparent), transparent 66%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-1) 78%, #000), color-mix(in srgb, var(--bg-0) 86%, #000));
+  box-shadow: var(--shadow-2), 0 40px 90px -60px color-mix(in srgb, var(--accent-1) 55%, transparent);
+}
+
+/* 浅色主题下阴影里的主色辉光收敛一点（舞台本身仍是深空） */
+:root[data-theme='light'] .galaxy {
+  box-shadow: var(--shadow-2), 0 40px 90px -70px color-mix(in srgb, var(--accent-1) 40%, transparent);
+}
+
+/* ------------------------------- 画布 ------------------------------- */
+.galaxy-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* 触摸设备上必须吃掉默认手势，否则拖动会变成滚动页面而不是平移星图 */
+  touch-action: none;
+  cursor: grab;
+}
+.galaxy-canvas:active { cursor: grabbing; }
+
+/* 画布四边往里收一点，让星云自然融进舞台底色而不是被硬边裁断 */
+.galaxy::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(126% 122% at 50% 46%, transparent 58%, color-mix(in srgb, #000 46%, transparent));
+  box-shadow: inset 0 0 0 1px var(--galaxy-line-soft);
+}
+
+/* ----------------------------- 星云名称 ----------------------------- */
+/* 位置由 JS 逐帧写进 transform，所以这里只定外观 */
+.galaxy-labels { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+
+.galaxy-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, currentColor 46%, transparent);
+  border-radius: var(--r-pill);
+  background: var(--galaxy-glass);
+  -webkit-backdrop-filter: blur(6px) saturate(1.3);
+  backdrop-filter: blur(6px) saturate(1.3);
+  box-shadow: var(--galaxy-hl);
+  font: 600 11px/1 var(--font-display);
+  letter-spacing: .02em;
+  white-space: nowrap;
+  text-shadow: 0 1px 10px color-mix(in srgb, #000 80%, transparent);
+  transition: opacity var(--t-mid) var(--ease), background var(--t-fast) var(--ease);
+}
+/* 二维视图的 transform 由 JS 每帧写入（translate 定位 + 居中），所以这里不能碰 transform，
+   只用背景和亮度表达悬停/按下 */
+.galaxy-label:hover { background: var(--galaxy-glass-raise); }
+.galaxy-label:active { background: color-mix(in srgb, var(--accent-1) 30%, var(--galaxy-glass-solid)); }
+.galaxy-label:disabled { cursor: default; }
+.galaxy-label:disabled:hover { background: var(--galaxy-glass); }
+
+/* --------------------------- 工具栏（HUD） --------------------------- */
+.galaxy-hud {
+  position: absolute;
+  z-index: 3;
+  left: 12px;
+  top: 12px;
+  right: 60px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  pointer-events: none;
+}
+.galaxy-hud > * { pointer-events: auto; }
+
+.galaxy-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(290px, 100%);
+  height: 36px;
+  padding: 0 6px 0 12px;
+  border: 1px solid var(--galaxy-line);
+  border-radius: var(--r-pill);
+  background: var(--galaxy-glass);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(12px) saturate(1.4);
+  box-shadow: var(--galaxy-hl), var(--shadow-1);
+  color: var(--galaxy-ink-3);
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-mid) var(--ease);
+}
+.galaxy-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent-2) 62%, transparent);
+  box-shadow: var(--galaxy-hl), 0 0 0 4px color-mix(in srgb, var(--accent-1) 22%, transparent);
+}
+.galaxy-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--galaxy-ink);
+  font-size: 12.5px;
+}
+.galaxy-search input::placeholder { color: var(--galaxy-ink-3); }
+.galaxy-search-clear {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--galaxy-ink-3);
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.galaxy-search-clear:hover { background: rgba(255, 255, 255, .12); color: var(--galaxy-ink); }
+
+.galaxy-hit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border: 1px solid var(--galaxy-line-soft);
+  border-radius: var(--r-pill);
+  background: var(--galaxy-glass);
+  -webkit-backdrop-filter: blur(10px) saturate(1.3);
+  backdrop-filter: blur(10px) saturate(1.3);
+  box-shadow: var(--galaxy-hl);
+  color: var(--galaxy-ink-2);
+  font: 500 10.5px var(--font-mono);
+  letter-spacing: .02em;
+}
+.galaxy-hit-action {
+  padding: 0;
+  background: transparent;
+  color: color-mix(in oklab, var(--accent-2) 62%, white);
+  font-size: 10.5px;
+  font-weight: 600;
+  transition: color var(--t-fast) var(--ease);
+}
+.galaxy-hit-action:hover { color: #fff; text-decoration: underline; }
+
+.galaxy-legend { display: flex; flex-wrap: wrap; gap: 6px; max-width: 100%; }
+.galaxy-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--galaxy-line-soft);
+  border-radius: var(--r-pill);
+  background: var(--galaxy-glass);
+  -webkit-backdrop-filter: blur(8px) saturate(1.3);
+  backdrop-filter: blur(8px) saturate(1.3);
+  box-shadow: var(--galaxy-hl);
+  color: var(--galaxy-ink-2);
+  font-size: 11px;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.galaxy-legend-item i {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: 0 0 9px currentColor;
+}
+.galaxy-legend-item small { color: var(--galaxy-ink-3); font: 500 10px var(--font-mono); }
+.galaxy-legend-item:hover { color: var(--galaxy-ink); border-color: var(--galaxy-line-strong); }
+.galaxy-legend-item:active { transform: scale(.96); }
+.galaxy-legend-item.active {
+  color: #fff;
+  border-color: color-mix(in srgb, var(--accent-1) 66%, transparent);
+  background: color-mix(in srgb, var(--accent-1) 34%, var(--galaxy-glass-solid));
+  box-shadow: var(--galaxy-hl), 0 8px 20px -12px color-mix(in srgb, var(--accent-1) 80%, transparent);
+}
+.galaxy-legend-item.active small { color: rgba(255, 255, 255, .78); }
+
+/* ------------------------------ 缩放控件 ------------------------------ */
+.galaxy-zoom {
+  position: absolute;
+  z-index: 3;
+  right: 12px;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.galaxy-zoom button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--galaxy-line);
+  border-radius: var(--r-sm);
+  background: var(--galaxy-glass);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  backdrop-filter: blur(12px) saturate(1.4);
+  box-shadow: var(--galaxy-hl), var(--shadow-1);
+  color: var(--galaxy-ink-2);
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.galaxy-zoom button:hover { color: #fff; border-color: color-mix(in srgb, var(--accent-1) 60%, transparent); }
+.galaxy-zoom button:active { transform: scale(.94); }
+
+/* -------------------------------- 提示 -------------------------------- */
+.galaxy-hint {
+  position: absolute;
+  z-index: 3;
+  left: 14px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: calc(100% - 28px);
+  padding: 6px 12px;
+  border: 1px solid var(--galaxy-line-soft);
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--galaxy-glass-solid) 78%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  color: var(--galaxy-ink-3);
+  font: 500 10.5px var(--font-mono);
+  letter-spacing: .02em;
+  pointer-events: none;
+}
+.galaxy-hint em { font-style: normal; color: color-mix(in oklab, var(--accent-2) 58%, white); }
+
+/* ------------------------------ 选中卡片 ------------------------------ */
+.galaxy-card {
+  position: absolute;
+  z-index: 4;
+  right: 12px;
+  bottom: 12px;
+  width: 258px;
+  /* 小屏上卡片可能比画布还高：限高 + 自己滚，别顶出容器外 */
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid var(--galaxy-line);
+  border-radius: var(--r-lg);
+  /* 卡片不给 backdrop-filter（性能守则：网格卡片级别的大面积不糊背景），
+     用接近实心的玻璃色 + 顶部高光描边做出同样的层次 */
+  background: linear-gradient(180deg, rgba(255, 255, 255, .07), transparent 42%), var(--galaxy-glass-solid);
+  box-shadow: var(--galaxy-hl), var(--shadow-2), 0 26px 60px -40px color-mix(in srgb, var(--accent-1) 70%, transparent);
+}
+.galaxy-card-close {
+  position: absolute;
+  z-index: 2;
+  right: 14px;
+  top: 14px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--galaxy-line);
+  border-radius: 50%;
+  background: rgba(6, 10, 22, .68);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  color: var(--galaxy-ink-2);
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease), transform var(--t-mid) var(--ease);
+}
+.galaxy-card-close:hover { color: #fff; background: rgba(6, 10, 22, .9); transform: rotate(90deg); }
+.galaxy-card > img {
+  display: block;
+  width: 100%;
+  height: 148px;
+  object-fit: cover;
+  border-radius: var(--r-md);
+  border: 1px solid var(--galaxy-line-soft);
+  background: var(--media-bg);
+  cursor: pointer;
+  transition: filter var(--t-mid) var(--ease);
+}
+.galaxy-card > img:hover { filter: brightness(1.08); }
+.galaxy-card-body { padding: 10px 2px 0; }
+.galaxy-card-body > strong {
+  display: block;
+  color: var(--galaxy-ink);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.galaxy-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--galaxy-ink-3);
+  font: 500 10px var(--font-mono);
+}
+.galaxy-card-neighbors { margin-top: 12px; }
+.galaxy-card-neighbors small {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--galaxy-ink-3);
+  font: 500 10px var(--font-mono);
+  letter-spacing: .04em;
+}
+.galaxy-card-strip { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 3px; }
+.galaxy-card-strip button {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--galaxy-line-soft);
+  border-radius: var(--r-xs);
+  background: var(--media-bg);
+  transition: border-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.galaxy-card-strip button:hover { border-color: color-mix(in srgb, var(--accent-1) 70%, transparent); transform: translateY(-2px); }
+.galaxy-card-strip img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.galaxy-card-strip span {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 1px 0;
+  background: rgba(4, 8, 18, .78);
+  color: #e2e8f5;
+  font: 500 9px var(--font-mono);
+}
+.galaxy-card-actions { display: flex; gap: 8px; margin-top: 13px; }
+.galaxy-card-actions .primary-button { flex: 1; justify-content: center; height: 34px; padding: 0 12px; font-size: 12px; }
+.galaxy-card-actions .filter-button { height: 34px; border-color: var(--galaxy-line); background: rgba(255, 255, 255, .07); color: var(--galaxy-ink-2); }
+.galaxy-card-actions .filter-button:hover { background: rgba(255, 255, 255, .14); border-color: var(--galaxy-line-strong); color: #fff; }
+
+.galaxy-card-enter-active, .galaxy-card-leave-active { transition: opacity var(--t-mid) var(--ease), transform var(--t-slow) var(--ease); }
+.galaxy-card-enter-from, .galaxy-card-leave-to { opacity: 0; transform: translateY(14px) scale(.97); }
+
+/* ------------------------------ 悬停气泡 ------------------------------ */
+/* Teleport 到 body，作用域标记仍在这棵子树上，所以下面的规则照样命中；
+   但它在 .galaxy 之外，拿不到那套局部令牌，所以这里把用到的几个值原样再声明一次。 */
+.galaxy-tip {
+  --galaxy-ink: #f2f4fb;
+  --galaxy-ink-3: rgba(206, 215, 242, .52);
+  --galaxy-glass-solid: rgba(11, 14, 30, .9);
+  --galaxy-line: rgba(255, 255, 255, .16);
+  --galaxy-line-soft: rgba(255, 255, 255, .1);
+  --galaxy-hl: inset 0 1px 0 rgba(255, 255, 255, .16);
+  position: fixed;
+  z-index: 40;
+  width: 232px;
+  padding: 10px;
+  border: 1px solid var(--galaxy-line);
+  border-radius: var(--r-lg);
+  background: linear-gradient(180deg, rgba(255, 255, 255, .07), transparent 40%), var(--galaxy-glass-solid);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow: var(--galaxy-hl), var(--shadow-2);
+  color: var(--galaxy-ink);
+  pointer-events: none;
+}
+.galaxy-tip img {
+  display: block;
+  width: 100%;
+  height: 132px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--galaxy-line-soft);
+  background: var(--media-bg);
+}
+.galaxy-tip strong {
+  display: block;
+  margin: 9px 2px 0;
+  color: var(--galaxy-ink);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.galaxy-tip p {
+  margin: 7px 2px 0;
+  color: var(--galaxy-ink-3);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.galaxy-tip-meta { display: flex; align-items: center; gap: 8px; margin: 7px 2px 0; }
+.galaxy-tip-dim { color: var(--galaxy-ink-3); font: 500 10px var(--font-mono); }
+
+.galaxy-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid color-mix(in srgb, var(--chip) 42%, transparent);
+  background: color-mix(in srgb, var(--chip) 22%, transparent);
+  color: var(--chip);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ------------------------------ 失败态 ------------------------------ */
+.galaxy-failure {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 24px;
+  color: var(--galaxy-ink-3);
+  text-align: center;
+}
+.galaxy-failure svg { color: color-mix(in oklab, var(--accent-1) 60%, white); }
+.galaxy-failure strong { color: var(--galaxy-ink); font: 600 15px var(--font-display); }
+.galaxy-failure p { margin: 0; max-width: 420px; font-size: 12px; line-height: 1.7; }
+.galaxy-failure-hint { color: var(--galaxy-ink-3); }
+
+/* ------------------------------- 响应式 ------------------------------- */
+@media (max-width: 900px) {
+  .galaxy-card { width: 232px; }
+  .galaxy-card > img { height: 128px; }
+}
+
+@media (max-width: 720px) {
+  .galaxy {
+    height: clamp(400px, calc(100vh - 300px), 720px);
+    border-radius: var(--r-lg);
+  }
+  /* 手机端全局禁用 backdrop-filter（性能守则），玻璃靠 tint 与高光 */
+  .galaxy-label,
+  .galaxy-search,
+  .galaxy-hit,
+  .galaxy-legend-item,
+  .galaxy-zoom button,
+  .galaxy-hint,
+  .galaxy-card-close,
+  .galaxy-tip {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .galaxy-search { background: var(--galaxy-glass-solid); }
+  .galaxy-legend-item { background: var(--galaxy-glass-solid); }
+  .galaxy-zoom button { background: var(--galaxy-glass-solid); }
+  .galaxy-hud { right: 54px; gap: 6px; }
+  .galaxy-search { width: 100%; height: 38px; }
+  /* 图例横滑一行，别把画布挤掉 */
+  .galaxy-legend {
+    flex-wrap: nowrap;
+    width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 4px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .galaxy-legend::-webkit-scrollbar { display: none; }
+  .galaxy-zoom button { width: 32px; height: 32px; }
+  .galaxy-card {
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    width: auto;
+    max-height: 62%;
+  }
+  .galaxy-card > img { height: 116px; }
+  /* 底部提示与卡片重叠：手机上让位给卡片 */
+  .galaxy-hint { display: none; }
+  .galaxy-tip { display: none; }
+}
+</style>

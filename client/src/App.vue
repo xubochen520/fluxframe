@@ -1,23 +1,32 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { gsap } from 'gsap'
-import { BookmarkPlus, Check, ChevronDown, CircleHelp, Clock3, Coins, Download, Eye, Filter, Fingerprint, FolderOpen, Images, LayoutDashboard, Box, ChevronLeft, ChevronRight, LayoutGrid, Link2, LoaderCircle, Menu, MoreHorizontal, Orbit, Pencil, Play, Plus, ScanFace, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Tags, Trash2, Upload, UserMinus, UserRound, Users, X, Zap } from 'lucide-vue-next'
+import { Images, LayoutDashboard, Link2, Settings2, ShieldCheck, Sparkles, Tags, Trash2 } from 'lucide-vue-next'
 import LoginView from './components/LoginView.vue'
-import SettingsPanel from './components/SettingsPanel.vue'
 import FluidCanvas from './components/FluidCanvas.vue'
 import UploadReviewModal from './components/UploadReviewModal.vue'
 import ParsePanel from './components/ParsePanel.vue'
 import TaskDock from './components/TaskDock.vue'
-import DeepseekBar from './components/DeepseekBar.vue'
-import SimilarGalaxy from './components/SimilarGalaxy.vue'
-import SimilarGalaxy3D from './components/SimilarGalaxy3D.vue'
 import AppSidebar from './shell/AppSidebar.vue'
 import AppTopbar from './shell/AppTopbar.vue'
 import MobileNav from './shell/MobileNav.vue'
 import OverviewView from './views/OverviewView.vue'
 import LibraryView from './views/LibraryView.vue'
+import SimilarView from './views/SimilarView.vue'
+import TagsView from './views/TagsView.vue'
+import LogsView from './views/LogsView.vue'
+import SettingsView from './views/SettingsView.vue'
 import AppToast from './overlays/AppToast.vue'
-import { enterPage, installMotion } from './motion'
+import ContextMenu from './overlays/ContextMenu.vue'
+import TagContextMenu from './overlays/TagContextMenu.vue'
+import RenameModal from './overlays/RenameModal.vue'
+import NewTagModal from './overlays/NewTagModal.vue'
+import AddTagModal from './overlays/AddTagModal.vue'
+import RemoveTagModal from './overlays/RemoveTagModal.vue'
+import BatchTagModal from './overlays/BatchTagModal.vue'
+import PersonDetailModal from './overlays/PersonDetailModal.vue'
+import ReferencesModal from './overlays/ReferencesModal.vue'
+import ViewerOverlay from './overlays/ViewerOverlay.vue'
+import { enterPage, installMotion, recentPointer } from './motion'
 import { startDownload } from './downloadTaskStore'
 import { api, type CurrentUser, type DetectBox, type EmbedCalibrationPayload, type EmbedGraphMode,
   type EmbedGraphSpace, type EmbedGraphPayload, type EmbedStatusPayload, type ReferenceItem, type SimilarImageItem } from './api'
@@ -34,7 +43,9 @@ const query = ref('')
 const sortBy = ref('views')
 const selectedTag = ref('全部标签')
 const selectedImage = ref<ImageItem | null>(null)
-const previewImageElement = ref<HTMLElement | null>(null)
+const viewerRef = ref<InstanceType<typeof ViewerOverlay> | null>(null)
+/* 滚轮缩放要以查看器里真实图片元素的位置为基准，所以从子组件取回 DOM 引用 */
+const previewImageElement = computed<HTMLElement | null>(() => (viewerRef.value?.imageEl as HTMLElement | null) ?? null)
 const previewScale = ref(1)
 const previewOffset = ref({ x: 0, y: 0 })
 const previewLoading = ref(false)
@@ -48,8 +59,7 @@ const similarItems = ref<SimilarImageItem[]>([])
 const similarAnalyzing = ref(false)
 const similarThreshold = ref(0.35)
 const similarForId = ref('')
-/** 上滑累计量：滚轮是离散事件，累计到阈值再拉出面板，避免轻轻一滚就弹 */
-let swipeUpAccum = 0
+/** 上滑多少像素算「拉出相似图面板」（触摸手势用） */
 const SWIPE_UP_TRIGGER = 90
 /**
  * 下滑多少像素算「收起相似图面板」。
@@ -67,7 +77,6 @@ function resetSimilar() {
   similarItems.value = []
   similarAnalyzing.value = false
   similarForId.value = ''
-  swipeUpAccum = 0
   similarRetries = 0
 }
 
@@ -119,7 +128,7 @@ async function openSimilar(imageId: string, showPanel = true) {
   }
 }
 
-function closeSimilar() { similarOpen.value = false; swipeUpAccum = 0; similarRetries = 0 }
+function closeSimilar() { similarOpen.value = false; similarRetries = 0 }
 
 /** 点相似图里的某张：直接切过去（保留面板打开，便于连续翻看） */
 async function openSimilarImage(item: SimilarImageItem) {
@@ -478,13 +487,15 @@ const batchImageQuery = ref('')
 const selectedBatchImageIds = ref<string[]>([])
 const showRename = ref(false)
 const renameName = ref('')
+/** 「修改名称 / 添加标签 / 移除标签」三个弹窗各自要作用于哪张图（右键菜单一关就从 contextImage 转存过来） */
+const renameImage = ref<ImageItem | null>(null)
+const addTagImage = ref<ImageItem | null>(null)
+const removeTagImage = ref<ImageItem | null>(null)
 const logFilter = ref('全部')
 const toast = ref('')
 const images = ref<ImageItem[]>([])
 const tags = ref<TagItem[]>([])
 const logs = ref<AuditLog[]>([])
-const newTag = ref('')
-const newTagR18 = ref(false)
 const newTagPerson = ref(false)
 /* ---- 人物组（人名标签）：绿色圆点，可从「全部标签」长按 / 右键放入 ---- */
 const PERSON_COLOR = '#22c55e'
@@ -495,13 +506,17 @@ const personGroupOpen = ref(true)
 const showPersonDetail = ref(false)
 const personDetail = ref<PersonDetail | null>(null)
 const personDetailLoading = ref(false)
-const pickedTagNames = ref<string[]>([])
 function tagDot(tag: { person?: boolean; r18?: boolean; color: string }) { return tag.person ? PERSON_COLOR : tag.r18 ? '#ef4444' : tag.color }
-function imageTagPerson(name: string) { return tagByName.value.get(name)?.person === true }
 /** 图片库顶部标签筛选条：人物标签前面带一个绿色圆点 */
 const tagPills = computed<Array<{ name: string; person?: boolean }>>(() => [{ name: '全部标签' }, ...tags.value.map((tag) => ({ name: tag.name, person: tag.person }))])
 /** 「添加标签」弹窗：只列出这张图片还没有的标签，可多选一次性添加 */
-const addableTags = computed(() => { const owned = new Set(contextImage.value?.tags || []); return tags.value.filter((tag) => !owned.has(tag.name)) })
+const addableTags = computed(() => { const owned = new Set(addTagImage.value?.tags || []); return tags.value.filter((tag) => !owned.has(tag.name)) })
+/** 「移除标签」弹窗要列出这张图已经有的标签（带 id，才能精确删除） */
+const removeTagOptions = computed(() => {
+  const image = removeTagImage.value
+  if (!image) return []
+  return image.tags.map((name, index) => tagByName.value.get(name) || { id: image.tagIds[index], name, color: '#fb7185' })
+})
 const savedTagPickerColumns = Number(localStorage.getItem('tagPickerColumns'))
 const tagPickerColumns = ref([1, 2, 3, 4].includes(savedTagPickerColumns) ? savedTagPickerColumns : 2)
 function setTagPickerColumns(n: number) { tagPickerColumns.value = n; try { localStorage.setItem('tagPickerColumns', String(n)) } catch { /* ignore */ } }
@@ -547,6 +562,7 @@ const timeGreeting = computed(() => {
   return '晚上好'
 })
 const liveImages = computed(() => images.value.filter((image) => !image.deletedAt))
+const trashCount = computed(() => images.value.filter((image) => image.deletedAt).length)
 const filteredImages = computed(() => {
   let result = activeView.value === 'trash' ? images.value.filter((image) => image.deletedAt) : liveImages.value
   const search = query.value.trim().toLowerCase()
@@ -623,9 +639,6 @@ const batchCandidates = computed(() => {
   const queryText = batchImageQuery.value.trim().toLowerCase()
   return images.value.filter((image) => !image.deletedAt && !image.tagIds.includes(batchTag.value?.id || '') && (!queryText || image.name.toLowerCase().includes(queryText) || image.tags.some((tag) => tag.toLowerCase().includes(queryText))))
 })
-function tagRatio(count: number) { return stats.value.imageCount ? `${Math.min(100, (count / stats.value.imageCount) * 100).toFixed(1)}%` : '0%' }
-
-function formatTime(value: string) { const date = new Date(value); if (Number.isNaN(date.valueOf())) return value; const diff = Math.max(0, Date.now() - date.valueOf()); const minutes = Math.floor(diff / 60000); if (minutes < 1) return '刚刚'; if (minutes < 60) return `${minutes} 分钟前`; const hours = Math.floor(minutes / 60); if (hours < 24) return `${hours} 小时前`; return date.toLocaleDateString('zh-CN') }
 function notify(message: string) { toast.value = message; window.setTimeout(() => { toast.value = '' }, 2600) }
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : '操作失败，请稍后重试' }
 async function refreshImages() { const response = await api.images({ search: query.value.trim() || undefined, sort: sortBy.value, tag: selectedTag.value === '全部标签' ? undefined : selectedTag.value, trash: activeView.value === 'trash' }); images.value = Array.isArray(response?.items) ? response.items : []; beginImageProgress() }
@@ -660,7 +673,6 @@ function isVideoItem(item: { mimeType?: string } | null | undefined) { return !!
 /* 有服务端生成的封面（thumb 指向 variant 而非视频本体）时，视频卡片直接用 <img> 显示封面，
    网格不再加载/解码任何视频（这是卡顿主因）；无封面才回退旧的 <video> 取帧方案 */
 function hasPoster(item: { mimeType?: string; thumb?: string; url?: string }) { return !item.url || item.thumb !== item.url }
-function videoCardReady(image: ImageItem, event: Event) { sizeImageCard(event); handleImageProgress(image) }
 function handleImageProgress(image: ImageItem) {
   if (!libraryLoading.value || loadedImageIds.has(image.id)) return
   loadedImageIds.add(image.id)
@@ -671,7 +683,7 @@ async function refreshTags() { const response = await api.tags(); tags.value = A
 async function refreshLogs() { if (currentUser.value?.role === 'ADMIN') { const response = await api.logs(); logs.value = Array.isArray(response?.items) ? response.items : [] } }
 async function refreshDashboard() { const response = await api.dashboard(); if (response?.stats) stats.value = { ...stats.value, ...response.stats }; if (currentUser.value?.role !== 'ADMIN') logs.value = Array.isArray(response?.logs) ? response.logs : [] }
 function applyPreferences() { document.documentElement.dataset.theme = isDark.value ? 'dark' : 'light'; document.documentElement.dataset.themeName = selectedTheme.value.toLowerCase(); document.documentElement.dataset.motion = animationEnabled.value ? 'full' : 'reduced'; document.title = `${settings.value.siteName || 'fluxframe'} · Intranet Image Manager` }
-async function refreshSettings() { if (currentUser.value?.role !== 'ADMIN') return; const data = await api.settings(); settings.value = { ...settings.value, ...data }; selectedTheme.value = String(data.theme || 'Aurora'); isDark.value = true; webglEnabled.value = data.webglEnabled !== false; animationEnabled.value = data.animationEnabled !== false; fluidSpeed.value = 3; if (Array.isArray(data.fluidColors) && data.fluidColors.length >= 3) fluidColors.value = data.fluidColors.slice(0, 3).map(String); applyPreferences() }
+async function refreshSettings() { if (currentUser.value?.role !== 'ADMIN') return; const data = await api.settings(); settings.value = { ...settings.value, ...data }; selectedTheme.value = String(data.theme || 'Aurora'); /* 原先这里写死 true：管理员每次进设置页都会被强制切回深色，浅色模式等于存了也白存 */ isDark.value = data.darkMode !== false; webglEnabled.value = data.webglEnabled !== false; animationEnabled.value = data.animationEnabled !== false; fluidSpeed.value = 3; if (Array.isArray(data.fluidColors) && data.fluidColors.length >= 3) fluidColors.value = data.fluidColors.slice(0, 3).map(String); applyPreferences() }
 async function loadData() { await Promise.all([refreshTags(), refreshDashboard(), refreshImages(), refreshLogs(), refreshSettings(), loadDetectStatus(), loadReferenceSummary()]) }
 async function checkSession() { try { currentUser.value = await api.me(); authenticated.value = true; await loadData() } catch { authenticated.value = false } finally { booting.value = false } }
 async function handleLogin(username: string, password: string) { authLoading.value = true; authError.value = ''; try { const response = await api.login(username, password); currentUser.value = response.user; authenticated.value = true; await loadData() } catch (error) { authError.value = errorMessage(error) } finally { authLoading.value = false } }
@@ -724,20 +736,14 @@ function closePreview() {
   if (boxMode.value && !closePreviewBoxes()) return
   selectedImage.value = null
   videoFullscreen.value = false
+  flipFrom.value = null
   resetPreview()
   resetBoxState()
   resetSimilar()
 }
-/* ---- 上滑拉出相似图：滚轮与触摸共用一套判定 ----
+/* ---- 上滑拉出相似图：手机上整层 backdrop 都能起手 ----
    为什么判定放在整层 backdrop 而不是图片元素上：手机竖屏看横图时图片只占中间一条，
    左右留白、上下留白都点不到图片；只绑图片的话「在大图上滑」有一半区域没反应。 */
-function accumulateSwipeUp(amount: number, imageId: string) {
-  swipeUpAccum += amount
-  if (swipeUpAccum >= SWIPE_UP_TRIGGER) {
-    swipeUpAccum = 0
-    void openSimilar(imageId)
-  }
-}
 
 function handlePreviewWheel(event: WheelEvent) {
   /* 相似图面板已打开时，滚轮交给面板自己滚（它能滚就滚，滚到头再由浏览器/外层处理） */
@@ -745,14 +751,9 @@ function handlePreviewWheel(event: WheelEvent) {
   const element = previewImageElement.value
   if (!element || isVideoItem(selectedImage.value)) return
 
-  /* 未放大（scale=1）时滚轮本来就没法再缩小 —— 这时把「持续上滑」解释为
-     「想看这张图的相似图」。累计超过阈值才拉出，避免轻轻一滚就弹面板。 */
-  if (previewScale.value <= 1.01) {
-    if (event.deltaY < 0 && selectedImage.value) accumulateSwipeUp(-event.deltaY, selectedImage.value.id)
-    else swipeUpAccum = 0
-    return
-  }
-
+  /* 滚轮缩放：以指针位置为锚点，scale=1 时向上滚即放大。
+     这里原本被「滚轮上滑拉出相似图」占着，导致 previewScale 永远停在 1、滚轮缩放整条路走不通；
+     手机端的「上滑看相似图」仍由触摸手势负责（见 onPreviewTouchMove）。 */
   const rect = element.getBoundingClientRect()
   const oldScale = previewScale.value
   const nextScale = Math.min(6, Math.max(1, oldScale * (event.deltaY < 0 ? 1.16 : 1 / 1.16)))
@@ -767,7 +768,6 @@ function handlePreviewWheel(event: WheelEvent) {
 
 /* ---- 移动端：整层上滑拉出相似图面板（覆盖图片内外的所有空白区域）---- */
 function onPreviewTouchStart(event: TouchEvent) {
-  swipeUpAccum = 0
   swipeTouchStart.value = null
   /* 在相似图面板**内部**起手的滑动不归这里管：那是在滚列表，不是「下滑收起」。
      不排除的话，手指往下滚一下列表就把整个面板关掉了。 */
@@ -800,32 +800,41 @@ function onPreviewTouchMove(event: TouchEvent) {
 
   if (dy < -SWIPE_UP_TRIGGER && selectedImage.value) {
     swipeTouchStart.value = null
-    swipeUpAccum = 0
     void openSimilar(selectedImage.value.id)
   }
 }
 
-function onPreviewTouchEnd() { swipeTouchStart.value = null; swipeUpAccum = 0 }
-async function openImage(image: ImageItem) { try { resetBoxState(); resetPreview(); resetSimilar(); previewLoading.value = true; videoFullscreen.value = isVideoItem(image) && isLandscape.value; selectedImage.value = image; const result = await api.viewImage(image.id); image.views = result.views; if (selectedImage.value) selectedImage.value.views = result.views; stats.value.totalViews += 1 /* 不再每看一张图就全量刷新 500 条审计日志（进日志页时会刷新）；旧的写法让管理员每次点图都多一个 ~100KB 请求 */ } catch (error) { notify(errorMessage(error)) } }
+function onPreviewTouchEnd() { swipeTouchStart.value = null }
+async function openImage(image: ImageItem, flip: { left: number; top: number; width: number; height: number } | null = null) { flipFrom.value = flip; try { resetBoxState(); resetPreview(); resetSimilar(); previewLoading.value = true; videoFullscreen.value = isVideoItem(image) && isLandscape.value; selectedImage.value = image; const result = await api.viewImage(image.id); image.views = result.views; if (selectedImage.value) selectedImage.value.views = result.views; stats.value.totalViews += 1 /* 不再每看一张图就全量刷新 500 条审计日志（进日志页时会刷新）；旧的写法让管理员每次点图都多一个 ~100KB 请求 */ } catch (error) { notify(errorMessage(error)) } }
+/** 点开大图时的缩略图位置：查看器据此从卡片处 FLIP 放大（指针位置由 motion.ts 记录） */
+const flipFrom = ref<{ left: number; top: number; width: number; height: number } | null>(null)
+function captureFlipSource() {
+  const point = recentPointer()
+  const card = point ? document.elementFromPoint(point.x, point.y)?.closest?.('.image-card') : null
+  if (!card) return null
+  const rect = card.getBoundingClientRect()
+  return rect.width && rect.height ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null
+}
 /** 卡片点击入口：长按刚弹出菜单后浏览器补发的 click 不应打开大图（菜单内的按钮走 openImage 不受此限） */
 function openFromCard(image: ImageItem) {
   if (Date.now() < suppressOpenUntil) return
   /* 从网格点进来就按网格的顺序翻 —— 用户看到的就是这个顺序 */
   previewNav.value = images.value
-  void openImage(image)
+  void openImage(image, captureFlipSource())
 }
 async function softDelete(image: ImageItem) { try { await api.deleteImage(image.id); contextImage.value = null; selectedImage.value = null; await refreshImages(); await refreshDashboard(); notify('图片已移入回收站') } catch (error) { notify(errorMessage(error)) } }
 async function restore(image: ImageItem) { try { await api.restoreImage(image.id); contextImage.value = null; await refreshImages(); notify('图片已恢复') } catch (error) { notify(errorMessage(error)) } }
 async function permanentDelete(image: ImageItem) { try { await api.permanentDelete(image.id); contextImage.value = null; await refreshImages(); notify('图片已永久删除') } catch (error) { notify(errorMessage(error)) } }
 /** 打开「修改名称」弹窗：预填当前名称（不含扩展名），聚焦全选便于直接输入 */
-function beginRename() {
-  const image = contextImage.value
+function beginRename(image: ImageItem) {
   if (!image || image.deletedAt) return
+  renameImage.value = image
   renameName.value = image.name
   showRename.value = true
+  contextImage.value = null
 }
 async function submitRename() {
-  const image = contextImage.value
+  const image = renameImage.value
   const name = renameName.value.trim()
   if (!image || !name) return
   try {
@@ -833,12 +842,25 @@ async function submitRename() {
     const item = images.value.find((entry) => entry.id === image.id)
     if (item) item.name = result.name
     showRename.value = false
-    contextImage.value = null
+    renameImage.value = null
     notify('文件名称已修改')
   } catch (error) { notify(errorMessage(error)) }
 }
 function selectRenameText(event: FocusEvent) { (event.target as HTMLInputElement | null)?.select() }
-async function removeImageTag(tagId: string, tagName: string, image = contextImage.value) { if (!image || !tagId) return; try { await api.removeTag(image.id, tagId); showRemoveTag.value = false; contextImage.value = null; await refreshTags(); await refreshImages(); notify(`已从「${image.name}」移除标签「${tagName}」`) } catch (error) { notify(errorMessage(error)) } }
+/** 移除标签：右键菜单关掉后弹窗仍要拿到那张图，「移除标签」按钮才点得动 */
+function openRemoveTag(image: ImageItem) { removeTagImage.value = image; showRemoveTag.value = true; contextImage.value = null }
+async function removeImageTag(tagId: string, tagName: string) {
+  const image = removeTagImage.value
+  if (!image || !tagId) return
+  try {
+    await api.removeTag(image.id, tagId)
+    showRemoveTag.value = false
+    removeTagImage.value = null
+    await refreshTags()
+    await refreshImages()
+    notify(`已从「${image.name}」移除标签「${tagName}」`)
+  } catch (error) { notify(errorMessage(error)) }
+}
 function openTagContextAt(tag: TagItem, x: number, y: number) { contextTag.value = tag; tagContextPosition.value = { x: Math.min(x, window.innerWidth - 250), y: Math.min(y, window.innerHeight - 170) }; contextImage.value = null }
 function openTagContext(tag: TagItem, event: MouseEvent) { openTagContextAt(tag, event.clientX, event.clientY) }
 /* ---- 手机端长按标签行：弹出标签菜单（放入人物组 / 批量添加图片） ---- */
@@ -875,7 +897,6 @@ async function toggleTagPerson(tag: TagItem, person: boolean) {
     notify(person ? `「${updated.name}」已放入人物组` : `「${updated.name}」已移出人物组`)
   } catch (error) { notify(errorMessage(error)) }
 }
-async function toggleTagPersonFromMenu() { const tag = contextTag.value; if (!tag) return; contextTag.value = null; await toggleTagPerson(tag, !tag.person) }
 /** 打开人物详情：展示该人名标签下全部图片的「全部标签」聚合 */
 async function openPerson(tag: TagItem) {
   showPersonDetail.value = true
@@ -886,19 +907,16 @@ async function openPerson(tag: TagItem) {
 function closePersonDetail() { showPersonDetail.value = false; personDetail.value = null; personDetailLoading.value = false }
 function viewTagFromPerson(tag: { name: string }) { closePersonDetail(); void viewTag(tag.name) }
 async function removePersonFromDetail() { const tag = personDetail.value; if (!tag) return; try { await api.updateTag(tag.id, { person: false }); closePersonDetail(); await refreshTags(); notify(`「${tag.name}」已移出人物组`) } catch (error) { notify(errorMessage(error)) } }
-function openTagDialog(person = false) { newTag.value = ''; newTagR18.value = false; newTagPerson.value = person; showTagDialog.value = true }
-/* ---- 为图片添加标签：多选 + 每排 1~4 个 ---- */
-function openAddTag() { pickedTagNames.value = []; showAddTag.value = true }
-function closeAddTag() { showAddTag.value = false; pickedTagNames.value = [] }
-function togglePickTag(name: string) { pickedTagNames.value = pickedTagNames.value.includes(name) ? pickedTagNames.value.filter((item) => item !== name) : [...pickedTagNames.value, name] }
-async function submitAddTags() {
-  const image = contextImage.value
-  const names = pickedTagNames.value.filter((name) => !(image?.tags || []).includes(name))
+function openTagDialog(person = false) { newTagPerson.value = person; showTagDialog.value = true }
+/* ---- 为图片添加标签：多选 + 每排 1~4 个（勾选状态由 AddTagModal 自己持有） ---- */
+function openAddTag(image: ImageItem) { addTagImage.value = image; showAddTag.value = true; contextImage.value = null }
+function closeAddTag() { showAddTag.value = false; addTagImage.value = null }
+async function submitAddTags(names: string[]) {
+  const image = addTagImage.value
   if (!image || !names.length) return
   try {
     for (const name of names) await api.addTag(image.id, name)
     closeAddTag()
-    contextImage.value = null
     await refreshTags()
     await refreshImages()
     notify(`已添加 ${names.length} 个标签`)
@@ -906,10 +924,19 @@ async function submitAddTags() {
 }
 async function openBatchTag(tag: TagItem) { contextTag.value = null; batchTag.value = tag; batchImageQuery.value = ''; selectedBatchImageIds.value = []; showBatchTag.value = true; if (activeView.value !== 'tags') await refreshImages() }
 function selectAllBatchImages() { selectedBatchImageIds.value = batchCandidates.value.map((image) => image.id) }
-function sizeBatchCard(event: Event) { const image = event.currentTarget as HTMLImageElement; const card = image.closest('.batch-image-option') as HTMLElement | null; const list = card?.parentElement; if (!card || !list) return; card.style.gridRowEnd = 'auto'; requestAnimationFrame(() => { const rowHeight = 8; const rowGap = Number.parseFloat(getComputedStyle(list).rowGap) || 8; card.style.gridRowEnd = `span ${Math.max(1, Math.ceil((card.scrollHeight + rowGap) / (rowHeight + rowGap)))}` }) }
-function sizeImageCard(event: Event) { const media = event.target as HTMLElement; if (!media || (media.tagName !== 'IMG' && media.tagName !== 'VIDEO')) return; const card = media.closest('.image-card') as HTMLElement | null; const grid = card?.parentElement; if (!card || !grid) return; card.style.gridRowEnd = 'auto'; requestAnimationFrame(() => { const rowHeight = 8; const rowGap = 13 /* 常量代替 getComputedStyle：旧写法每张图加载都强制一次同步样式计算，135 张 = 135 次布局抖动 */; card.style.gridRowEnd = `span ${Math.max(1, Math.ceil((card.scrollHeight + rowGap) / (rowHeight + rowGap)))}` }) }
 async function submitBatchTag() { if (!batchTag.value || !selectedBatchImageIds.value.length) return; try { const result = await api.addImagesToTag(batchTag.value.id, selectedBatchImageIds.value); showBatchTag.value = false; await refreshTags(); await refreshImages(); notify(`已将 ${result.added} 张图片添加到「${batchTag.value.name}」`) } catch (error) { notify(errorMessage(error)) } }
-async function createTag() { const name = newTag.value.trim(); if (!name) return; const r18 = newTagR18.value; const person = newTagPerson.value; try { await api.createTag(name, person ? PERSON_COLOR : '#a78bfa', r18, person); newTag.value = ''; newTagR18.value = false; newTagPerson.value = false; showTagDialog.value = false; await refreshTags(); await refreshImages(); notify(person ? `人物「${name}」已创建，圆点为绿色` : r18 ? 'R18 链接标签已创建' : '新标签已创建') } catch (error) { notify(errorMessage(error)) } }
+async function createTag(payload: { name: string; person: boolean; r18: boolean }) {
+  const name = payload.name.trim()
+  if (!name) return
+  try {
+    await api.createTag(name, payload.person ? PERSON_COLOR : '#a78bfa', payload.r18, payload.person)
+    showTagDialog.value = false
+    newTagPerson.value = false
+    await refreshTags()
+    await refreshImages()
+    notify(payload.person ? `人物「${name}」已创建，圆点为绿色` : payload.r18 ? 'R18 链接标签已创建' : '新标签已创建')
+  } catch (error) { notify(errorMessage(error)) }
+}
 async function toggleTagR18(tag: TagItem) {
   const next = !tag.r18
   try {
@@ -918,7 +945,6 @@ async function toggleTagR18(tag: TagItem) {
     notify(updated.r18 ? `「${updated.name}」已标记为 R18 链接标签` : `「${updated.name}」已取消 R18 标记`)
   } catch (error) { notify(errorMessage(error)) }
 }
-async function toggleTagR18FromMenu() { const tag = contextTag.value; if (!tag) return; contextTag.value = null; await toggleTagR18(tag) }
 async function toggleR18Mode() {
   const next = !r18Mode.value
   try {
@@ -948,22 +974,6 @@ function logGroupOf(action: string) {
   return '其他'
 }
 const filteredLogs = computed(() => (logFilter.value === '全部' ? logs.value : logs.value.filter((log) => logGroupOf(log.action) === logFilter.value)))
-function logActionIcon(action: string) {
-  if (action === '查看图片') return Eye
-  if (action === '查看视频') return Play
-  if (action === '提取视频') return Link2
-  if (action === '提取封面') return Images
-  if (action.includes('提取')) return Link2
-  if (action.includes('下载')) return Download
-  if (action.includes('上传')) return Upload
-  if (action.includes('名称')) return Pencil
-  if (action === '恢复图片') return Check
-  if (action.includes('人物')) return Users
-  if (action.includes('DeepSeek')) return Coins
-  if (action.includes('标签')) return Tags
-  if (action.includes('删除')) return Trash2
-  return UserRound
-}
 /** 文件扩展名：按 mime 推断（下载用） */
 function downloadExt(mime: string | undefined) {
   const m = String(mime || '').toLowerCase()
@@ -982,14 +992,6 @@ function downloadImage(image: ImageItem | null | undefined) {
   if (!image) return
   const base = image.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').replace(/^[.\s]+|[.\s]+$/g, '') || '媒体文件'
   startDownload({ url: `/api/images/${image.id}/download`, filename: `${base}.${downloadExt(image.mimeType)}` })
-}
-/** 图片库标签栏：桌面滚轮纵向滚动 → 横向切换标签（可横滚时才拦截） */
-function onPillsWheel(event: WheelEvent) {
-  const el = event.currentTarget as HTMLElement
-  if (el.scrollWidth <= el.clientWidth) return
-  if (Math.abs(event.deltaY) < Math.abs(event.deltaX)) return // 触控板横向手势交给原生
-  event.preventDefault()
-  el.scrollLeft += event.deltaY
 }
 /** 视频提取面板内跳转（如保存成功后去图片库） */
 function onPanelGoto(view: 'library' | 'tags') { void go(view) }
@@ -1026,41 +1028,288 @@ onBeforeUnmount(() => { stopMotion?.(); if (greetingTimer) window.clearInterval(
 
 <template>
   <LoginView v-if="!booting && !authenticated" :loading="authLoading" :error="authError" @login="handleLogin" @register="handleRegister" />
+
   <div v-else-if="authenticated" class="app-shell" @click="closeContext">
     <FluidCanvas v-if="webglEnabled" class="app-fluid-background" :palette="fluidColors" :speed="3" :paused="!animationEnabled" :edge-color="fluidColors[0]" :edge-highlight="false" />
-    <AppSidebar :active-view="activeView" :image-count="stats.imageCount" :trash-count="images.filter((image) => image.deletedAt).length" :stats="stats" :user="currentUser" @go="go" @logout="logout" />
+    <AppSidebar :active-view="activeView" :image-count="stats.imageCount" :trash-count="trashCount" :stats="stats" :user="currentUser" @go="go" @logout="logout" />
+
     <main class="main-area">
-      <AppTopbar :page-title="pageTitle" :query="query" :user="currentUser" @update:query="query = $event" @search-input="handleSearchInput" @submit="submitGlobalSearch" @clear="clearGlobalSearch" @logout="logout" @open-more="moreOpen = true" />
+      <AppTopbar
+        :page-title="pageTitle"
+        :query="query"
+        :user="currentUser"
+        @update:query="query = $event"
+        @search-input="handleSearchInput"
+        @submit="submitGlobalSearch"
+        @clear="clearGlobalSearch"
+        @logout="logout"
+        @open-more="moreOpen = true"
+      />
+
       <section class="page-content">
-        <OverviewView v-if="activeView === 'overview'" :user="currentUser" :greeting="timeGreeting" :stats="stats" :top-images="topImages" :logs="logs" :live-images="liveImages" @upload="showUpload = true" @go="go" @open="openFromCard" @context="openContext" @press-start="onImageTouchStart" @press-cancel="cancelImageLongPress" @press-end="onImageTouchEnd" @download="downloadImage" @media-progress="handleImageProgress" />
-        <LibraryView v-else-if="activeView === 'library' || activeView === 'trash'" :mode="activeView === 'trash' ? 'trash' : 'library'" :images="filteredImages" :tags="tags" :tag-pills="tagPills" :selected-tag="selectedTag" :sort-by="sortBy" :r18-mode="r18Mode" :loading="libraryLoading" :progress="libraryProgress" :loaded="libraryLoaded" :total="libraryTotal" @update:selected-tag="selectedTag = $event" @sort="setSort" @toggle-r18="toggleR18Mode" @upload="showUpload = true" @open="openFromCard" @context="openContext" @press-start="onImageTouchStart" @press-cancel="cancelImageLongPress" @press-end="onImageTouchEnd" @download="downloadImage" @media-progress="handleImageProgress" />
-<template v-else-if="activeView === 'similar'"><div class="page-heading"><div><p class="eyebrow"><Sparkles :size="14" /> VISUAL RELATIONS</p><h1>相似图关系网</h1><p class="subheading">{{ graphMode === 'tag' ? '按标签自动把被打了同一批标记的图片连起来：图片挂在自己的标签上，围成一团的就是共享那批标签的图。' : '按视觉指纹（CCIP）自动把看起来像同一角色/同一张图的图片连起来，和标签无关。' }}上面是星云全貌，下面可以切成按分组看。</p></div><div class="similar-actions"><div class="graph-view-switch"><button :class="{ active: graphMode === 'visual' }" title="按 CCIP 视觉指纹连线：长得像的图聚在一起" @click="setGraphMode('visual')"><Fingerprint :size="14" />视觉指纹</button><button :class="{ active: graphMode === 'tag' }" title="按标签连线：被打了同一批标记的图聚在一起" @click="setGraphMode('tag')"><Tags :size="14" />标签</button></div><div class="graph-view-switch"><button :class="{ active: graphView === 'galaxy' }" title="二维总览：一眼看清有多少团、彼此多远" @click="setGraphView('galaxy')"><Orbit :size="14" />星系图</button><button :class="{ active: graphView === 'galaxy3d' }" title="三维星系空间：拖动旋转、点图推近" @click="setGraphView('galaxy3d')"><Box :size="14" />3D 星系</button><button :class="{ active: graphView === 'list' }" @click="setGraphView('list')"><LayoutGrid :size="14" />分组列表</button></div><button class="filter-button" :disabled="graphLoading" @click="refreshGraph"><LoaderCircle v-if="graphLoading" :size="15" class="spin" /><Sparkles v-else :size="15" />{{ graphLoading ? '计算中…' : '刷新关系网' }}</button><button class="filter-button" @click="go('settings')"><SlidersHorizontal :size="15" />阈值设置</button></div></div><div v-if="graphPayload" class="graph-stats"><div><strong>{{ graphPayload.totalIndexed ?? graphPayload.nodes.length }}</strong><span>{{ graphMode === 'tag' ? '有标签' : '已建指纹' }}</span></div><div><strong>{{ graphPayload.linked ?? 0 }}</strong><span>连上关系</span></div><div><strong>{{ graphGroups.length }}</strong><span>相似分组</span></div><div><strong>{{ graphPayload.isolated }}</strong><span>{{ graphMode === 'tag' ? '无共同标签' : '暂无相似图' }}</span></div><div><strong>{{ Math.round((graphPayload.threshold || 0) * 100) }}%</strong><span>{{ graphMode === 'tag' ? '标签重合度' : '相似度阈值' }}</span></div></div><div v-if="graphLoading && !graphPayload" class="graph-loading"><LoaderCircle :size="18" class="spin" />正在读取关系网…</div><template v-else-if="graphPayload && !graphPayload.nodes.length"><div class="panel graph-empty"><Sparkles :size="26" /><strong>{{ graphMode === 'tag' ? '还没有给图片打标签' : '还没有建立视觉指纹' }}</strong><p>{{ graphMode === 'tag' ? '标签模式靠标签连线，库里得先有标签。上传时可以用自动打标，也可以在图片库/标签页里手动补。' : '视觉指纹是「找相似图」的依据，每张图算一次（约 0.7 秒）。上传新图会自动算；库里的历史图片需要先在设置里点一次「建立索引」。' }}</p><button v-if="graphMode !== 'tag'" class="primary-button" @click="go('settings')">去设置里建立索引</button><button v-else class="primary-button" @click="go('library')">去图片库打标签</button></div></template><template v-else-if="graphPayload"><SimilarGalaxy3D v-if="graphView === 'galaxy3d'" :nodes="graphPayload.nodes" :edges="graphPayload.edges" :groups="graphPayload.groups" :positions="graphPayload.positions || {}" :characters="graphPayload.characters || {}" :threshold="graphPayload.threshold || 0.35" :mode="graphMode" :tag-anchors="graphPayload.tagAnchors || {}" @open="(item) => openFromGraph(item, false)" /><SimilarGalaxy v-else-if="graphView === 'galaxy'" :nodes="graphPayload.nodes" :edges="graphPayload.edges" :groups="graphPayload.groups" :positions="graphPayload.positions || {}" :characters="graphPayload.characters || {}" :threshold="graphPayload.threshold || 0.35" :mode="graphMode" :tag-anchors="graphPayload.tagAnchors || {}" @open="openFromGraph" /><template v-else><div v-if="!graphGroups.length" class="panel graph-empty"><Sparkles :size="26" /><strong>暂时没有达到阈值（{{ Math.round((graphPayload.threshold || 0) * 100) }}%）的{{ graphMode === 'tag' ? '共同标签' : '相似图' }}</strong><p>{{ graphMode === 'tag' ? '说明没有哪两张图共享了足够有分量的标签。给图片补上更具体的标签（人物、作品、服装）就能连起来。' : '可能是库里图片彼此差异较大。可以在设置里把阈值调低一点再试。' }}</p><button v-if="graphMode !== 'tag'" class="primary-button" @click="go('settings')">调整阈值</button><button v-else class="primary-button" @click="go('library')">去补标签</button></div><div v-else class="graph-groups"><div v-for="(group, index) in graphGroups" :key="index" class="panel graph-group"><div class="graph-group-head"><div><strong>{{ group.items.length }} 张互相相似</strong><small>{{ group.items[0]?.name }}{{ group.items.length > 1 ? ' 等' : '' }}</small></div><button class="text-button" @click="openFromGraph(group.items[0])">打开 <span>→</span></button></div><div class="graph-group-grid"><button v-for="image in group.items.slice(0, 18)" :key="image.id" class="graph-thumb" :title="image.name" @click="openFromGraph(image)"><img :src="image.thumb" :alt="image.name" loading="lazy" decoding="async" /><span v-if="image.tags.length" class="graph-thumb-tag">{{ image.tags[0] }}</span></button><span v-if="group.items.length > 18" class="graph-more">+{{ group.items.length - 18 }}</span></div></div></div></template></template></template>
-        <template v-else-if="activeView === 'tags'"><div class="page-heading"><div><p class="eyebrow"><Sparkles :size="14" /> ORGANIZE SMARTER</p><h1>智能标签</h1><p class="subheading">点击人物看 TA 的全部标签，长按（手机）/ 右键标签可放入人物组或批量加图。</p></div><button class="primary-button" @click="openTagDialog(false)"><Plus :size="17" />新建标签</button></div><div class="tag-summary"><div><span class="stat-icon purple"><Tags :size="18" /></span><strong>{{ tags.length }}</strong><small>自定义标签</small></div><div><span class="stat-icon green"><Users :size="18" /></span><strong>{{ personTags.length }}</strong><small>人物组人名</small></div><div><span class="stat-icon cyan"><Images :size="18" /></span><strong>{{ tags.reduce((sum, tag) => sum + tag.count, 0) }}</strong><small>标签关联</small></div></div><div class="tag-list panel person-panel"><div class="panel-heading"><div><h2><Users :size="16" /> 人物组</h2><p>人名标签统一绿色圆点；点击人名查看 TA 的全部标签。</p></div><div class="tag-head-actions"><button class="filter-button" @click="personGroupOpen = !personGroupOpen"><ChevronDown :size="15" :class="{ flip: !personGroupOpen }" />{{ personGroupOpen ? '收起' : '展开' }}</button><button class="primary-button small" @click="openTagDialog(true)"><Plus :size="15" />新建人物</button></div></div><div v-if="personGroupOpen" class="person-chips"><div v-for="tag in personTags" :key="tag.id" class="person-chip" @contextmenu.prevent.stop="openTagContext(tag, $event)" @touchstart.passive="onTagTouchStart(tag, $event)" @touchmove.passive="cancelTagLongPress" @touchend="onTagTouchEnd($event)" @touchcancel="cancelTagLongPress"><button class="person-chip-main" @click="openTagRow(tag)"><span class="tag-color person" :style="{ background: PERSON_COLOR }"></span><strong>{{ tag.name }}</strong><small>{{ tag.count }} 张</small></button><button class="person-chip-ref" :class="{ filled: (referenceCounts[tag.id] || 0) > 0 }" :title="`查看「${tag.name}」的参考图库（${referenceCounts[tag.id] || 0} 张）`" @click.stop="openReferences(tag)"><ScanFace :size="13" /><em v-if="referenceCounts[tag.id]">{{ referenceCounts[tag.id] }}</em></button><button class="person-chip-batch" :title="`为「${tag.name}」批量添加图片`" @click.stop="openBatchTag(tag)"><Tags :size="13" /></button></div><span v-if="!personTags.length" class="person-empty">还没有人物。点右上角「新建人物」，或长按下方「全部标签」里的标签 → 放入人物组。</span></div></div><div class="tag-list panel"><div class="panel-heading"><div><h2>全部标签</h2><p>左键筛选图片，长按（手机）/ 右键可放入人物组或批量关联多张图片。</p></div><div class="tag-head-actions"><button class="filter-button"><Filter :size="15" />排序</button><div class="tag-layout-switch" title="每排显示数量"><button v-for="n in [1, 2, 3]" :key="n" :class="{ active: tagColumns === n }" @click="setTagColumns(n)">{{ n }}</button></div></div></div><div class="tag-rows" :style="{ '--tag-columns': tagColumns }"><div v-for="tag in normalTags" :key="tag.id" class="tag-row clickable" :class="{ 'has-person': tag.person }" @click="openTagRow(tag)" @contextmenu.prevent.stop="openTagContext(tag, $event)" @touchstart.passive="onTagTouchStart(tag, $event)" @touchmove.passive="cancelTagLongPress" @touchend="onTagTouchEnd($event)" @touchcancel="cancelTagLongPress"><span class="tag-color" :style="{ background: tagDot(tag) }"></span><strong><span class="tag-name">{{ tag.name }}</span><em v-if="tag.r18 && tag.name !== 'R-18'" class="r18-chip">R18</em></strong><span class="tag-count">{{ tag.count }} 张图片 · {{ tagRatio(tag.count) }}</span><div class="tag-bar"><i :style="{ width: tagRatio(tag.count), background: tagDot(tag) }"></i></div><div class="tag-row-actions"><button class="icon-button small tag-batch" :title="`为「${tag.name}」批量添加图片`" @click.stop="openBatchTag(tag)"><Tags :size="15" /></button><button v-if="tag.name !== 'R-18'" class="icon-button small r18-mark" :class="{ on: tag.r18 }" :title="tag.r18 ? '取消 R18 链接标记' : '标记为 R18 链接标签（仅 R18 模式可见）'" @click.stop="toggleTagR18(tag)"><ShieldCheck :size="15" /></button><button v-if="currentUser?.role === 'ADMIN'" class="icon-button small" @click.stop="removeTag(tag)"><Trash2 :size="15" /></button></div></div></div></div></template>
-        <template v-else-if="activeView === 'logs'"><div class="page-heading"><div><p class="eyebrow"><ShieldCheck :size="14" /> AUDIT TRAIL</p><h1>访问日志</h1><p class="subheading">记录每一次访问和内容变更。</p></div><button class="filter-button" @click="refreshLogs"><Clock3 :size="15" />刷新日志</button></div><div class="log-stats"><div><strong>{{ filteredLogs.length }}</strong><span>{{ logFilter === '全部' ? '当前记录' : `「${logFilter}」记录` }}</span></div><div><strong>{{ stats.userCount }}</strong><span>用户数量</span></div><div><strong>审计中</strong><span>日志状态</span></div></div><div class="filter-pills log-filter-pills"><button v-for="group in logGroups" :key="group" :class="['pill', { active: logFilter === group }]" @click="logFilter = group">{{ group }}</button></div><div class="panel log-panel"><div class="log-head"><span>操作</span><span>目标</span><span>用户</span><span>来源 IP</span><span>时间</span></div><div v-for="log in filteredLogs" :key="log.id" class="log-row"><span><i :class="['log-icon', log.tone]"><component :is="logActionIcon(log.action)" :size="14" /></i><strong>{{ log.action }}</strong></span><span class="log-target" :title="log.target">{{ log.target }}</span><span class="log-user"><span class="avatar avatar-blue">{{ log.user?.[0]?.toUpperCase() }}</span>{{ log.user }}</span><span><code>{{ log.ip }}</code><em :class="log.scope === '内网' ? 'internal' : 'external'">{{ log.scope }}</em></span><time>{{ formatTime(log.time) }}</time></div><div v-if="!filteredLogs.length" class="log-empty">没有符合条件的日志记录</div></div></template>
+        <OverviewView
+          v-if="activeView === 'overview'"
+          :user="currentUser"
+          :greeting="timeGreeting"
+          :stats="stats"
+          :top-images="topImages"
+          :logs="logs"
+          :live-images="liveImages"
+          @upload="showUpload = true"
+          @go="go"
+          @open="openFromCard"
+          @context="openContext"
+          @press-start="onImageTouchStart"
+          @press-cancel="cancelImageLongPress"
+          @press-end="onImageTouchEnd"
+          @download="downloadImage"
+          @media-progress="handleImageProgress"
+        />
+
+        <LibraryView
+          v-else-if="activeView === 'library' || activeView === 'trash'"
+          :mode="activeView === 'trash' ? 'trash' : 'library'"
+          :images="filteredImages"
+          :tags="tags"
+          :tag-pills="tagPills"
+          :selected-tag="selectedTag"
+          :sort-by="sortBy"
+          :r18-mode="r18Mode"
+          :loading="libraryLoading"
+          :progress="libraryProgress"
+          :loaded="libraryLoaded"
+          :total="libraryTotal"
+          @update:selected-tag="selectedTag = $event"
+          @sort="setSort"
+          @toggle-r18="toggleR18Mode"
+          @upload="showUpload = true"
+          @open="openFromCard"
+          @context="openContext"
+          @press-start="onImageTouchStart"
+          @press-cancel="cancelImageLongPress"
+          @press-end="onImageTouchEnd"
+          @download="downloadImage"
+          @media-progress="handleImageProgress"
+        />
+
+        <SimilarView
+          v-else-if="activeView === 'similar'"
+          :mode="graphMode"
+          :view="graphView"
+          :payload="graphPayload"
+          :loading="graphLoading"
+          :groups="graphGroups"
+          @set-mode="setGraphMode"
+          @set-view="setGraphView"
+          @refresh="refreshGraph"
+          @open-graph="openFromGraph"
+          @go-settings="go('settings')"
+          @go-library="go('library')"
+        />
+
         <ParsePanel v-else-if="activeView === 'parse'" @goto="onPanelGoto" />
-        <template v-else-if="activeView === 'settings'"><div class="page-heading"><div><p class="eyebrow"><Settings2 :size="14" /> CONTROL CENTER</p><h1>系统设置</h1><p class="subheading">调整工作区、视觉风格和服务配置。</p></div><button class="primary-button" @click="saveSettings"><Check :size="17" />保存设置</button></div><div class="settings-layout"><div class="settings-nav panel"><button class="active"><SlidersHorizontal :size="16" />常规设置</button><button><Sparkles :size="16" />视觉主题</button><button @click="changePassword"><ShieldCheck :size="16" />修改密码</button><button><Zap :size="16" />服务与存储</button></div><div class="settings-content"><div class="settings-card panel"><div class="setting-title"><div><h2>外观偏好</h2><p>定义你的媒体库视觉语言。</p></div><Sparkles :size="20" /></div><div class="setting-row"><div><strong>主题模式</strong><small>选择适合当前环境的显示模式。</small></div><div class="segmented"><button :class="{ active: isDark }" @click="isDark = true">深色</button><button :class="{ active: !isDark }" @click="isDark = false">浅色</button></div></div><div class="setting-row"><div><strong>流体背景</strong><small>使用 WebGL 渲染多色混合流体效果。</small></div><button class="switch on"><i></i></button></div><div class="setting-row"><div><strong>主题色彩</strong><small>选择工作区的流体色彩组合。</small></div><div class="theme-swatches"><button v-for="theme in ['Aurora', 'Ember', 'Mono']" :key="theme" :class="['theme-swatch', theme.toLowerCase(), { active: selectedTheme === theme }]" @click="selectedTheme = theme"><i></i><span>{{ theme }}</span></button></div></div></div><div class="settings-card panel"><div class="setting-title"><div><h2>服务配置</h2><p>管理员配置会写入 PostgreSQL。</p></div><Zap :size="20" /></div><label class="field-label">服务端口<input v-model="settings.port" type="number" /><small>修改端口后需要重启 Node 服务。</small></label><label class="field-label">图片存储目录<input v-model="settings.storageDir" /><small>建议使用本机磁盘或 NAS 映射目录。</small></label></div>
-<div class="settings-card panel"><div class="setting-title"><div><h2>相似图索引</h2><p>用视觉指纹（CCIP）自动找出相似的图片；上传新图会自动建指纹。</p></div><Sparkles :size="20" /></div>
-<div class="embed-status-row"><div class="embed-status-main"><span :class="['status-dot', { off: !embedStatus?.modelReady }]"></span><strong>{{ embedStatus?.modelReady ? '指纹模型已就绪' : '指纹模型缺失' }}</strong><small>· {{ embedStatus ? `已建指纹 ${embedStatus.indexed} / ${embedStatus.imageCount} 张 · 平均每张 ${embedStatus.avgNeighbors} 个相似` : '读取中…' }}</small></div><button class="filter-button" :disabled="!embedStatus?.modelReady || embedBackfilling" @click="startBackfill(false)"><LoaderCircle v-if="embedBackfilling || embedStatus?.working" :size="15" class="spin" /><Sparkles v-else :size="15" />{{ embedStatus?.working ? `正在计算 ${embedStatus.queueLength} 张…` : embedBackfilling ? '正在排队…' : '建立索引' }}</button></div>
-<div v-if="embedStatus?.failed" class="embed-warn">有 {{ embedStatus.failed }} 张算失败{{ embedStatus.lastError ? `（${embedStatus.lastError}）` : '' }}，可再点一次「建立索引」重试。</div>
-<div class="setting-row"><div><strong>相似度阈值</strong><small>越高越严格（只留很像的），越低越宽松（能捞到更多）。实测本库同角色图片多在 {{ embedCalibration?.same.p90 != null ? Math.round(embedCalibration.same.p90 * 100) : '—' }}% 以下、不同角色多在 {{ embedCalibration?.diff.p10 != null ? Math.round(embedCalibration.diff.p10 * 100) : '—' }}% 以上。</small></div><div class="embed-threshold"><input type="range" min="0.05" max="0.9" step="0.05" :value="embedThresholdDraft" @input="onThresholdInput" /><strong>{{ Math.round(embedThresholdDraft * 100) }}%</strong></div></div>
-<div class="embed-calib" v-if="embedCalibration"><span>同角色 {{ embedCalibration.pairs.same }} 对：中位 {{ pct(embedCalibration.same.p50) }}</span><span>不同角色 {{ embedCalibration.pairs.diff }} 对：中位 {{ pct(embedCalibration.diff.p50) }}</span><span>当前阈值 {{ pct(embedStatus?.threshold ?? 0) }}</span></div>
-<button class="primary-button small" :disabled="embedSavingThreshold || !embedStatus" @click="saveThreshold">保存阈值并重算关系</button>
-<div v-if="!embedStatus?.modelReady" class="embed-warn">模型文件不在服务器上（{{ embedStatus?.modelPath || '/data/models/embed/ccip_feat.onnx' }}）。需要先放好 ccip_feat.onnx 才能建索引。</div>
-</div></div></div></template>
+
+        <TagsView
+          v-else-if="activeView === 'tags'"
+          :tags="tags"
+          :person-tags="personTags"
+          :normal-tags="normalTags"
+          :image-count="stats.imageCount"
+          :columns="tagColumns"
+          :person-group-open="personGroupOpen"
+          :reference-counts="referenceCounts"
+          :is-admin="currentUser?.role === 'ADMIN'"
+          @new-tag="openTagDialog"
+          @toggle-person-group="personGroupOpen = !personGroupOpen"
+          @open-row="openTagRow"
+          @context="openTagContext"
+          @press-start="onTagTouchStart"
+          @press-cancel="cancelTagLongPress"
+          @press-end="onTagTouchEnd"
+          @open-references="openReferences"
+          @batch-tag="openBatchTag"
+          @toggle-r18="toggleTagR18"
+          @remove-tag="removeTag"
+          @update:columns="setTagColumns"
+        />
+
+        <LogsView
+          v-else-if="activeView === 'logs'"
+          :logs="filteredLogs"
+          :filter="logFilter"
+          :groups="logGroups"
+          :user-count="stats.userCount"
+          :total="logs.length"
+          @refresh="refreshLogs"
+          @update:filter="logFilter = $event"
+        />
+
+        <SettingsView
+          v-else-if="activeView === 'settings'"
+          :settings="settings"
+          :fluid-colors="fluidColors"
+          :fluid-speed="fluidSpeed"
+          :selected-theme="selectedTheme"
+          :is-dark="isDark"
+          :webgl-enabled="webglEnabled"
+          :animation-enabled="animationEnabled"
+          :embed-status="embedStatus"
+          :embed-calibration="embedCalibration"
+          :embed-threshold-draft="embedThresholdDraft"
+          :embed-backfilling="embedBackfilling"
+          :embed-saving-threshold="embedSavingThreshold"
+          :user="currentUser"
+          @save="saveSettings"
+          @change-password="changePassword"
+          @refresh="refreshSettings"
+          @backfill="startBackfill"
+          @threshold-input="embedThresholdDraft = $event"
+          @save-threshold="saveThreshold"
+          @back="go('overview')"
+        />
       </section>
     </main>
-    <MobileNav v-model:more-open="moreOpen" :active-view="activeView" :user="currentUser" :stats="stats" :trash-count="images.filter((image) => image.deletedAt).length" @go="go" @logout="logout" />
-    <div v-if="contextTag" class="context-menu tag-context-menu" @click.stop :style="{ left: `${tagContextPosition.x}px`, top: `${tagContextPosition.y}px` }"><div class="context-title">标签：{{ contextTag.name }}</div><button @click="toggleTagPersonFromMenu"><Users :size="16" />{{ contextTag.person ? '移出人物组' : '放入人物组（绿色人名）' }}</button><button v-if="contextTag.person" @click="openPerson(contextTag!); contextTag = null"><Eye :size="16" />查看 TA 的全部标签</button><button v-if="contextTag.name !== 'R-18'" @click="toggleTagR18FromMenu"><ShieldCheck :size="16" />{{ contextTag.r18 ? '取消 R18 链接' : '标记为 R18 链接标签' }}</button><button @click="openBatchTag(contextTag!)"><Tags :size="16" />批量添加图片</button></div>
-    <div v-if="showPersonDetail" class="modal-backdrop" @click.self="closePersonDetail"><div class="modal person-detail-modal" @click.stop><button class="modal-close" @click="closePersonDetail"><X :size="18" /></button><div class="upload-icon person-icon"><Users :size="24" /></div><h2>{{ personDetail?.name || '人物' }}</h2><p>共 {{ personDetail?.imageCount || 0 }} 张图片 · 关联 {{ personDetail?.related.length || 0 }} 个标签</p><div v-if="personDetailLoading" class="person-loading"><LoaderCircle :size="15" class="spin" />正在读取全部标签…</div><template v-else><div class="person-related-grid" :class="`cols-${tagPickerColumns}`" :style="{ '--tag-columns': tagPickerColumns }"><button v-for="tag in personDetail?.related || []" :key="tag.id" class="person-related-tag" :class="{ person: tag.person }" @click="viewTagFromPerson(tag)"><i :style="{ background: tagDot(tag) }"></i><span>{{ tag.name }}</span><small>{{ tag.count }}</small></button><span v-if="!personDetail?.related?.length" class="person-empty">这个人名标签还没有关联其他标签。</span></div><div v-if="personDetail?.latest?.length" class="person-preview-grid"><button v-for="item in personDetail?.latest || []" :key="item.id" class="person-preview" :title="item.name" @click="viewTagFromPerson(personDetail!)"><img :src="item.thumb" :alt="item.name" decoding="async" /></button></div><div class="person-detail-actions"><button class="primary-button full" @click="viewTagFromPerson(personDetail!)">查看 TA 的全部图片</button><button class="filter-button" @click="openReferences(personDetail!); closePersonDetail()"><ScanFace :size="15" />参考图库{{ referenceCounts[personDetail!.id] ? `（${referenceCounts[personDetail!.id]}）` : '' }}</button><button class="filter-button" @click="removePersonFromDetail"><UserMinus :size="15" />移出人物组</button></div></template></div></div>
-    <div v-if="showReferences && referencesTag" class="modal-backdrop" @click.self="closeReferences"><div class="modal references-modal" @click.stop><button class="modal-close" @click="closeReferences"><X :size="18" /></button><div class="upload-icon person-icon"><ScanFace :size="24" /></div><h2>{{ referencesTag.name }} · 参考图库</h2><p>这些是已确认的参考样本，用于核验识别准确性。缩略图是按框实时裁剪的——框错了这里一眼就能看出来。</p><div v-if="referencesLoading" class="person-loading"><LoaderCircle :size="15" class="spin" />正在读取参考图…</div><template v-else><div v-if="referenceItems.length" class="ref-grid"><div v-for="item in referenceItems" :key="`${item.imageId}-${item.box.x}-${item.box.y}`" class="ref-card" :class="{ stale: !item.stillTagged }"><button class="ref-thumb" :title="`${item.name} · 点击查看大图并核对框选`" @click="openReferenceImage(item)"><img :src="item.crop" :alt="item.name" decoding="async" /></button><div class="ref-info"><strong :title="item.name">{{ item.name }}</strong><span><em :class="item.kind">{{ item.kind === 'head' ? '头框' : item.kind === 'face' ? '脸框' : '自定义' }}</em><em :class="item.source">{{ item.source === 'manual' ? '人工' : '自动' }}</em><em v-if="!item.stillTagged" class="stale-tag">已无此标签</em></span></div><button class="ref-drop" :disabled="referenceRemoving === `${item.imageId}-${item.box.x}-${item.box.y}`" title="从参考图库移除" @click="dropReference(item)"><Trash2 :size="13" /></button></div></div><span v-else class="person-empty">这个角色还没有参考图。打开带该角色的图片 → 点「框选」→ 选中人物框 → 点「参考图」即可加入。</span></template><div class="person-detail-actions"><button class="primary-button full" @click="closeReferences">完成</button></div></div></div>
-    <div v-if="showBatchTag" class="modal-backdrop" @click.self="showBatchTag = false"><div class="modal batch-tag-modal"><button class="modal-close" @click="showBatchTag = false"><X :size="18" /></button><div class="upload-icon"><Tags :size="24" /></div><h2>批量添加图片</h2><p>选择要添加到「{{ batchTag?.name }}」的图片，可多选。</p><input v-model="batchImageQuery" class="modal-input" placeholder="搜索图片名称或标签..." /><div class="batch-toolbar"><button class="text-button" @click="selectAllBatchImages">全选当前结果</button><button class="text-button" @click="selectedBatchImageIds = []">清空</button><span>已选 {{ selectedBatchImageIds.length }} 张</span></div><div class="batch-image-list"><label v-for="image in batchCandidates" :key="image.id" class="batch-image-option"><input v-model="selectedBatchImageIds" :value="image.id" type="checkbox" /><video v-if="isVideoItem(image) && !hasPoster(image)" :src="image.url + '#t=0.5'" preload="metadata" muted playsinline @loadeddata="sizeBatchCard" /><img v-else :src="image.thumb" :alt="image.name" loading="lazy" decoding="async" @load="sizeBatchCard" /><span><strong>{{ image.name }}</strong><small>{{ image.tags.join(' · ') || '未分类' }}</small></span></label><div v-if="!batchCandidates.length" class="batch-empty">没有可添加的图片</div></div><button class="primary-button full" :disabled="!selectedBatchImageIds.length" @click="submitBatchTag">添加到标签</button></div></div>
-    <div v-if="contextImage" class="context-menu" @click.stop :style="{ left: `${contextPosition.x}px`, top: `${contextPosition.y}px` }"><div class="context-title">{{ contextImage.name }}</div><button @click="openImage(contextImage); contextImage = null"><Eye :size="16" />{{ isVideoItem(contextImage) ? '查看视频' : '查看图片' }}</button><button @click="downloadImage(contextImage); contextImage = null"><Download :size="16" />{{ isVideoItem(contextImage) ? '下载视频' : '下载图片' }}</button><button v-if="activeView !== 'trash'" @click="beginRename"><Pencil :size="16" />修改名称</button><button @click="openAddTag"><Tags :size="16" />添加标签（可多选）</button><button v-if="contextImage.tags.length" @click="showRemoveTag = true"><Trash2 :size="16" />移除标签</button><button class="danger" @click="activeView === 'trash' ? permanentDelete(contextImage!) : softDelete(contextImage!)"><Trash2 :size="16" />{{ activeView === 'trash' ? '永久删除' : '移入回收站' }}</button><button v-if="activeView === 'trash'" @click="restore(contextImage!)"><Check :size="16" />恢复图片</button></div>
-    <div v-if="showRename" class="modal-backdrop" @click.self="showRename = false"><div class="modal" @click.stop><button class="modal-close" @click="showRename = false"><X :size="18" /></button><div class="upload-icon"><Pencil :size="24" /></div><h2>修改名称</h2><p>为「{{ contextImage?.name || '' }}」设置新的文件名称（{{ isVideoItem(contextImage) ? '视频' : '图片' }}）。</p><input v-model="renameName" class="modal-input" maxlength="200" placeholder="输入新的文件名称" @keyup.enter="submitRename" @focus="selectRenameText" /><small class="rename-hint">无需输入扩展名，查看与下载时会自动补全（如 .jpg / .mp4）。</small><button class="primary-button full" :disabled="!renameName.trim()" @click="submitRename">保存名称</button></div></div>
+
+    <MobileNav v-model:more-open="moreOpen" :active-view="activeView" :user="currentUser" :stats="stats" :trash-count="trashCount" @go="go" @logout="logout" />
+
+    <ContextMenu
+      v-if="contextImage"
+      :image="contextImage"
+      :x="contextPosition.x"
+      :y="contextPosition.y"
+      :trash="activeView === 'trash'"
+      :video="isVideoItem(contextImage)"
+      @close="contextImage = null"
+      @open="openImage"
+      @download="downloadImage"
+      @rename="beginRename"
+      @add-tag="openAddTag"
+      @remove-tag="openRemoveTag"
+      @remove="activeView === 'trash' ? permanentDelete($event) : softDelete($event)"
+      @restore="restore"
+    />
+
+    <TagContextMenu
+      v-if="contextTag"
+      :tag="contextTag"
+      :x="tagContextPosition.x"
+      :y="tagContextPosition.y"
+      @close="contextTag = null"
+      @toggle-person="toggleTagPerson($event, !$event.person)"
+      @view-person="openPerson"
+      @toggle-r18="toggleTagR18"
+      @batch-tag="openBatchTag"
+    />
+
+    <PersonDetailModal
+      v-if="showPersonDetail"
+      :detail="personDetail"
+      :loading="personDetailLoading"
+      :columns="tagPickerColumns"
+      :reference-counts="referenceCounts"
+      @close="closePersonDetail"
+      @view-tag="viewTagFromPerson"
+      @open-references="openReferences($event); closePersonDetail()"
+      @remove="removePersonFromDetail"
+    />
+
+    <ReferencesModal
+      v-if="showReferences && referencesTag"
+      :tag="referencesTag"
+      :items="referenceItems"
+      :loading="referencesLoading"
+      :removing="referenceRemoving"
+      @close="closeReferences"
+      @open="openReferenceImage"
+      @drop="dropReference"
+    />
+
+    <BatchTagModal
+      v-if="showBatchTag"
+      :tag="batchTag"
+      :candidates="batchCandidates"
+      :query="batchImageQuery"
+      :selected-ids="selectedBatchImageIds"
+      @update:query="batchImageQuery = $event"
+      @update:selected-ids="selectedBatchImageIds = $event"
+      @submit="submitBatchTag"
+      @close="showBatchTag = false"
+    />
+
+    <RenameModal
+      v-if="showRename"
+      :name="renameName"
+      :video="isVideoItem(renameImage)"
+      @update:name="renameName = $event"
+      @close="showRename = false"
+      @submit="submitRename"
+    />
+
+    <NewTagModal v-if="showTagDialog" :person="newTagPerson" :r18-mode="r18Mode" @create="createTag" @close="showTagDialog = false" />
+
+    <AddTagModal
+      v-if="showAddTag"
+      :image="addTagImage"
+      :tags="addableTags"
+      :columns="tagPickerColumns"
+      @create="submitAddTags"
+      @update:columns="setTagPickerColumns"
+      @close="closeAddTag"
+    />
+
+    <RemoveTagModal v-if="showRemoveTag" :image="removeTagImage" :tags="removeTagOptions" @remove="removeImageTag" @close="showRemoveTag = false" />
+
     <UploadReviewModal :show="showUpload" :available-tags="tags" :r18-mode="r18Mode" @close="showUpload = false" @completed="handleUploadCompleted" @toggle-r18="toggleR18Mode" />
-    <div v-if="showTagDialog" class="modal-backdrop" @click.self="showTagDialog = false"><div class="modal"><button class="modal-close" @click="showTagDialog = false"><X :size="18" /></button><div class="upload-icon" :class="{ 'person-icon': newTagPerson }"><component :is="newTagPerson ? Users : Tags" :size="24" /></div><h2>{{ newTagPerson ? '新建人物' : '新建标签' }}</h2><p>{{ newTagPerson ? '把人名放进人物组：绿色圆点，点击即可查看 TA 的全部标签。' : '创建一个新的视觉索引。' }}</p><input v-model="newTag" class="modal-input" :placeholder="newTagPerson ? '例如：张三、李四' : '例如：灵感、场景、项目'" @keyup.enter="createTag" /><label class="new-tag-r18 new-tag-person"><input v-model="newTagPerson" type="checkbox" /><span>放入人物组（人名，绿色圆点）</span><small>在标签页单独成组，点击查看 TA 的全部标签</small></label><label v-if="r18Mode" class="new-tag-r18"><input v-model="newTagR18" type="checkbox" /><span>标记为 R18 链接标签</span><small>仅 R18 模式开启时可见、可选择</small></label><button class="primary-button full" @click="createTag">{{ newTagPerson ? '创建人物' : '创建标签' }}</button></div></div>
-    <div v-if="showAddTag" class="modal-backdrop" @click.self="closeAddTag"><div class="modal add-tag-modal" @click.stop><button class="modal-close" @click="closeAddTag"><X :size="18" /></button><div class="upload-icon"><Tags :size="24" /></div><h2>添加标签</h2><p>为「{{ contextImage?.name }}」勾选要添加的标签，可多选。</p><div class="tag-picker-head"><span class="tag-picker-count">已选 <strong>{{ pickedTagNames.length }}</strong> / {{ addableTags.length }} 个</span><div class="tag-layout-switch" title="每排显示数量"><button v-for="n in [1, 2, 3, 4]" :key="n" :class="{ active: tagPickerColumns === n }" @click="setTagPickerColumns(n)">{{ n }}</button></div></div><div class="tag-picker-grid" :class="`cols-${tagPickerColumns}`" :style="{ '--tag-columns': tagPickerColumns }"><button v-for="tag in addableTags" :key="tag.id" class="tag-pick-item" :class="{ picked: pickedTagNames.includes(tag.name), person: tag.person, r18: tag.r18 }" @click="togglePickTag(tag.name)"><i :style="{ background: tagDot(tag) }"></i><span class="tag-pick-name">{{ tag.name }}</span><Check v-if="pickedTagNames.includes(tag.name)" :size="14" /><Plus v-else :size="14" /></button><span v-if="!addableTags.length" class="person-empty">这张图片已经拥有全部标签。</span></div><button class="primary-button full" :disabled="!pickedTagNames.length" @click="submitAddTags">添加所选 {{ pickedTagNames.length }} 个标签</button></div></div>
-    <div v-if="showRemoveTag" class="modal-backdrop" @click.self="showRemoveTag = false"><div class="modal" @click.stop><button class="modal-close" @click="showRemoveTag = false"><X :size="18" /></button><h2>移除标签</h2><p>选择要从「{{ contextImage?.name }}」移除的标签。</p><div class="tag-picker"><button v-for="(tag, index) in contextImage?.tags || []" :key="tag" class="danger" @click="removeImageTag(contextImage!.tagIds[index], tag)"><i :style="{ background: tagDot(tagByName.get(tag) || { color: '#fb7185' }) }"></i>{{ tag }}<Trash2 :size="15" /></button></div></div></div>
-    <div v-if="selectedImage" :class="['preview-backdrop', { 'video-fs': videoFullscreen, 'similar-open': similarOpen }]" @click.self="videoFullscreen ? undefined : closePreview()" @wheel.prevent="handlePreviewWheel" @touchstart.passive="onPreviewTouchStart" @touchmove.passive="onPreviewTouchMove" @touchend="onPreviewTouchEnd" @touchcancel="onPreviewTouchEnd"><div v-if="previewLoading" class="preview-loading" aria-label="正在加载"><i></i></div><button v-if="isVideoItem(selectedImage)" class="preview-fs-toggle" @click="videoFullscreen = !videoFullscreen">{{ videoFullscreen ? '退出全屏' : '全屏播放' }}</button><button v-if="canPreviewNav" class="preview-nav prev" title="上一张" @click.stop="stepPreview(-1)"><ChevronLeft :size="24" /></button><button v-if="canPreviewNav" class="preview-nav next" title="下一张" @click.stop="stepPreview(1)"><ChevronRight :size="24" /></button><button class="preview-close" @click="closePreview"><X :size="22" /></button><div ref="previewImageElement" class="preview-image" :class="{ 'box-editing': boxMode }" :style="{ transform: `translate(${previewOffset.x}px, ${previewOffset.y}px) scale(${previewScale})` }"><video v-if="isVideoItem(selectedImage)" :src="selectedImage.url" controls autoplay playsinline @loadeddata="previewLoading = false" @error="previewLoading = false" @abort="previewLoading = false" /><img v-else :src="selectedImage.url" :alt="selectedImage.name" decoding="async" @load="previewLoading = false" @error="previewLoading = false" /><div v-if="boxMode && hasBoxes" class="box-layer" :class="{ dragging: !!boxDrag }"><div v-for="entry in boxPixels" :key="entry.index" class="box-item" :class="[entry.box.kind, { manual: entry.box.manual, selected: selectedBoxIndex === entry.index }]" :style="entry.style" @pointerdown="boxPointerDown('move', entry.index, $event)" @click.stop><span class="box-label">{{ entry.box.kind === 'head' ? '头' : '脸' }}<template v-if="entry.box.score"> · {{ entry.box.score.toFixed(2) }}</template><template v-else> · 人工</template></span><button class="box-del" title="删除这个框" @pointerdown.stop @click.stop="removeBox(entry.index)"><X :size="11" /></button><i class="box-handle" title="拖动缩放" @pointerdown="boxPointerDown('resize', entry.index, $event)"></i></div></div><div v-if="boxMode" class="box-toolbar" @click.stop><span class="box-tip"><template v-if="boxesLoading">正在识别…</template><template v-else-if="hasBoxes">共 {{ boxList.length }} 个框 · 点选第 {{ selectedBoxIndex + 1 }} 个 · 拖动移动 / 右下角缩放</template><template v-else>还没有框，点「自动框选」</template></span><button class="box-btn" :disabled="boxesLoading" @click="runDetect"><Sparkles :size="13" />{{ hasBoxes ? '重跑自动框选' : '自动框选' }}</button><button class="box-btn" @click="addBox"><Plus :size="13" />加框</button><button class="box-btn primary" :disabled="!boxesDirty || boxesSaving" @click="saveBoxes"><Check :size="13" />{{ boxesSaving ? '保存中…' : '保存' }}</button></div><div class="preview-caption"><strong>{{ selectedImage.name }}</strong><span class="preview-meta"><span v-if="isVideoItem(selectedImage)">视频 · {{ selectedImage.size }} · {{ selectedImage.views.toLocaleString() }} 次查看</span><span v-else>{{ selectedImage.width }} × {{ selectedImage.height }} · {{ selectedImage.views.toLocaleString() }} 次查看</span><button v-if="!isVideoItem(selectedImage)" class="caption-download" :class="{ on: boxMode }" :title="boxMode ? '退出框选' : '框选人物（核验识别准确性）'" @click.stop="toggleBoxMode"><ScanFace :size="13" />{{ boxMode ? '退出框选' : '框选' }}</button><button v-if="!isVideoItem(selectedImage)" class="caption-download similar-entry" title="查看视觉上相似的图片（也可直接上滑）" @click.stop="similarOpen ? closeSimilar() : openSimilar(selectedImage!.id)"><Sparkles :size="13" />相似图</button><button v-if="personTagsOfImage.length" class="caption-download" title="把这个框加入该角色的参考图库" @click.stop="refPickerOpen = !refPickerOpen"><BookmarkPlus :size="13" />参考图</button><button class="caption-download" :title="isVideoItem(selectedImage) ? '下载视频' : '下载图片'" @click.stop="downloadImage(selectedImage)"><Download :size="13" />下载</button></span></div><div v-if="refPickerOpen && personTagsOfImage.length" class="ref-picker" @click.stop><p>把当前框加入哪个角色的参考图库？</p><button v-for="tag in personTagsOfImage" :key="tag.id" class="ref-pick-item" :disabled="refSaving" @click="refTagId = tag.id; confirmReference()"><i :style="{ background: PERSON_COLOR }"></i><span>{{ tag.name }}</span><small v-if="referenceCounts[tag.id]">已有 {{ referenceCounts[tag.id] }} 张</small><small v-else>还没有参考</small></button><small class="ref-pick-hint">会取分数最高的框；想换框请先调整后再点。</small></div><transition name="similar-slide"><div v-if="similarOpen" class="similar-panel open" @click.stop><div class="similar-head"><Sparkles :size="14" /><strong>相似图片</strong><span class="similar-sub"><template v-if="similarLoading">正在查找…</template><template v-else-if="similarAnalyzing">正在识别这张图，稍候自动刷新</template><template v-else-if="similarItems.length">找到 {{ similarItems.length }} 张 · 相似度 ≥ {{ Math.round(similarThreshold * 100) }}%</template><template v-else>没有足够相似的图片</template></span><button class="similar-close" title="收起（按 Esc 也可）" @click="closeSimilar"><X :size="14" /></button></div><div class="similar-body"><div v-if="similarLoading" class="similar-loading"><LoaderCircle :size="15" class="spin" />正在比对视觉指纹…</div><div v-else-if="similarAnalyzing" class="similar-loading"><LoaderCircle :size="15" class="spin" />这张图还没有视觉指纹，后台正在算（约 1 秒）…</div><div v-else-if="similarItems.length" class="similar-grid"><button v-for="item in similarItems" :key="item.id" class="similar-card" :title="`${item.name} · 相似度 ${Math.round(item.score * 100)}%`" @click="openSimilarImage(item)"><span class="similar-thumb"><img :src="item.thumb" :alt="item.name" loading="lazy" decoding="async" /><span class="similar-score">{{ Math.round(item.score * 100) }}%</span></span><span class="similar-meta"><strong>{{ item.name }}</strong><small>{{ item.tags.length ? item.tags.slice(0, 2).join(' · ') : `${item.width} × ${item.height}` }}</small></span></button></div><div v-else class="similar-empty"><Sparkles :size="20" /><strong>暂时没有相似的图片</strong><span>库里还没有和这张视觉上接近的图。<br />相似度阈值 {{ Math.round(similarThreshold * 100) }}%，可在设置里调整。</span></div></div><div class="similar-foot">按视觉指纹（CCIP）比对，不依赖标签 · 点任意一张可直接切过去</div></div></transition></div></div>
+
+    <ViewerOverlay
+      v-if="selectedImage"
+      ref="viewerRef"
+      :image="selectedImage"
+      :loading="previewLoading"
+      :scale="previewScale"
+      :offset="previewOffset"
+      :video-fullscreen="videoFullscreen"
+      :can-nav="canPreviewNav"
+      :box-mode="boxMode"
+      :box-pixels="boxPixels"
+      :boxes-loading="boxesLoading"
+      :boxes-dirty="boxesDirty"
+      :boxes-saving="boxesSaving"
+      :selected-box-index="selectedBoxIndex"
+      :dragging="!!boxDrag"
+      :person-tags="personTagsOfImage"
+      :ref-picker-open="refPickerOpen"
+      :ref-saving="refSaving"
+      :reference-counts="referenceCounts"
+      :similar-open="similarOpen"
+      :similar-loading="similarLoading"
+      :similar-analyzing="similarAnalyzing"
+      :similar-items="similarItems"
+      :similar-threshold="similarThreshold"
+      :flip-from="flipFrom"
+      @close="closePreview"
+      @step="stepPreview"
+      @toggle-fullscreen="videoFullscreen = !videoFullscreen"
+      @wheel="handlePreviewWheel"
+      @touch-start="onPreviewTouchStart"
+      @touch-move="onPreviewTouchMove"
+      @touch-end="onPreviewTouchEnd"
+      @box-move="(index, event) => boxPointerDown('move', index, event)"
+      @box-resize="(index, event) => boxPointerDown('resize', index, event)"
+      @box-remove="removeBox"
+      @detect="runDetect"
+      @add-box="addBox"
+      @save-boxes="saveBoxes"
+      @toggle-box-mode="toggleBoxMode"
+      @download="downloadImage"
+      @toggle-ref-picker="refPickerOpen = !refPickerOpen"
+      @confirm-reference="refTagId = $event; confirmReference()"
+      @open-similar="openSimilar($event)"
+      @close-similar="closeSimilar"
+      @open-similar-image="openSimilarImage"
+      @media-loaded="previewLoading = false"
+    />
+
     <AppToast :message="toast" />
     <TaskDock :hidden="videoFullscreen" @goto-library="onPanelGoto('library')" />
   </div>

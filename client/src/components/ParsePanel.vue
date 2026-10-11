@@ -428,57 +428,57 @@ function confirmSave() {
 
 <template>
   <div class="pw">
-    <div class="page-heading">
+    <header class="page-heading rise">
       <div>
         <p class="eyebrow"><Link2 :size="14" /> VIDEO EXTRACTOR</p>
         <h1>视频解析工作台</h1>
         <p class="subheading">粘贴抖音 / B站 / 快手等平台的分享链接或完整口令，解析无水印视频并预览，可下载或后台保存到图片库。</p>
       </div>
-    </div>
+    </header>
 
     <!-- 输入卡 -->
-    <div class="panel pw-card">
+    <section class="panel pw-card">
       <div class="pw-input-row">
         <div class="pw-input-box">
-          <Link2 :size="16" class="pw-input-ico" />
+          <Link2 :size="17" class="pw-input-ico" />
           <input id="pwInput" v-model="input" class="pw-input" spellcheck="false"
             placeholder="粘贴分享链接或完整口令，例如 https://v.douyin.com/xxxxx/ 、BV 号链接…"
             @input="onInput" @keyup.enter="submit" />
-          <span v-if="detectedPlat" class="pw-plat-chip"><i :style="{ background: detectedPlat.color }" />{{ detectedPlat.name }}<small>{{ detectedPlat.tag }}</small></span>
+          <span v-if="detectedPlat" class="pill pw-plat-chip"><i :style="{ background: detectedPlat.color }" />{{ detectedPlat.name }}<small>{{ detectedPlat.tag }}</small></span>
         </div>
         <button class="primary-button pw-parse-btn" :disabled="busy" @click="submit">
-          <LoaderCircle v-if="busy" class="spin" :size="16" /><Sparkles v-else :size="16" />{{ busy ? '解析中' : '开始解析' }}
+          <LoaderCircle v-if="busy" class="pw-spin" :size="17" /><Sparkles v-else :size="17" />{{ busy ? '解析中' : '开始解析' }}
         </button>
       </div>
       <p v-if="error" class="pw-error"><X :size="13" />{{ error }}</p>
-      <div v-if="busy" class="pw-steps"><i></i><span>{{ stepText }}</span></div>
-    </div>
+      <div v-if="busy" class="pw-steps"><i class="pw-spin"></i><span class="mono">{{ stepText }}</span></div>
+    </section>
 
     <!-- 最近解析 -->
     <div v-if="history.length" class="pw-history">
       <span class="pw-history-label"><Clock3 :size="12" />最近解析</span>
-      <button v-for="h in history" :key="h.url" class="pw-history-chip" :title="h.url"
+      <button v-for="h in history" :key="h.url" class="pill pw-history-chip" :title="h.url"
         @click="input = h.url; onInput(); runParse(h.url)">
         <em>{{ h.plat }}</em>{{ h.title }}
       </button>
-      <button class="pw-history-clear" title="清空记录" @click="clearHistory"><Trash2 :size="12" /></button>
+      <button class="icon-button small pw-history-clear" title="清空记录" @click="clearHistory"><Trash2 :size="13" /></button>
     </div>
 
     <!-- 解析结果 -->
     <div v-if="task" class="pw-result">
-      <div class="pw-player panel">
+      <section class="panel pw-player">
         <video v-if="task.kind === 'video'" :key="task.media.url" :src="task.media.url" :poster="task.cover || undefined" controls playsinline preload="metadata" />
         <div v-else class="pw-gallery-wrap">
           <div class="pw-gallery-bar">
-            <span class="pw-gallery-count"><Check :size="12" />已选 {{ pickedCount }} / {{ task.images.length }} 张</span>
+            <span class="pw-gallery-count"><Check :size="13" />已选 {{ pickedCount }} / {{ task.images.length }} 张</span>
             <div class="pw-gallery-tools">
-              <button class="pw-mini" @click="pickAll">全选</button>
-              <button class="pw-mini" @click="pickNone">全不选</button>
-              <button class="pw-mini" @click="pickInvert">反选</button>
+              <button class="filter-button" @click="pickAll">全选</button>
+              <button class="filter-button" @click="pickNone">全不选</button>
+              <button class="filter-button" @click="pickInvert">反选</button>
             </div>
           </div>
           <div class="pw-gallery">
-            <div v-for="(im, i) in task.images" :key="i" class="pw-gallery-item" :class="{ picked: pickedImages[i] }">
+            <div v-for="(im, i) in task.images" :key="i" class="pw-gallery-item glow-card" :class="{ picked: pickedImages[i] }">
               <img :src="im.url" loading="lazy" decoding="async" :alt="`图片 ${i + 1}`" @click="openViewer(i)" />
               <button class="pw-pick" :class="{ on: pickedImages[i] }" :title="pickedImages[i] ? '取消选择' : '选择保存'" @click.stop="togglePick(i)">
                 <Check v-if="pickedImages[i]" :size="12" />
@@ -486,23 +486,23 @@ function confirmSave() {
               <span class="pw-gallery-no" @click="openViewer(i)">{{ i + 1 }}</span>
             </div>
           </div>
-          <p class="pw-gallery-tip"><Images :size="11" />点图看大图（左右滑动切换）；条目右上角勾选决定保存哪些</p>
+          <p class="pw-gallery-tip"><Images :size="12" />点图看大图（左右滑动切换）；条目右上角勾选决定保存哪些</p>
         </div>
         <div class="pw-player-meta">
-          <span class="pw-badge-plat"><i :style="{ background: task.platBg }">{{ task.platChar }}</i>{{ task.platName }} · {{ task.kind === 'images' ? '图文作品' : '无水印' }}</span>
-          <span class="pw-badge-res">{{ task.resLabel }}</span>
-          <span v-if="task.kind === 'video'" class="pw-badge-size">{{ fmtSize(task.media.size) }}</span>
-          <span v-if="task.kind === 'video'" class="pw-badge-size">{{ fmtTime(task.duration) }}</span>
+          <span class="pill pw-badge-plat"><i :style="{ background: task.platBg }">{{ task.platChar }}</i>{{ task.platName }} · {{ task.kind === 'images' ? '图文作品' : '无水印' }}</span>
+          <span class="chip pw-badge-res">{{ task.resLabel }}</span>
+          <span v-if="task.kind === 'video'" class="chip mono">{{ fmtSize(task.media.size) }}</span>
+          <span v-if="task.kind === 'video'" class="chip mono">{{ fmtTime(task.duration) }}</span>
         </div>
-      </div>
-      <div class="panel pw-info">
+      </section>
+      <section class="panel pw-info">
         <h2>{{ task.title }}</h2>
         <p class="pw-author"><strong>{{ task.authorName }}</strong><span v-if="task.authorHandle">{{ task.authorHandle }}</span><em v-if="task.verified">已认证</em></p>
         <div class="pw-stats">
-          <span><Eye :size="13" />{{ fmtNum(task.view) }}</span>
-          <span><Heart :size="13" />{{ fmtNum(task.like) }}</span>
-          <span><MessageCircle :size="13" />{{ fmtNum(task.comment) }}</span>
-          <span><Share2 :size="13" />{{ fmtNum(task.share) }}</span>
+          <span><Eye :size="14" />{{ fmtNum(task.view) }}</span>
+          <span><Heart :size="14" />{{ fmtNum(task.like) }}</span>
+          <span><MessageCircle :size="14" />{{ fmtNum(task.comment) }}</span>
+          <span><Share2 :size="14" />{{ fmtNum(task.share) }}</span>
         </div>
         <div class="pw-actions">
           <button class="primary-button" @click="openSave"><Save :size="15" />{{ task.kind === 'images' ? `保存所选 ${pickedCount} 张` : '保存到图片库' }}</button>
@@ -512,7 +512,7 @@ function confirmSave() {
           <button class="filter-button" @click="runParse(lastUrl)"><RotateCcw :size="14" />重新解析</button>
         </div>
         <p class="pw-tip"><Save :size="12" /> 保存走服务端后台导入：不占手机流量，左下角实时显示下载进度，可随时取消或继续解析其它链接。</p>
-      </div>
+      </section>
     </div>
 
     <!-- 看图器：应用内大图（手机端点图进入，左右滑动切换，可直接勾选/下载）
@@ -521,17 +521,17 @@ function confirmSave() {
     <Teleport to="body">
       <div v-if="viewer.open && viewerImage" class="pw-viewer" @touchstart.passive="onSwipeStart" @touchend="onSwipeEnd">
         <div class="pw-viewer-top">
-          <span class="pw-viewer-idx">{{ viewer.index + 1 }} / {{ task?.images.length }}</span>
-          <button class="pw-viewer-close" @click="closeViewer"><X :size="20" /></button>
+          <span class="pill pw-viewer-idx mono">{{ viewer.index + 1 }} / {{ task?.images.length }}</span>
+          <button class="icon-button pw-viewer-close" @click="closeViewer"><X :size="20" /></button>
         </div>
         <img class="pw-viewer-img" :src="viewerImage.url" :alt="`图片 ${viewer.index + 1}`" decoding="async" />
         <button v-if="(task?.images.length || 0) > 1" class="pw-viewer-nav prev" title="上一张" @click.stop="stepViewer(-1)"><ChevronLeft :size="22" /></button>
         <button v-if="(task?.images.length || 0) > 1" class="pw-viewer-nav next" title="下一张" @click.stop="stepViewer(1)"><ChevronRight :size="22" /></button>
         <div class="pw-viewer-bottom">
-          <button class="pw-viewer-pick" :class="{ on: pickedImages[viewer.index] }" @click.stop="togglePick(viewer.index)">
+          <button class="filter-button pw-viewer-pick" :class="{ on: pickedImages[viewer.index] }" @click.stop="togglePick(viewer.index)">
             <Check :size="14" />{{ pickedImages[viewer.index] ? '已勾选保存' : '勾选这张' }}
           </button>
-          <button class="pw-viewer-dl" @click.stop="downloadOne(viewer.index)"><Download :size="14" />下载这张</button>
+          <button class="filter-button pw-viewer-dl" @click.stop="downloadOne(viewer.index)"><Download :size="14" />下载这张</button>
         </div>
       </div>
     </Teleport>
@@ -552,283 +552,146 @@ function confirmSave() {
           <label><input v-model="savePlatTag" type="checkbox" /><span><b>附带来源标签「{{ task?.platName }}」</b><small>便于按平台检索</small></span></label>
         </div>
         <p v-if="saveHint" class="pw-save-hint">{{ saveHint }}</p>
-        <button class="primary-button full" @click="confirmSave"><Save :size="16" />开始后台保存</button>
+        <button class="primary-button full pw-save-go" @click="confirmSave"><Save :size="16" />开始后台保存</button>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+/* ============================================================
+   视频解析工作台 · 极光玻璃
+   面板用玻璃原语（.panel / .modal / .chip / .pill / .filter-button），
+   只有面板与弹层用 backdrop-filter，网格卡片不用。
+   ============================================================ */
 .pw { width: min(1080px, 100%); }
-.pw .page-heading { margin-bottom: 24px; }
-.pw .page-heading h1 { font-size: 27px; }
+.pw .page-heading { margin-bottom: 22px; }
+.pw .page-heading h1 { font-size: clamp(24px, 2.3vw, 30px); }
 
-/* 输入卡 */
-.pw-card { padding: 18px; }
-.pw-input-row { display: flex; gap: 10px; align-items: center; }
-.pw-input-box {
-  flex: 1; min-width: 0; position: relative;
-  display: flex; align-items: center; gap: 9px;
-  border: 1px solid var(--line); border-radius: 10px;
-  background: rgba(255, 255, 255, .035);
-  padding: 0 12px;
-  transition: border-color .2s, box-shadow .2s;
-}
-.pw-input-box:focus-within { border-color: rgba(167, 139, 250, .55); box-shadow: 0 0 0 3px rgba(167, 139, 250, .13); }
-.pw-input-ico { color: #7f8aa4; flex: none; }
-.pw-input {
-  flex: 1; min-width: 0; height: 46px;
-  border: 0; outline: 0; background: transparent;
-  color: var(--text); font-size: 13px;
-}
-.pw-input::placeholder { color: #68738e; }
-.pw-plat-chip {
-  flex: none; display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 9px; border-radius: 999px;
-  border: 1px solid var(--line); background: rgba(255, 255, 255, .04);
-  font-size: 11px; color: #cdd4e3; white-space: nowrap;
-}
-.pw-plat-chip i { width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 8px currentColor; }
-.pw-plat-chip small { color: #7c87a1; font-size: 10px; margin-left: 2px; }
-.pw-parse-btn { height: 46px; flex: none; }
-.pw-parse-btn:disabled { opacity: .6; cursor: not-allowed; transform: none; box-shadow: none; }
-.pw-error {
-  display: flex; align-items: flex-start; gap: 7px;
-  margin: 13px 0 0; padding: 9px 12px;
-  border-radius: 8px; font-size: 12px; line-height: 1.6;
-  color: #fda4af; background: rgba(248, 113, 113, .09);
-  border: 1px solid rgba(248, 113, 113, .2);
-}
+/* ---------- 输入卡 ---------- */
+.pw-card { padding: var(--s-4); }
+.pw-input-row { display: flex; gap: var(--s-3); align-items: center; }
+.pw-input-box { flex: 1; min-width: 0; position: relative; display: flex; align-items: center; gap: var(--s-3); height: 52px; padding: 0 var(--s-3) 0 var(--s-4); border-radius: var(--r-md); border: 1px solid var(--stroke); background: var(--field); transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease), box-shadow var(--t-mid) var(--ease); }
+.pw-input-box:focus-within { border-color: var(--accent-line); background: var(--field-hover); box-shadow: 0 0 0 4px var(--accent-soft); }
+.pw-input-ico { flex: none; color: var(--text-3); }
+.pw-input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: transparent; color: var(--text-1); font-size: 13.5px; }
+.pw-input::placeholder { color: var(--text-3); }
+.pw-plat-chip { height: 28px; color: var(--text-2); }
+.pw-plat-chip i { width: 8px; height: 8px; flex: none; border-radius: 50%; box-shadow: 0 0 10px currentColor; }
+.pw-plat-chip small { color: var(--text-3); font: 10px var(--font-mono); }
+.pw-parse-btn { flex: none; height: 52px; padding: 0 22px; border-radius: var(--r-md); }
+.pw-parse-btn:disabled { opacity: .55; transform: none; filter: grayscale(.2); }
+.pw-error { display: flex; align-items: flex-start; gap: 7px; margin: 13px 0 0; padding: 10px 13px; border-radius: var(--r-sm); border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent); background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); font-size: 12px; line-height: 1.6; }
 .pw-error svg { flex: none; margin-top: 2px; }
-.pw-steps {
-  display: flex; align-items: center; gap: 10px;
-  margin-top: 13px; color: #a99cf6; font-size: 12px;
-}
-.pw-steps i {
-  width: 14px; height: 14px; border-radius: 50%;
-  border: 2px solid rgba(167, 139, 250, .2); border-top-color: #a78bfa;
-  animation: pw-spin .7s linear infinite;
-}
-.spin { animation: pw-spin .9s linear infinite; }
+.pw-steps { display: flex; align-items: center; gap: var(--s-3); margin-top: 13px; color: var(--accent-ink); font-size: 12px; }
+.pw-steps i { width: 14px; height: 14px; flex: none; border-radius: 50%; border: 2px solid var(--accent-soft); border-top-color: var(--accent-1); }
+.pw-spin { animation: pw-spin .8s linear infinite; }
 @keyframes pw-spin { to { transform: rotate(360deg); } }
 
-/* 历史 */
-.pw-history { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin: 13px 2px 0; }
-.pw-history-label { display: inline-flex; align-items: center; gap: 5px; color: #7c87a0; font-size: 11px; margin-right: 3px; }
-.pw-history-chip {
-  display: inline-flex; align-items: center; gap: 7px;
-  padding: 6px 11px; border-radius: 999px;
-  border: 1px solid var(--line); background: rgba(255, 255, 255, .03);
-  color: #a9b2c7; font-size: 11px; max-width: 260px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  transition: .18s;
-}
-.pw-history-chip:hover { border-color: rgba(167, 139, 250, .4); color: #d5ccff; }
-.pw-history-chip em { font-style: normal; color: #a78bfa; flex: none; }
-.pw-history-clear {
-  margin-left: auto; width: 26px; height: 26px; border-radius: 7px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: transparent; color: #68738e;
-}
-.pw-history-clear:hover { background: rgba(248, 113, 113, .1); color: #fb8294; }
+/* ---------- 最近解析 ---------- */
+.pw-history { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin: 14px 2px 0; }
+.pw-history-label { display: inline-flex; align-items: center; gap: 5px; margin-right: 3px; color: var(--text-3); font: 500 10.5px var(--font-mono); letter-spacing: .08em; }
+.pw-history-chip { max-width: 268px; height: 30px; padding: 0 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.pw-history-chip em { flex: none; color: var(--accent-ink); font-style: normal; font-weight: 600; }
+.pw-history-clear { margin-left: auto; color: var(--text-3); }
+.pw-history-clear:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
 
-/* 结果 */
-.pw-result { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr); gap: 13px; margin-top: 16px; }
-.pw-player { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-.pw-player video {
-  width: 100%; aspect-ratio: 16 / 9; max-height: 58vh;
-  border-radius: 10px; background: #000; object-fit: contain; outline: 0;
-}
+/* ---------- 结果 ---------- */
+.pw-result { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr); gap: var(--s-4); margin-top: var(--s-4); }
+.pw-player { display: flex; flex-direction: column; gap: var(--s-3); padding: var(--s-3); }
+.pw-player video { width: 100%; aspect-ratio: 16 / 9; max-height: 58vh; border-radius: var(--r-md); background: #000; object-fit: contain; outline: 0; }
+.pw-player-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 0 2px; }
+.pw-badge-plat { height: 30px; color: var(--text-2); }
+.pw-badge-plat i { display: inline-flex; align-items: center; justify-content: center; width: 19px; height: 19px; flex: none; border-radius: 7px; color: #fff; font: 700 10px var(--font-display); font-style: normal; }
+.pw-badge-res { color: var(--success); border-color: color-mix(in srgb, var(--success) 30%, transparent); background: color-mix(in srgb, var(--success) 10%, transparent); }
+
 /* 图文作品：图片网格（点图看大图，右上角勾选保存） */
-.pw-gallery-wrap { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.pw-gallery-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.pw-gallery-count { display: inline-flex; align-items: center; gap: 5px; font: 11px 'DM Mono'; color: #9aa4bd; }
-.pw-gallery-count svg { color: #6ee7a2; }
-.pw-gallery-tools { margin-left: auto; display: flex; gap: 6px; }
-.pw-mini {
-  padding: 5px 10px; border-radius: 7px; font-size: 11px;
-  border: 1px solid var(--line); background: rgba(255, 255, 255, .04); color: #a9b2c7;
-  transition: .16s;
-}
-.pw-mini:hover { border-color: rgba(167, 139, 250, .4); color: #d5ccff; }
-.pw-mini:active { background: rgba(167, 139, 250, .16); }
-.pw-gallery-tip { display: flex; align-items: center; gap: 5px; margin: 0; font-size: 10.5px; color: #68738e; }
-.pw-gallery-tip svg { flex: none; color: #a78bfa; }
-.pw-gallery {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
-  gap: 8px; max-height: 58vh; overflow-y: auto; padding-right: 2px;
-}
-.pw-gallery-item {
-  position: relative; display: block; border-radius: 9px; overflow: hidden;
-  border: 1px solid var(--line); background: rgba(255, 255, 255, .03);
-  transition: border-color .18s, transform .18s;
-}
-.pw-gallery-item img { display: block; width: 100%; aspect-ratio: 3 / 4; object-fit: cover; background: #0b0e16; cursor: zoom-in; }
-.pw-gallery-item span {
-  position: absolute; left: 6px; bottom: 6px;
-  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
-  display: inline-flex; align-items: center; justify-content: center;
-  font: 10px 'DM Mono'; color: #e7ebf5;
-  background: rgba(10, 13, 22, .68);
-}
-.pw-gallery-item:hover { border-color: rgba(167, 139, 250, .45); transform: translateY(-1px); }
-.pw-gallery-item.picked { border-color: rgba(110, 231, 162, .5); }
+.pw-gallery-wrap { display: flex; flex-direction: column; gap: var(--s-3); min-width: 0; }
+.pw-gallery-bar { display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; }
+.pw-gallery-count { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font: 11px var(--font-mono); }
+.pw-gallery-count svg { color: var(--success); }
+.pw-gallery-tools { display: flex; gap: 6px; margin-left: auto; }
+.pw-gallery-tools .filter-button { height: 30px; padding: 0 12px; font-size: 11.5px; }
+.pw-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: var(--s-2); max-height: 58vh; overflow-y: auto; padding-right: 2px; }
+.pw-gallery-item { position: relative; border-radius: var(--r-sm); overflow: hidden; border: 1px solid var(--stroke); background: var(--media-bg); transition: border-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease); }
+.pw-gallery-item img { display: block; width: 100%; aspect-ratio: 3 / 4; object-fit: cover; cursor: zoom-in; }
+.pw-gallery-item:hover { transform: translateY(-2px); border-color: var(--stroke-strong); }
+.pw-gallery-item.picked { border-color: color-mix(in srgb, var(--success) 52%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 26%, transparent); }
 .pw-gallery-item:not(.picked) img { opacity: .42; }
-.pw-gallery-no { cursor: zoom-in; }
-.pw-pick {
-  position: absolute; right: 6px; top: 6px; width: 21px; height: 21px; border-radius: 50%;
-  display: inline-flex; align-items: center; justify-content: center;
-  border: 1.5px solid rgba(232, 235, 244, .75); background: rgba(10, 13, 22, .55); color: #fff;
-  backdrop-filter: blur(3px); transition: .16s;
-}
-.pw-pick.on { background: #34d399; border-color: #34d399; color: #062815; }
+.pw-gallery-no { position: absolute; left: 6px; bottom: 6px; display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: var(--r-pill); border: 1px solid rgba(255, 255, 255, .16); background: rgba(8, 10, 20, .62); color: #fff; font: 500 10px var(--font-mono); cursor: zoom-in; }
+.pw-pick { position: absolute; right: 6px; top: 6px; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, .7); background: rgba(8, 10, 20, .58); color: #fff; transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease); }
+.pw-pick:active { transform: scale(.9); }
+.pw-pick.on { border-color: transparent; background: var(--success); color: #052117; }
+.pw-gallery-tip { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--text-3); font-size: 11px; }
+.pw-gallery-tip svg { flex: none; color: var(--accent-ink); }
 
-/* 看图器（应用内大图） */
-.pw-viewer {
-  position: fixed; z-index: 45; inset: 0;
-  background: rgba(3, 6, 16, .94); backdrop-filter: blur(8px);
-  display: flex; align-items: center; justify-content: center;
-  touch-action: none; overscroll-behavior: contain;
-}
-.pw-viewer-img {
-  max-width: 96vw; max-height: 82vh; object-fit: contain;
-  border-radius: 8px; box-shadow: 0 24px 70px rgba(0, 0, 0, .5);
-  user-select: none; -webkit-user-drag: none;
-}
-.pw-viewer-top {
-  position: absolute; top: 0; left: 0; right: 0;
-  display: flex; align-items: center; justify-content: space-between;
-  padding: calc(12px + env(safe-area-inset-top)) 14px 12px;
-}
-.pw-viewer-idx {
-  font: 12px 'DM Mono'; color: #cfd6e6;
-  background: rgba(10, 13, 22, .6); padding: 4px 10px; border-radius: 999px;
-}
-.pw-viewer-close, .pw-viewer-dl, .pw-viewer-pick {
-  display: inline-flex; align-items: center; gap: 6px;
-  border: 1px solid rgba(157, 171, 210, .22); background: rgba(10, 13, 22, .6);
-  color: #dfe4f0; border-radius: 999px; padding: 8px 12px; font-size: 12px;
-}
-.pw-viewer-close { width: 38px; height: 38px; padding: 0; justify-content: center; border-radius: 50%; }
-.pw-viewer-nav {
-  position: absolute; top: 50%; transform: translateY(-50%);
-  width: 40px; height: 40px; border-radius: 50%;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: rgba(10, 13, 22, .55); color: #e6eaf4; border: 1px solid rgba(157, 171, 210, .18);
-}
+/* ---------- 信息栏 ---------- */
+.pw-info { display: flex; flex-direction: column; padding: var(--s-5) 21px; }
+.pw-info h2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin: 0; color: var(--text-1); font: 600 17px/1.45 var(--font-display); letter-spacing: -.02em; }
+.pw-author { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; margin: 11px 0 0; color: var(--text-3); font-size: 12px; }
+.pw-author strong { color: var(--text-1); font-weight: 600; }
+.pw-author em { padding: 2px 8px; border-radius: var(--r-pill); border: 1px solid color-mix(in srgb, var(--accent-2) 34%, transparent); background: color-mix(in srgb, var(--accent-2) 10%, transparent); color: var(--accent-2); font: 500 10px var(--font-mono); font-style: normal; }
+.pw-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: var(--s-4) 0; padding: 13px 0; border-top: 1px solid var(--stroke); border-bottom: 1px solid var(--stroke); }
+.pw-stats span { display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: var(--text-2); font: 11.5px var(--font-mono); }
+.pw-stats svg { color: var(--text-3); }
+.pw-actions { display: flex; gap: var(--s-2); flex-wrap: wrap; }
+.pw-actions .primary-button { flex: 1; min-width: 150px; justify-content: center; }
+.pw-tip { display: flex; align-items: flex-start; gap: 6px; margin: 14px 0 0; color: var(--text-3); font-size: 11px; line-height: 1.65; }
+.pw-tip svg { flex: none; margin-top: 2px; color: var(--accent-ink); }
+
+/* ---------- 看图器（应用内大图） ---------- */
+.pw-viewer { position: fixed; z-index: 80; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--scrim); -webkit-backdrop-filter: blur(22px) saturate(1.3); backdrop-filter: blur(22px) saturate(1.3); touch-action: none; overscroll-behavior: contain; animation: fade-in var(--t-mid) var(--ease); }
+.pw-viewer-img { max-width: 96vw; max-height: 82vh; border-radius: var(--r-md); object-fit: contain; box-shadow: var(--shadow-2); user-select: none; -webkit-user-drag: none; animation: modal-in var(--t-slow) var(--ease); }
+.pw-viewer-top { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; padding: calc(12px + env(safe-area-inset-top)) 14px 12px; }
+.pw-viewer-idx { height: 34px; color: var(--text-1); font-size: 12px; }
+.pw-viewer-close { width: 38px; height: 38px; border-radius: 50%; border: 1px solid var(--stroke-strong); background: var(--chrome); color: var(--text-1); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+.pw-viewer-nav { position: absolute; top: 50%; display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--stroke-strong); background: var(--chrome); color: var(--text-1); transform: translateY(-50%); transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease); }
+.pw-viewer-nav:hover { background: var(--field-hover); }
+.pw-viewer-nav:active { transform: translateY(-50%) scale(.94); }
 .pw-viewer-nav.prev { left: 12px; }
 .pw-viewer-nav.next { right: 12px; }
-.pw-viewer-bottom {
-  position: absolute; left: 0; right: 0;
-  bottom: calc(16px + env(safe-area-inset-bottom));
-  display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;
-  padding: 0 14px;
-}
-.pw-viewer-pick.on { background: #34d399; border-color: #34d399; color: #062815; }
-.pw-save-picked {
-  display: flex; align-items: flex-start; gap: 8px;
-  padding: 11px 0; border-bottom: 1px solid rgba(157, 171, 210, .08);
-}
-.pw-save-picked svg { flex: none; margin-top: 3px; color: #34d399; }
-.pw-save-picked b { display: block; font-size: 12px; font-weight: 500; }
-.pw-save-picked small { display: block; color: #78839e; font-size: 10.5px; margin-top: 3px; }
-.pw-player-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 2px; }
-.pw-badge-plat, .pw-badge-res, .pw-badge-size {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 10px; border-radius: 999px; font-size: 11px;
-  border: 1px solid var(--line); background: rgba(255, 255, 255, .03); color: #aeb7ca;
-}
-.pw-badge-plat i {
-  width: 18px; height: 18px; border-radius: 6px;
-  display: inline-flex; align-items: center; justify-content: center;
-  color: #fff; font-size: 10px; font-style: normal; font-weight: 700;
-}
-.pw-badge-res { color: #6ee7a2; border-color: rgba(74, 222, 128, .2); background: rgba(74, 222, 128, .07); }
-.pw-info { padding: 20px 21px; display: flex; flex-direction: column; }
-.pw-info h2 {
-  font: 600 17px 'Space Grotesk'; letter-spacing: -.02em;
-  color: #f0f2f7; margin: 0; line-height: 1.45;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-}
-.pw-author { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 11px 0 0; font-size: 12px; color: #8b96ad; }
-.pw-author strong { color: #d7dcea; font-weight: 500; }
-.pw-author span { color: #7c87a1; }
-.pw-author em {
-  font-style: normal; font-size: 10px; color: #67e8f9;
-  border: 1px solid rgba(103, 232, 249, .25); background: rgba(103, 232, 249, .07);
-  padding: 2px 7px; border-radius: 999px;
-}
-.pw-stats {
-  display: grid; grid-template-columns: repeat(4, 1fr);
-  gap: 6px; margin: 16px 0;
-  padding: 11px 0; border-top: 1px solid rgba(157, 171, 210, .09);
-  border-bottom: 1px solid rgba(157, 171, 210, .09);
-}
-.pw-stats span {
-  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
-  font: 11px 'DM Mono'; color: #9aa4bd;
-}
-.pw-stats svg { color: #6d7894; }
-.pw-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.pw-actions .primary-button { flex: 1; min-width: 150px; justify-content: center; }
-.pw-actions .filter-button { display: inline-flex; align-items: center; gap: 6px; }
-.pw-tip {
-  display: flex; align-items: center; gap: 6px;
-  margin: 14px 0 0; font-size: 10.5px; color: #68738e; line-height: 1.6;
-}
-.pw-tip svg { flex: none; color: #a78bfa; }
+.pw-viewer-bottom { position: absolute; left: 0; right: 0; bottom: calc(16px + env(safe-area-inset-bottom)); display: flex; align-items: center; justify-content: center; gap: var(--s-2); flex-wrap: wrap; padding: 0 14px; }
+.pw-viewer-bottom .filter-button { height: 40px; padding: 0 16px; }
+.pw-viewer-pick.on { border-color: transparent; background: var(--success); color: #052117; }
 
-/* 保存弹窗 */
-.pw-save { width: min(430px, 100%); }
-.pw-save .full { width: 100%; justify-content: center; margin-top: 16px; }
-.pw-save-hint {
-  margin: 8px 0 0; padding: 8px 11px; border-radius: 8px;
-  font-size: 12px; line-height: 1.5;
-  color: #fda4af; background: rgba(248, 113, 113, .1);
-  border: 1px solid rgba(248, 113, 113, .25);
-}
-.pw-save-high {
-  display: flex; align-items: flex-start; gap: 6px;
-  margin: 10px 0 4px; padding: 8px 11px; border-radius: 8px;
-  font-size: 11px; line-height: 1.55;
-  color: #a5f3c9; background: rgba(74, 222, 128, .08);
-  border: 1px solid rgba(74, 222, 128, .22);
-}
-.pw-save-high svg { flex: none; margin-top: 1px; color: #4ade80; }
+/* ---------- 保存弹窗 ---------- */
+.pw-save { width: min(440px, 100%); }
+.pw-save-go { margin-top: var(--s-4); }
 .pw-save-opts { margin-top: 6px; }
-.pw-save-opts label {
-  display: flex; align-items: flex-start; gap: 10px; cursor: pointer;
-  padding: 11px 0; border-bottom: 1px solid rgba(157, 171, 210, .08);
-}
+.pw-save-opts label { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--stroke); cursor: pointer; }
 .pw-save-opts label:last-child { border-bottom: 0; }
-.pw-save-opts input { margin: 3px 0 0; accent-color: #a78bfa; width: 15px; height: 15px; cursor: pointer; flex: none; }
-.pw-save-opts b { display: block; font-size: 12px; font-weight: 500; }
-.pw-save-opts small { display: block; color: #78839e; font-size: 10.5px; margin-top: 3px; }
+.pw-save-opts input { flex: none; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--accent-1); cursor: pointer; }
+.pw-save-opts b { display: block; color: var(--text-1); font-size: 12.5px; font-weight: 600; }
+.pw-save-opts small { display: block; margin-top: 3px; color: var(--text-3); font-size: 11px; line-height: 1.55; }
+.pw-save-picked { display: flex; align-items: flex-start; gap: var(--s-2); padding: 12px 0; border-bottom: 1px solid var(--stroke); }
+.pw-save-picked svg { flex: none; margin-top: 3px; color: var(--success); }
+.pw-save-picked b { display: block; color: var(--text-1); font-size: 12.5px; font-weight: 600; }
+.pw-save-picked small { display: block; margin-top: 3px; color: var(--text-3); font-size: 11px; }
+.pw-save-high { display: flex; align-items: flex-start; gap: 6px; margin: 12px 0 4px; padding: 9px 12px; border-radius: var(--r-sm); border: 1px solid color-mix(in srgb, var(--success) 28%, transparent); background: color-mix(in srgb, var(--success) 9%, transparent); color: color-mix(in oklab, var(--success) 68%, var(--text-1)); font-size: 11px; line-height: 1.6; }
+.pw-save-high svg { flex: none; margin-top: 1px; color: var(--success); }
+.pw-save-hint { margin: 10px 0 0; padding: 9px 12px; border-radius: var(--r-sm); border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); font-size: 12px; line-height: 1.5; }
 
+@media (max-width: 900px) { .pw-result { grid-template-columns: 1fr; } }
 @media (max-width: 720px) {
-  .pw-tasks {
-    left: 12px; right: 12px; bottom: calc(70px + env(safe-area-inset-bottom));
-    width: auto; max-width: none;
-  }
-  .pw-task { padding: 11px 12px 10px; }
-}
-@media (max-width: 900px) {
-  .pw-result { grid-template-columns: 1fr; }
-}
-@media (max-width: 720px) {
-  .pw-card { padding: 13px; }
+  .pw-card { padding: var(--s-3); }
   .pw-input-row { flex-direction: column; align-items: stretch; }
-  .pw-parse-btn { width: 100%; }
-  .pw-stats { grid-template-columns: repeat(2, 1fr); row-gap: 9px; }
-  .pw-info { padding: 16px 15px; }
-  .pw-history-chip { max-width: 170px; }
+  .pw-input-box { height: 48px; }
+  .pw-plat-chip { display: none; }
+  .pw-parse-btn { width: 100%; height: 46px; }
+  .pw-history-chip { max-width: 172px; }
+  .pw-result { gap: var(--s-3); margin-top: var(--s-3); }
+  .pw-player video { max-height: 50vh; }
   .pw-gallery { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); max-height: 46vh; }
+  .pw-gallery-tools .filter-button { padding: 0 10px; font-size: 11px; }
+  .pw-info { padding: var(--s-4) 15px; }
+  .pw-stats { grid-template-columns: repeat(2, 1fr); row-gap: 9px; }
+  .pw-actions .primary-button { min-width: 0; }
+  .pw-viewer, .pw-viewer-close, .pw-viewer-nav { -webkit-backdrop-filter: none; backdrop-filter: none; }
   .pw-viewer-img { max-height: 74vh; }
   .pw-viewer-nav { width: 34px; height: 34px; }
   .pw-viewer-nav.prev { left: 6px; }
   .pw-viewer-nav.next { right: 6px; }
   .pw-viewer-bottom { gap: 8px; }
-  .pw-viewer-pick, .pw-viewer-dl { padding: 9px 13px; font-size: 12px; }
-  .pw-actions .primary-button { min-width: 0; }
+  .pw-viewer-bottom .filter-button { height: 38px; padding: 0 13px; }
 }
 </style>
