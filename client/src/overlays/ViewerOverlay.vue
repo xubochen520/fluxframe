@@ -244,8 +244,10 @@ onMounted(() => {
 .viewer-nav.next:hover { transform: translateY(-50%) translateX(3px); }
 
 .viewer-caption { position: fixed; z-index: 4; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 14px; max-width: min(94vw, 1180px); padding: 9px 10px 9px 18px; border-radius: var(--r-pill); border: 1px solid var(--stroke-strong); background: var(--chrome); -webkit-backdrop-filter: blur(22px) saturate(1.5); backdrop-filter: blur(22px) saturate(1.5); box-shadow: var(--edge-hl), var(--shadow-2); transform: translateX(-50%); }
-.viewer-caption > strong { max-width: 34vw; color: var(--text-1); font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.viewer-meta { display: flex; align-items: center; gap: 6px; color: var(--text-3); font: 11px var(--font-mono); }
+.viewer-caption > strong { flex: 0 1 auto; min-width: 0; max-width: 26vw; color: var(--text-1); font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.viewer-meta { display: flex; align-items: center; gap: 6px; flex: none; color: var(--text-3); font: 11px var(--font-mono); }
+/* 尺寸与观看数一旦换行会把底部胶囊撑成两行，这里一律不换行 */
+.viewer-meta > span { white-space: nowrap; }
 .cap-btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: var(--r-pill); border: 1px solid var(--stroke); background: var(--field); color: var(--text-2); font-size: 11.5px; font-weight: 500; white-space: nowrap; transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease); }
 .cap-btn:hover { color: var(--text-1); background: var(--field-hover); border-color: var(--stroke-strong); }
 .cap-btn.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-soft); }
