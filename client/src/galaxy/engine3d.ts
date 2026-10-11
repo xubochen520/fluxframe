@@ -339,10 +339,15 @@ vec3 viewRay(vec2 ndc, float yaw, float pitch) {
 }
 void main() {
   vec3 ray = normalize(viewRay(vNdc, uYaw, uPitch));
+  /* 经度必须取「整周期」倍数（1/2π 的整数倍）：atan(x, z) 在 ±π 处有分支切割，
+     缩放若不是整周期，切割两侧会落到贴图的不同位置，屏幕上就是一道随镜头自转
+     扫过去的竖直缝（在服务器部署上实测到过：左边雾淡、右边雾浓，边界还会移动）。
+     远层一圈 1 个周期、近层一圈 3 个周期 —— 3:1 正是原来 0.55:0.18 想表达的视差比。 */
+  float lon = atan(ray.x, -ray.z);
   /* 远层：几乎不随视角动，当深空背景（x 用经度，横着转只挪一点点） */
-  vec4 far = texture2D(uTexture, vec2(atan(ray.x, -ray.z) * 0.18, ray.y * 0.5) + vec2(0.5));
+  vec4 far = texture2D(uTexture, vec2(lon * 0.15915494309189535, ray.y * 0.5) + vec2(0.5));
   /* 近层：随视角平移得多，转视角时有明显视差 */
-  vec4 near = texture2D(uTexture, vec2(atan(ray.x, -ray.z) * 0.55, ray.y * 1.1 + 0.2) + vec2(0.13, 0.55));
+  vec4 near = texture2D(uTexture, vec2(lon * 0.477464829275686, ray.y * 1.1 + 0.2) + vec2(0.13, 0.55));
   gl_FragColor = vec4(stage(vNdc, far, near), 1.0);
 }
 `
