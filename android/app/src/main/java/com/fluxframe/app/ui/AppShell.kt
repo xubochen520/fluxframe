@@ -5,13 +5,18 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -70,6 +75,7 @@ import com.fluxframe.app.ui.components.FluxToast
 import com.fluxframe.app.ui.components.FluxTopBar
 import com.fluxframe.app.ui.components.FluidCapsule
 import com.fluxframe.app.ui.components.TaskDock
+import com.fluxframe.app.ui.theme.FluxMotion
 import com.fluxframe.app.ui.screens.DeepseekScreen
 import com.fluxframe.app.ui.screens.SimilarRoute
 import com.fluxframe.app.ui.screens.LibraryScreen
@@ -464,12 +470,29 @@ fun AppShell(
                 enter = expandVertically(expandFrom = Alignment.Top) + fadeIn(),
                 exit = shrinkVertically(shrinkTowards = Alignment.Top) + fadeOut(),
             ) {
+                val title = when (route) {
+                    AppRoute.PERSON -> personTagId
+                        ?.let { id -> tags.firstOrNull { it.id == id }?.name }
+                        ?: "人物"
+                    else -> route.title
+                }
                 FluxTopBar(
-                    title = when (route) {
-                        AppRoute.PERSON -> personTagId
-                            ?.let { id -> tags.firstOrNull { it.id == id }?.name }
-                            ?: "人物"
-                        else -> route.title
+                    title = title,
+                    // 副标题只放"已经算得出来的计数"，不做额外请求。
+                    // 它让大标题下面有一行等宽小字压住版面，也让当前页面的规模一眼可见。
+                    subtitle = when (route) {
+                        AppRoute.OVERVIEW ->
+                            "${allMedia.size} 项媒体 · ${images.size} 图 / ${videos.size} 视频"
+                        AppRoute.LIBRARY -> "${images.size} 张图片"
+                        AppRoute.VIDEOS -> "${videos.size} 个视频"
+                        AppRoute.TRASH -> "${trash.size} 项待清理"
+                        AppRoute.TAGS ->
+                            "${tags.count { !it.person }} 个标签 · ${tags.count { it.person }} 个人物组"
+                        AppRoute.PERSON ->
+                            "${tags.firstOrNull { it.id == personTagId }?.count ?: 0} 项关联媒体"
+                        AppRoute.LOGS -> "服务端操作留痕"
+                        AppRoute.SETTINGS -> session.user?.username?.let { "已登录 · $it" } ?: "未登录"
+                        else -> null
                     },
                     modifier = Modifier.statusBarsPadding(),
                     scrolled = contentScrolled,
@@ -537,7 +560,39 @@ fun AppShell(
                             routeContent(PRIMARY_ROUTES[page])
                         }
                     } else {
-                        routeContent(route)
+                        /*
+                         * 非主页面（人物、视频提取、回收站、日志、DeepSeek、设置）之间的切换。
+                         *
+                         * 只包了一层 AnimatedContent，路由与返回栈一行没动：内容仍然是
+                         * 直接调用 routeContent(route)，key 用 route.name，
+                         * 所以同一个页面在重组之间不会被重建。
+                         *
+                         * 方向按返回栈推导：进去（更深）从右侧滑入、当前页向左侧淡出；
+                         * 返回（更浅）则相反。位移只有屏宽的 6%，配上同一条缓存曲线，
+                         * 是"页面翻过去"而不是"整页横移"。
+                         */
+                        AnimatedContent(
+                            targetState = route,
+                            transitionSpec = {
+                                // 方向在切换那一刻定下，动画过程中不再变：
+                                // 目标页在返回栈里的下标比来源页小 = 返回（从左侧滑入）。
+                                val back = stack.indexOf(targetState) < stack.indexOf(initialState)
+                                val enter = slideInHorizontally(
+                                    animationSpec = tween(FluxMotion.BASE),
+                                    initialOffsetX = { width -> if (back) -width / 16 else width / 16 },
+                                ) + fadeIn(animationSpec = tween(FluxMotion.BASE))
+                                val exit = slideOutHorizontally(
+                                    animationSpec = tween(FluxMotion.BASE),
+                                    targetOffsetX = { width -> if (back) width / 16 else -width / 16 },
+                                ) + fadeOut(animationSpec = tween(FluxMotion.FAST))
+                                enter togetherWith exit
+                            },
+                            contentKey = { it.name },
+                            label = "routeTransition",
+                            modifier = Modifier.fillMaxSize(),
+                        ) { animatedRoute ->
+                            routeContent(animatedRoute)
+                        }
                     }
                 }
             }
