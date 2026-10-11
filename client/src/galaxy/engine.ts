@@ -24,6 +24,25 @@
  *     改成用「一个屏幕像素对应多少片内坐标」的 uniform，哪都能跑。
  *   · 缩略图这一层要从加色混合切回普通 alpha 混合，否则图片叠在一起会互相烧白。
  */
+import {
+  ACCENT_GLSL,
+  CARD_FRAG,
+  DUST_FRAG,
+  HALO_FRAG,
+  RING_FRAG,
+  STAGE_GLSL,
+  createGlowSprite,
+  createHazeCanvas,
+  createLabelAtlas,
+  createStageStyle,
+  isLowEndDevice,
+  readStageStyle,
+  sortIndicesByKey,
+  stageBase,
+  uploadCanvasTexture,
+  watchStageStyle,
+  type LabelAtlas,
+} from './render-sprites'
 
 export interface GalaxyNode {
   /** 图片 id */
@@ -105,11 +124,42 @@ const CLICK_SLOP = 4
 /** 相对「刚好装下」最多能放大多少倍 */
 const MAX_ZOOM_FACTOR = 60
 
-const NEBULA_TEXTURE_SIZE = 512
-const DUST_COUNT = 520
-/** 星云/星尘的视差系数：越小看起来越远 */
+const DUST_COUNT = 900
+/** 星尘铺开的范围（节点世界单位）。每颗的视差按深度在 0.22~0.5 之间 */
+const DUST_SPREAD = 3.4
+/** 星云的视差系数：越小看起来越远 */
 const NEBULA_PARALLAX = 0.1
-const DUST_PARALLAX = 0.35
+/** 节点多于这个数时只给最「中心」的这么多个点画光晕（与缩略图的单帧预算同量级） */
+const HALO_BUDGET = MAX_THUMBS_PER_FRAME
+/** 光晕直径 / 点直径 */
+const HALO_SCALE = 3.4
+const RING_SCALE = 3.2
+const PULSE_PERIOD_MS = 1700
+/** 只为脉冲重画时限到约 30fps */
+const PULSE_FRAME_MS = 32
+/** 卡片外圈留给投影 / 选中外发光的像素（CSS 像素） */
+const CARD_MARGIN = 6
+const CARD_SELECTED_MARGIN = 18
+
+const POINT_LAYOUT = [
+  { name: 'aPos', size: 2, offset: 0 },
+  { name: 'aColor', size: 3, offset: 2 * 4 },
+  { name: 'aMeta', size: 2, offset: 5 * 4 },
+]
+const EDGE_LAYOUT = [
+  { name: 'aPos', size: 2, offset: 0 },
+  { name: 'aColor', size: 3, offset: 2 * 4 },
+]
+const DUST_LAYOUT = [
+  { name: 'aPos', size: 2, offset: 0 },
+  { name: 'aMeta', size: 3, offset: 2 * 4 },
+]
+const THUMB_LAYOUT = [
+  { name: 'aPos', size: 2, offset: 0 },
+  { name: 'aLocal', size: 2, offset: 2 * 4 },
+  { name: 'aTint', size: 4, offset: 4 * 4 },
+]
+const CORNERS = [-1, -1, 1, -1, -1, 1, 1, 1]
 
 type GL = WebGLRenderingContext | WebGL2RenderingContext
 
@@ -189,7 +239,7 @@ void main() {
   if (r > 1.0) discard;
   /* 中心一个亮核 + 外面一圈柔和光晕：加色混合下自然形成「星点」 */
   float core = smoothstep(0.22, 0.0, r);
-  float halo = pow(max(0.0, 1.0 - r), 2.2) * 0.42;
+  float halo = pow(max(0.0, 1.0 - r), 2.2) * 0.26;
   float alpha = (core * 0.85 + halo) * vAlpha;
   gl_FragColor = vec4(vColor * alpha * (0.75 + core * 0.9), alpha);
 }
@@ -219,44 +269,68 @@ void main() {
 
 const THUMB_VERT = `${CAMERA_VERT}
 attribute vec2 aPos;
-attribute vec2 aUv;
-attribute vec2 aLocal;   // -1..1 的片内坐标，圆角靠它算
+attribute vec2 aLocal;   // -1..1 的片内坐标，可超出 ±1（外圈画投影与选中光）
 attribute vec4 aTint;    // rgb + 透明度
-varying vec2 vUv;
 varying vec2 vLocal;
 varying vec4 vTint;
 void main() {
   gl_Position = project(aPos);
-  vUv = aUv;
   vLocal = aLocal;
   vTint = aTint;
 }
 `
 
-const THUMB_FRAG = `
-precision mediump float;
-uniform sampler2D uTexture;
-uniform float uFeather;   // 一个屏幕像素相当于多少片内坐标
-varying vec2 vUv;
-varying vec2 vLocal;
-varying vec4 vTint;
-/** 圆角矩形的有符号距离场：<0 在内部 */
-float roundedBox(vec2 p, float radius) {
-  vec2 q = abs(p) - 1.0 + radius;
-  return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
-}
+const THUMB_FRAG = CARD_FRAG
+
+/** 星尘：每颗有自己的深度，深度决定视差、大小、亮度和偏白的程度 */
+const DUST_VERT = `${CAMERA_VERT}
+${ACCENT_GLSL}
+uniform float uPixel;
+attribute vec2 aPos;    // -1~1，乘 DUST_SPREAD 是世界坐标
+attribute vec3 aMeta;   // x: 深度 0远~1近, y: 取色位置, z: 随机
+varying vec3 vColor;
+varying float vAlpha;
 void main() {
-  float dist = roundedBox(vLocal, 0.26);
-  float width = max(uFeather * 1.4, 0.002);
-  float fill = 1.0 - smoothstep(0.0, width, dist);
-  if (fill <= 0.002) discard;
-  vec4 texel = texture2D(uTexture, vUv);
-  /* 底部压暗一点：像张海报，也让密集处看得出层次 */
-  float shade = 1.0 - smoothstep(-0.2, 1.0, -vLocal.y) * 0.26;
-  /* 内侧一圈亮边：缩略图挨在一起时才分得开 */
-  float rim = smoothstep(-width * 2.4, -width * 0.4, dist) * 0.5;
-  vec3 color = texel.rgb * shade + vTint.rgb * rim;
-  gl_FragColor = vec4(color, vTint.a * fill * texel.a);
+  float parallax = mix(0.22, 0.5, aMeta.x);
+  vec2 device = (aPos * ${DUST_SPREAD.toFixed(2)} - uCenter * parallax) * uZoom + uResolution * 0.5;
+  gl_Position = vec4(device / uResolution * 2.0 - 1.0, 0.0, 1.0);
+  gl_PointSize = (0.9 + aMeta.x * 1.6 + aMeta.z * 0.6) * uPixel;
+  vColor = mix(accentAt(aMeta.y), vec3(0.9, 0.93, 1.0), aMeta.x * 0.4);
+  vAlpha = (0.1 + aMeta.x * 0.42) * (0.6 + aMeta.z * 0.4);
+}
+`
+
+const HALO_VERT = `${CAMERA_VERT}
+uniform float uScale;
+uniform float uMaxSize;
+attribute vec2 aPos;
+attribute vec3 aColor;
+attribute vec2 aMeta;
+varying vec3 vColor;
+varying float vAlpha;
+void main() {
+  gl_Position = project(aPos);
+  gl_PointSize = clamp(aMeta.x * uZoom * 2.0 * uScale, 2.0, uMaxSize);
+  vColor = aColor;
+  vAlpha = aMeta.y;
+}
+`
+
+const RING_VERT = `${CAMERA_VERT}
+uniform float uScale;
+uniform float uMaxSize;
+uniform float uLine;
+attribute vec2 aPos;
+attribute vec3 aColor;
+attribute vec2 aMeta;
+varying vec3 vColor;
+varying float vPixel;
+void main() {
+  gl_Position = project(aPos);
+  float size = clamp(aMeta.x * uZoom * 2.0 * uScale, 30.0 * uLine, uMaxSize);
+  gl_PointSize = size;
+  vColor = aColor;
+  vPixel = 2.0 * uLine / size;
 }
 `
 
@@ -289,10 +363,10 @@ void main() {
  */
 const BACKDROP_FRAG = `
 precision highp float;
-uniform sampler2D uTexture;
 uniform vec2 uResolution;
 uniform vec2 uCenter;
 uniform float uZoom;
+${STAGE_GLSL}
 varying vec2 vNdc;
 vec2 layerUv(float parallax, float worldPerTile, vec2 offset) {
   vec2 device = (vNdc * 0.5 + 0.5) * uResolution;
@@ -302,62 +376,12 @@ vec2 layerUv(float parallax, float worldPerTile, vec2 offset) {
 }
 void main() {
   /* 远层：一块纹理铺 5 个世界单位，视差 0.1，几乎不跟着镜头动 */
-  vec3 far = texture2D(uTexture, layerUv(${NEBULA_PARALLAX}, 5.0, vec2(0.5))).rgb;
+  vec4 far = texture2D(uTexture, layerUv(${NEBULA_PARALLAX}, 5.0, vec2(0.5)));
   /* 近层：铺 2.4 个世界单位，视差 0.26，只在画面中间露一点 */
-  vec3 near = texture2D(uTexture, layerUv(0.26, 2.4, vec2(0.13, 0.62))).rgb;
-  float mask = 1.0 - smoothstep(0.14, 0.44, length(vNdc * 0.5));
-  gl_FragColor = vec4(far * 0.95 + near * 0.6 * mask, 1.0);
+  vec4 near = texture2D(uTexture, layerUv(0.26, 2.4, vec2(0.13, 0.62)));
+  gl_FragColor = vec4(stage(vNdc, far, near), 1.0);
 }
 `
-
-/* ---------------- 星云纹理：一次性用 2D canvas 画好再交给 WebGL ---------------- */
-
-function createNebulaCanvas() {
-  const size = NEBULA_TEXTURE_SIZE
-  const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
-  const ctx = canvas.getContext('2d')!
-  ctx.fillStyle = '#05070f'
-  ctx.fillRect(0, 0, size, size)
-
-  /* 固定种子的伪随机：星云每次进页面都长一样，不会闪 */
-  let seed = 0x2f6e2b1
-  const random = () => {
-    seed = (seed * 1664525 + 1013904223) >>> 0
-    return seed / 4294967296
-  }
-
-  const palette = ['#1b2a6b', '#123a52', '#2a1b5e', '#0f3350', '#241a4d']
-  ctx.globalCompositeOperation = 'lighter'
-  for (let i = 0; i < 22; i++) {
-    const cx = random() * size
-    const cy = random() * size
-    const radius = size * (0.12 + random() * 0.26)
-    const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius)
-    gradient.addColorStop(0, palette[(random() * palette.length) | 0])
-    gradient.addColorStop(1, 'rgba(0,0,0,0)')
-    ctx.globalAlpha = 0.16 + random() * 0.16
-    ctx.fillStyle = gradient
-    ctx.beginPath()
-    ctx.arc(cx, cy, radius, 0, Math.PI * 2)
-    ctx.fill()
-  }
-
-  /* 远处的小星点：越靠边越暗，纹理四周不会出现硬接缝 */
-  ctx.globalAlpha = 1
-  for (let i = 0; i < 900; i++) {
-    const cx = random() * size
-    const cy = random() * size
-    const edge = Math.min(cx, cy, size - cx, size - cy) / (size * 0.5)
-    const brightness = (0.25 + random() * 0.75) * Math.min(1, edge * 1.6)
-    ctx.fillStyle = `rgba(${Math.round(200 + random() * 55)}, ${Math.round(210 + random() * 45)}, 255, ${brightness * 0.5})`
-    ctx.beginPath()
-    ctx.arc(cx, cy, random() < 0.92 ? 0.6 : 1.3, 0, Math.PI * 2)
-    ctx.fill()
-  }
-  return canvas
-}
 
 /* ---------------- 引擎 ---------------- */
 
@@ -372,6 +396,9 @@ export class GalaxyEngine {
   private edgeProgram: WebGLProgram
   private thumbProgram: WebGLProgram
   private backdropProgram: WebGLProgram
+  private dustProgram: WebGLProgram
+  private haloProgram: WebGLProgram
+  private ringProgram: WebGLProgram
 
   private pointBuffer: WebGLBuffer
   private edgeBuffer: WebGLBuffer
@@ -379,13 +406,34 @@ export class GalaxyEngine {
   private thumbBuffer: WebGLBuffer
   private dustBuffer: WebGLBuffer
   private quadBuffer: WebGLBuffer
+  private haloIndexBuffer: WebGLBuffer
   private backdropTexture: WebGLTexture
   private thumbTexture: WebGLTexture
+  private spriteTexture: WebGLTexture
+  private atlasTexture: WebGLTexture
 
   private pointData: Float32Array
   private edgeData: Float32Array
   private edgeAlpha: Float32Array
-  private thumbData = new Float32Array(4 * 10)
+  private thumbData = new Float32Array(4 * 8)
+
+  private style = createStageStyle()
+  private lowEnd = isLowEndDevice()
+  private maxPointSize = 64
+  /** 画光晕的点数；小于节点数时按索引缓冲只画相似关系最强的那些 */
+  private haloCount = 0
+  private atlas: LabelAtlas | null = null
+  private nodeLabels: Array<Float32Array | null> = []
+  /** 纹理缓存的 key 预先拼好，帧内不再拼字符串 */
+  private textureKeys: string[] = []
+  /** 缩略图绘制顺序（离屏心由近到远），跨帧复用、原地排序 */
+  private thumbOrder: Int32Array
+  private thumbDistance: Float32Array
+  private now = 0
+  private lastPulseAt = 0
+  private selectedThumbAlpha = 0
+  private uniformCache = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>()
+  private attributeCache = new Map<WebGLProgram, Map<string, number>>()
 
   /** 每个节点的高亮权重 0~1（搜索、图例筛选都靠它压暗无关的点） */
   private emphasis: Float32Array
@@ -444,6 +492,9 @@ export class GalaxyEngine {
     this.edgeProgram = link(gl, EDGE_VERT, EDGE_FRAG)
     this.thumbProgram = link(gl, THUMB_VERT, THUMB_FRAG)
     this.backdropProgram = link(gl, BACKDROP_VERT, BACKDROP_FRAG)
+    this.dustProgram = link(gl, DUST_VERT, DUST_FRAG)
+    this.haloProgram = link(gl, HALO_VERT, HALO_FRAG)
+    this.ringProgram = link(gl, RING_VERT, RING_FRAG)
 
     this.pointBuffer = gl.createBuffer()!
     this.edgeBuffer = gl.createBuffer()!
@@ -451,19 +502,41 @@ export class GalaxyEngine {
     this.thumbBuffer = gl.createBuffer()!
     this.dustBuffer = gl.createBuffer()!
     this.quadBuffer = gl.createBuffer()!
+    this.haloIndexBuffer = gl.createBuffer()!
     this.backdropTexture = gl.createTexture()!
     this.thumbTexture = gl.createTexture()!
+    this.spriteTexture = gl.createTexture()!
+    this.atlasTexture = gl.createTexture()!
+    const pointRange = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE) as Float32Array | null
+    this.maxPointSize = Math.min(256, pointRange ? pointRange[1] : 64)
 
     this.emphasis = new Float32Array(nodes.length).fill(1)
     this.pointData = new Float32Array(nodes.length * 7)
     this.edgeData = new Float32Array(edges.length * 12)
     this.edgeAlpha = new Float32Array(edges.length * 2)
+    this.thumbOrder = new Int32Array(nodes.length)
+    this.thumbDistance = new Float32Array(nodes.length)
+    for (let i = 0; i < nodes.length; i++) {
+      this.thumbOrder[i] = i
+      this.textureKeys.push(`${i}:0`, `${i}:1`)
+    }
+    readStageStyle(canvas, this.style)
 
     this.uploadStatic()
     this.uploadTexturesAndBackdrop()
     this.bindEvents()
     this.resize()
     this.resetView(true)
+    this.detach.push(watchStageStyle(() => {
+      if (readStageStyle(this.canvas, this.style)) this.dirty = true
+    }))
+    if (document.fonts && document.fonts.status !== 'loaded') {
+      document.fonts.ready.then(() => {
+        if (this.contextLost) return
+        this.buildAtlas()
+        this.dirty = true
+      })
+    }
     this.frame = requestAnimationFrame(this.loop)
   }
 
@@ -501,43 +574,60 @@ export class GalaxyEngine {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.thumbBuffer)
     gl.bufferData(gl.ARRAY_BUFFER, this.thumbData.byteLength, gl.DYNAMIC_DRAW)
 
+    const strength = new Float32Array(this.nodes.length)
+    for (const edge of this.edges) {
+      strength[edge.a] += edge.score
+      strength[edge.b] += edge.score
+    }
+    this.haloCount = this.nodes.length
+    if (this.nodes.length > HALO_BUDGET) {
+      const top = Array.from(this.nodes.keys())
+        .sort((a, b) => strength[b] - strength[a] || a - b)
+        .slice(0, HALO_BUDGET)
+        .filter((index) => index < 65536)
+      this.haloCount = top.length
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.haloIndexBuffer)
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(top), gl.STATIC_DRAW)
+    }
+
     this.updateEdgeAlpha()
   }
 
   private buildDust() {
-    const data = new Float32Array(DUST_COUNT * 7)
+    const data = new Float32Array(DUST_COUNT * 5)
     let seed = 0x51f3a7
     const random = () => {
       seed = (seed * 1664525 + 1013904223) >>> 0
       return seed / 4294967296
     }
     for (let i = 0; i < DUST_COUNT; i++) {
-      const base = i * 7
-      /* 铺得比布局范围大得多，平移时才不会「星星用完了」 */
-      data[base] = (random() - 0.5) * 16
-      data[base + 1] = (random() - 0.5) * 16
-      const tint = 0.35 + random() * 0.4
-      data[base + 2] = tint * 0.75
-      data[base + 3] = tint * 0.82
-      data[base + 4] = tint
-      data[base + 5] = 0.0016 + random() * 0.0032
-      data[base + 6] = 0.16 + random() * 0.28
+      const base = i * 5
+      data[base] = random() * 2 - 1
+      data[base + 1] = random() * 2 - 1
+      /* 远处的多、近处的少 */
+      data[base + 2] = Math.pow(random(), 1.7)
+      data[base + 3] = random()
+      data[base + 4] = random()
     }
     const gl = this.gl
     gl.bindBuffer(gl.ARRAY_BUFFER, this.dustBuffer)
     gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW)
   }
 
+  private buildAtlas() {
+    const atlas = createLabelAtlas(this.nodes.map((node) => node.character), this.dpr)
+    this.atlas = atlas
+    for (let i = 0; i < this.nodes.length; i++) this.nodeLabels[i] = atlas.rects.get(this.nodes[i].character) ?? null
+    this.gl.activeTexture(this.gl.TEXTURE0)
+    uploadCanvasTexture(this.gl, this.atlasTexture, atlas.canvas, false, false)
+  }
+
   private uploadTexturesAndBackdrop() {
     const gl = this.gl
-    const source = createNebulaCanvas()
-    gl.bindTexture(gl.TEXTURE_2D, this.backdropTexture)
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0)
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.activeTexture(gl.TEXTURE0)
+    uploadCanvasTexture(gl, this.backdropTexture, createHazeCanvas(), true, false)
+    uploadCanvasTexture(gl, this.spriteTexture, createGlowSprite(), false, true)
+    if (this.atlas) uploadCanvasTexture(gl, this.atlasTexture, this.atlas.canvas, false, false)
 
     gl.bindTexture(gl.TEXTURE_2D, this.thumbTexture)
     /* 1×1 的白色占位：万一某帧没绑纹理就采样，也不会得到「不完整纹理」的全黑结果 */
@@ -900,10 +990,10 @@ export class GalaxyEngine {
     for (let i = 0; i < this.edges.length; i++) {
       const edge = this.edges[i]
       const strength = Math.max(0, Math.min(1, (edge.score - 0.25) / 0.6))
-      let alpha = 0.035 + strength * 0.13
+      let alpha = 0.022 + Math.pow(strength, 1.6) * 0.17
       if (focus !== null) {
         const touches = edge.a === focus || edge.b === focus
-        alpha = touches ? 0.4 + strength * 0.5 : alpha * 0.16
+        alpha = touches ? 0.32 + strength * 0.58 : alpha * 0.16
       }
       alpha *= 0.12 + Math.min(this.emphasis[edge.a], this.emphasis[edge.b]) * 0.88
       this.edgeAlpha[i * 2] = alpha
@@ -916,7 +1006,7 @@ export class GalaxyEngine {
 
   /* ---------- 缩略图纹理 ---------- */
 
-  private textureKey(index: number, level: number) { return `${index}:${level}` }
+  private textureKey(index: number, level: number) { return this.textureKeys[index * 2 + level] }
 
   /** 按需排队加载；同一条纹理不会重复请求 */
   private ensureTexture(index: number, level: number, priority: number) {
@@ -998,11 +1088,13 @@ export class GalaxyEngine {
     const height = Math.max(1, Math.round(this.canvas.clientHeight * dpr))
     if (width === this.width && height === this.height && dpr === this.dpr) return
     const first = this.width <= 1
+    const rebuildAtlas = dpr !== this.dpr || !this.atlas
     this.dpr = dpr
     this.width = width
     this.height = height
     this.canvas.width = width
     this.canvas.height = height
+    if (rebuildAtlas) this.buildAtlas()
     const frame = this.frameLayout()
     this.fitZoom = frame.zoom
     this.minZoom = frame.zoom * 0.4
@@ -1024,7 +1116,7 @@ export class GalaxyEngine {
 
   /* ---------- 渲染 ---------- */
 
-  private loop = () => {
+  private loop = (now: number) => {
     this.frame = requestAnimationFrame(this.loop)
     if (this.contextLost) return
     /* 相机缓动：所有镜头变化都走这一条路，手感才一致 */
@@ -1043,17 +1135,52 @@ export class GalaxyEngine {
       }
       this.dirty = true
     }
-    if (!this.dirty) return
+    /* 选中脉冲只重画画面、不回调 onCamera：镜头没动，DOM 标签不用跟着算 */
+    const pulse = !this.dirty && this.selectedIndex !== null && this.pulsing() && now - this.lastPulseAt >= PULSE_FRAME_MS
+    if (!this.dirty && !pulse) return
+    const notify = this.dirty
     this.dirty = false
-    this.draw()
+    this.now = now
+    this.lastPulseAt = now
+    this.draw(notify)
+  }
+
+  private pulsing() {
+    return !this.lowEnd && !this.style.reducedMotion
+  }
+
+  /** 选中卡片外发光的强度 0~1 */
+  private selectionPulse() {
+    if (!this.pulsing()) return 0.8
+    return 0.62 + 0.38 * Math.sin((this.now % PULSE_PERIOD_MS) / PULSE_PERIOD_MS * Math.PI * 2)
   }
 
   private attribute(program: WebGLProgram, name: string) {
-    return this.gl.getAttribLocation(program, name)
+    let table = this.attributeCache.get(program)
+    if (!table) {
+      table = new Map()
+      this.attributeCache.set(program, table)
+    }
+    let location = table.get(name)
+    if (location === undefined) {
+      location = this.gl.getAttribLocation(program, name)
+      table.set(name, location)
+    }
+    return location
   }
 
   private uniform(program: WebGLProgram, name: string) {
-    return this.gl.getUniformLocation(program, name)
+    let table = this.uniformCache.get(program)
+    if (!table) {
+      table = new Map()
+      this.uniformCache.set(program, table)
+    }
+    let location = table.get(name)
+    if (location === undefined) {
+      location = this.gl.getUniformLocation(program, name)
+      table.set(name, location)
+    }
+    return location
   }
 
   private setCamera(program: WebGLProgram) {
@@ -1068,7 +1195,7 @@ export class GalaxyEngine {
     for (let i = 0; i < 8; i++) this.gl.disableVertexAttribArray(i)
   }
 
-  private attach(program: WebGLProgram, entries: Array<{ name: string; size: number; offset: number }>, stride: number) {
+  private attach(program: WebGLProgram, entries: ReadonlyArray<{ name: string; size: number; offset: number }>, stride: number) {
     const gl = this.gl
     for (const entry of entries) {
       const location = this.attribute(program, entry.name)
@@ -1078,7 +1205,7 @@ export class GalaxyEngine {
     }
   }
 
-  private draw() {
+  private draw(notify = true) {
     const gl = this.gl
     gl.viewport(0, 0, this.width, this.height)
     gl.disable(gl.DEPTH_TEST)
@@ -1086,12 +1213,14 @@ export class GalaxyEngine {
     this.resetAttributes()
 
     this.drawBackdrop()
-    this.drawDust()
+    if (!this.lowEnd) this.drawDust()
     this.drawEdges()
     const thumbAlpha = this.drawPoints()
     this.drawThumbnails(thumbAlpha)
+    this.drawRing()
     this.resetAttributes()
 
+    if (!notify) return
     if (thumbAlpha !== this.thumbAlpha) {
       this.thumbAlpha = thumbAlpha
       this.callbacks.onView?.(this.zoom, thumbAlpha)
@@ -1111,6 +1240,9 @@ export class GalaxyEngine {
     gl.uniform2f(this.uniform(program, 'uResolution'), this.width, this.height)
     gl.uniform2f(this.uniform(program, 'uCenter'), this.centerX, this.centerY)
     gl.uniform1f(this.uniform(program, 'uZoom'), this.zoom)
+    gl.uniform3fv(this.uniform(program, 'uAccent'), this.style.accents)
+    gl.uniform3fv(this.uniform(program, 'uBase'), stageBase(this.style))
+    gl.uniform1f(this.uniform(program, 'uHaze'), this.style.light ? 0.4 : 0.32)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer)
     const location = this.attribute(program, 'aPos')
     gl.enableVertexAttribArray(location)
@@ -1124,19 +1256,14 @@ export class GalaxyEngine {
 
   private drawDust() {
     const gl = this.gl
-    const program = this.pointProgram
+    const program = this.dustProgram
     gl.useProgram(program)
     this.resetAttributes()
-    /* 视差的正确写法：世界坐标按系数缩放的等价形式是 uCenter / parallax */
-    gl.uniform2f(this.uniform(program, 'uResolution'), this.width, this.height)
-    gl.uniform2f(this.uniform(program, 'uCenter'), this.centerX / DUST_PARALLAX, this.centerY / DUST_PARALLAX)
-    gl.uniform1f(this.uniform(program, 'uZoom'), this.zoom * DUST_PARALLAX)
+    this.setCamera(program)
+    gl.uniform3fv(this.uniform(program, 'uAccent'), this.style.accents)
+    gl.uniform1f(this.uniform(program, 'uPixel'), this.dpr)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.dustBuffer)
-    this.attach(program, [
-      { name: 'aPos', size: 2, offset: 0 },
-      { name: 'aColor', size: 3, offset: 2 * 4 },
-      { name: 'aMeta', size: 2, offset: 5 * 4 },
-    ], 7 * 4)
+    this.attach(program, DUST_LAYOUT, 5 * 4)
     gl.drawArrays(gl.POINTS, 0, DUST_COUNT)
   }
 
@@ -1147,10 +1274,7 @@ export class GalaxyEngine {
     this.resetAttributes()
     this.setCamera(program)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.edgeBuffer)
-    this.attach(program, [
-      { name: 'aPos', size: 2, offset: 0 },
-      { name: 'aColor', size: 3, offset: 2 * 4 },
-    ], 6 * 4)
+    this.attach(program, EDGE_LAYOUT, 6 * 4)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.edgeAlphaBuffer)
     const alpha = this.attribute(program, 'aAlpha')
     gl.enableVertexAttribArray(alpha)
@@ -1158,7 +1282,7 @@ export class GalaxyEngine {
     if (this.edges.length) gl.drawArrays(gl.LINES, 0, this.edges.length * 2)
   }
 
-  /** 画点，并返回当前该显示的缩略图透明度（0~1） */
+  /** 画点（先光晕、后亮核），并返回当前该显示的缩略图透明度（0~1） */
   private drawPoints() {
     const gl = this.gl
     const screenSize = this.zoom * THUMB_SIZE
@@ -1171,111 +1295,201 @@ export class GalaxyEngine {
       if (focus !== null && i !== focus) alpha *= 0.35
       this.pointData[i * 7 + 6] = alpha * (1 - thumbAlpha * 0.72)
     }
+    if (!this.nodes.length) return thumbAlpha
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.pointBuffer)
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.pointData)
+    this.drawHalos()
 
     const program = this.pointProgram
     gl.useProgram(program)
     this.resetAttributes()
     this.setCamera(program)
     gl.bindBuffer(gl.ARRAY_BUFFER, this.pointBuffer)
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.pointData)
-    this.attach(program, [
-      { name: 'aPos', size: 2, offset: 0 },
-      { name: 'aColor', size: 3, offset: 2 * 4 },
-      { name: 'aMeta', size: 2, offset: 5 * 4 },
-    ], 7 * 4)
-    if (this.nodes.length) gl.drawArrays(gl.POINTS, 0, this.nodes.length)
+    this.attach(program, POINT_LAYOUT, 7 * 4)
+    gl.drawArrays(gl.POINTS, 0, this.nodes.length)
     return thumbAlpha
   }
 
+  /** 光晕：同一份点数据，换成预渲染的光晕纹理画大一圈；节点太多时只画关系最强的一批 */
+  private drawHalos() {
+    const gl = this.gl
+    const program = this.haloProgram
+    gl.useProgram(program)
+    this.resetAttributes()
+    this.setCamera(program)
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, this.spriteTexture)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.uniform1i(this.uniform(program, 'uSprite'), 1)
+    gl.uniform1f(this.uniform(program, 'uScale'), HALO_SCALE)
+    gl.uniform1f(this.uniform(program, 'uMaxSize'), Math.min(this.maxPointSize, 220))
+    gl.uniform1f(this.uniform(program, 'uGain'), 0.55)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.pointBuffer)
+    this.attach(program, POINT_LAYOUT, 7 * 4)
+    if (this.haloCount < this.nodes.length) {
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.haloIndexBuffer)
+      gl.drawElements(gl.POINTS, this.haloCount, gl.UNSIGNED_SHORT, 0)
+    } else {
+      gl.drawArrays(gl.POINTS, 0, this.nodes.length)
+    }
+  }
+
   private drawThumbnails(thumbAlpha: number) {
+    this.selectedThumbAlpha = 0
     if (thumbAlpha <= 0.02 || !this.nodes.length) return
     const gl = this.gl
     /* 缩略图在屏幕上多大：随缩放变大，但封顶（见 THUMB_MAX_PX 的说明）。thumbPx 是**长边** */
     const thumbPx = Math.min(THUMB_SIZE * this.zoom, THUMB_MAX_PX)
     const longWorld = thumbPx / this.zoom
-    const feather = 2 / Math.max(1, thumbPx)
 
     /* 只画屏幕里的；按「离屏幕中心近」排序后截断——每张缩略图一次 draw call，
-       不控数量会在中景（几百张同时可见）掉帧。 */
-    const candidates: Array<{ index: number; distance: number }> = []
+       不控数量会在中景（几百张同时可见）掉帧。顺序数组跨帧复用，镜头连续移动时几乎不用挪。 */
+    const order = this.thumbOrder
+    const distance = this.thumbDistance
     const margin = thumbPx
+    let visible = 0
     for (let i = 0; i < this.nodes.length; i++) {
       const node = this.nodes[i]
       const dx = (node.x - this.centerX) * this.zoom
       const dy = (node.y - this.centerY) * this.zoom
-      if (Math.abs(dx) > this.width * 0.5 + margin || Math.abs(dy) > this.height * 0.5 + margin) continue
-      candidates.push({ index: i, distance: dx * dx + dy * dy })
+      const inside = Math.abs(dx) <= this.width * 0.5 + margin && Math.abs(dy) <= this.height * 0.5 + margin
+      distance[i] = inside ? dx * dx + dy * dy : Infinity
+      if (inside) visible++
     }
-    if (!candidates.length) return
-    candidates.sort((a, b) => a.distance - b.distance)
-    const chosen = candidates.slice(0, MAX_THUMBS_PER_FRAME)
+    if (!visible) return
+    sortIndicesByKey(order, distance, true)
 
     const focus = this.hoverIndex ?? this.selectedIndex
     const program = this.thumbProgram
     gl.useProgram(program)
     this.resetAttributes()
     this.setCamera(program)
-    /* 圆角的抗锯齿宽度：一个设备像素对应多少片内坐标。不用 fwidth 是因为 WebGL1 需要
-       OES_standard_derivatives 扩展，缺了直接编译失败。 */
-    gl.uniform1f(this.uniform(program, 'uFeather'), feather)
+    gl.activeTexture(gl.TEXTURE2)
+    gl.bindTexture(gl.TEXTURE_2D, this.atlasTexture)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.uniform1i(this.uniform(program, 'uTexture'), 0)
+    gl.uniform1i(this.uniform(program, 'uAtlas'), 2)
+    gl.uniform1f(this.uniform(program, 'uStroke'), this.dpr)
+    const uHalfPx = this.uniform(program, 'uHalfPx')
+    const uRadius = this.uniform(program, 'uRadius')
+    const uSelect = this.uniform(program, 'uSelect')
+    const uChip = this.uniform(program, 'uChip')
+    const uChipUv = this.uniform(program, 'uChipUv')
     gl.bindBuffer(gl.ARRAY_BUFFER, this.thumbBuffer)
-    this.attach(program, [
-      { name: 'aPos', size: 2, offset: 0 },
-      { name: 'aUv', size: 2, offset: 2 * 4 },
-      { name: 'aLocal', size: 2, offset: 4 * 4 },
-      { name: 'aTint', size: 4, offset: 6 * 4 },
-    ], 10 * 4)
+    this.attach(program, THUMB_LAYOUT, 8 * 4)
 
-    /* 缩略图要挡住后面的点，从加色混合切回普通 alpha 混合 */
-    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    /* 缩略图要挡住后面的点：预乘 alpha 的普通叠加；外圈的选中光不占 alpha，等于加色 */
+    gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
 
-    const corners = [-1, -1, 1, -1, -1, 1, 1, 1]
+    const select = this.selectionPulse()
+    const chipHeight = this.atlas ? this.atlas.chipHeight : 0
+    const chipFade = Math.max(0, Math.min(1, (thumbPx / this.dpr - 84) / 20))
+    const level = thumbPx > THUMB_LARGE_AT ? 1 : 0
+    /* uniform 跨绘制保留，值没变就不重复上传 */
+    let lastHalfW = -1
+    let lastHalfH = -1
+    let lastRadius = -1
+    let lastSelect = -1
+    let lastLabel: Float32Array | null | undefined
+    let lastTextW = -1
     let drawn = 0
-    for (const candidate of chosen) {
-      const node = this.nodes[candidate.index]
-      const level = thumbPx > THUMB_LARGE_AT ? 1 : 0
-      this.ensureTexture(candidate.index, level, 1e7 - candidate.distance)
-      let entry = this.textures.get(this.textureKey(candidate.index, level))
+    for (let n = 0; n < visible && drawn < MAX_THUMBS_PER_FRAME; n++) {
+      const index = order[n]
+      const node = this.nodes[index]
+      this.ensureTexture(index, level, 1e7 - distance[index])
+      let entry = this.textures.get(this.textureKey(index, level))
       /* 高分图还没到就先用小图顶上，不要空着 */
       if (level === 1 && (!entry || entry.state !== 'ready')) {
-        entry = this.textures.get(this.textureKey(candidate.index, 0))
+        entry = this.textures.get(this.textureKey(index, 0))
       }
       if (!entry || entry.state !== 'ready') continue
       const texture = entry.texture ?? this.upload(entry)
       if (!texture) continue
 
-      let alpha = thumbAlpha * this.emphasis[candidate.index]
-      if (focus !== null && candidate.index !== focus) alpha *= 0.42
+      let alpha = thumbAlpha * this.emphasis[index]
+      if (focus !== null && index !== focus) alpha *= 0.42
       if (alpha <= 0.02) continue
 
-      /* 格子按原图比例（长边恒定），UV 就是整张图 —— 不裁也不拉 */
-      const { halfW, halfH } = thumbHalfExtent(node.aspect, longWorld)
-
+      /* 格子按原图比例（长边恒定），UV 就是整张图 —— 不裁也不拉（同 thumbHalfExtent） */
+      const ratio = Number.isFinite(node.aspect) && node.aspect > 0.05 ? node.aspect : 1
+      const halfW = ratio >= 1 ? longWorld / 2 : (longWorld * ratio) / 2
+      const halfH = ratio >= 1 ? longWorld / (2 * ratio) : longWorld / 2
+      const halfWPx = halfW * this.zoom
+      const halfHPx = halfH * this.zoom
+      const selected = index === this.selectedIndex
+      const marginPx = (selected ? CARD_SELECTED_MARGIN : CARD_MARGIN) * this.dpr
+      const growX = 1 + marginPx / halfWPx
+      const growY = 1 + marginPx / halfHPx
       for (let corner = 0; corner < 4; corner++) {
-        const base = corner * 10
-        const localX = corners[corner * 2]
-        const localY = corners[corner * 2 + 1]
+        const base = corner * 8
+        const localX = CORNERS[corner * 2] * growX
+        const localY = CORNERS[corner * 2 + 1] * growY
         this.thumbData[base] = node.x + localX * halfW
         this.thumbData[base + 1] = node.y + localY * halfH
-        /* 上传时做了 UNPACK_FLIP_Y_WEBGL，v=0 是图片顶部 */
-        this.thumbData[base + 2] = localX < 0 ? 0 : 1
-        this.thumbData[base + 3] = localY < 0 ? 0 : 1
-        this.thumbData[base + 4] = localX
-        this.thumbData[base + 5] = localY
-        this.thumbData[base + 6] = node.color[0]
-        this.thumbData[base + 7] = node.color[1]
-        this.thumbData[base + 8] = node.color[2]
-        this.thumbData[base + 9] = alpha
+        this.thumbData[base + 2] = localX
+        this.thumbData[base + 3] = localY
+        this.thumbData[base + 4] = node.color[0]
+        this.thumbData[base + 5] = node.color[1]
+        this.thumbData[base + 6] = node.color[2]
+        this.thumbData[base + 7] = alpha
       }
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.thumbData)
-      gl.activeTexture(gl.TEXTURE0)
+      if (halfWPx !== lastHalfW || halfHPx !== lastHalfH) {
+        gl.uniform2f(uHalfPx, halfWPx, halfHPx)
+        lastHalfW = halfWPx
+        lastHalfH = halfHPx
+      }
+      const radius = Math.min(Math.min(halfWPx, halfHPx) * 0.16, 12 * this.dpr)
+      if (radius !== lastRadius) {
+        gl.uniform1f(uRadius, radius)
+        lastRadius = radius
+      }
+      const selectValue = selected ? select : 0
+      if (selectValue !== lastSelect) {
+        gl.uniform1f(uSelect, selectValue)
+        lastSelect = selectValue
+      }
+      const label = chipFade > 0 ? this.nodeLabels[index] ?? null : null
+      const textW = label && label[4] + chipHeight * 2.2 <= halfWPx * 2 ? label[4] : 0
+      if (label !== lastLabel || textW !== lastTextW) {
+        if (label) {
+          gl.uniform4f(uChip, chipFade, chipHeight, textW, label[5])
+          gl.uniform4f(uChipUv, label[0], label[1], label[2], label[3])
+        } else {
+          gl.uniform4f(uChip, 0, 0, 0, 0)
+        }
+        lastLabel = label
+        lastTextW = textW
+      }
       gl.bindTexture(gl.TEXTURE_2D, texture)
-      gl.uniform1i(this.uniform(program, 'uTexture'), 0)
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+      if (selected) this.selectedThumbAlpha = alpha
       drawn++
     }
     gl.blendFunc(gl.ONE, gl.ONE)
     if (drawn > 0) this.evictTextures()
+  }
+
+  /** 选中光环：缩略图淡入后由卡片外发光接替 */
+  private drawRing() {
+    const index = this.selectedIndex
+    const ringAlpha = 1 - this.selectedThumbAlpha
+    if (index === null || index >= this.nodes.length || ringAlpha <= 0.02) return
+    const gl = this.gl
+    const program = this.ringProgram
+    const pulse = this.pulsing()
+    gl.useProgram(program)
+    this.resetAttributes()
+    this.setCamera(program)
+    gl.uniform1f(this.uniform(program, 'uScale'), RING_SCALE)
+    gl.uniform1f(this.uniform(program, 'uMaxSize'), this.maxPointSize)
+    gl.uniform1f(this.uniform(program, 'uLine'), this.dpr * 0.8)
+    gl.uniform1f(this.uniform(program, 'uPhase'), pulse ? (this.now % PULSE_PERIOD_MS) / PULSE_PERIOD_MS : 0)
+    gl.uniform1f(this.uniform(program, 'uPing'), pulse ? 1 : 0)
+    gl.uniform1f(this.uniform(program, 'uAlpha'), ringAlpha)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.pointBuffer)
+    this.attach(program, POINT_LAYOUT, 7 * 4)
+    gl.drawArrays(gl.POINTS, index, 1)
   }
 
   /* ---------- 生命周期 ---------- */
@@ -1290,10 +1504,12 @@ export class GalaxyEngine {
     for (const entry of this.textures.values()) if (entry.texture) gl.deleteTexture(entry.texture)
     this.textures.clear()
     this.queue = []
-    for (const buffer of [this.pointBuffer, this.edgeBuffer, this.edgeAlphaBuffer, this.thumbBuffer, this.dustBuffer, this.quadBuffer]) gl.deleteBuffer(buffer)
+    for (const buffer of [this.pointBuffer, this.edgeBuffer, this.edgeAlphaBuffer, this.thumbBuffer, this.dustBuffer, this.quadBuffer, this.haloIndexBuffer]) gl.deleteBuffer(buffer)
     gl.deleteTexture(this.backdropTexture)
     gl.deleteTexture(this.thumbTexture)
-    for (const program of [this.pointProgram, this.edgeProgram, this.thumbProgram, this.backdropProgram]) gl.deleteProgram(program)
+    gl.deleteTexture(this.spriteTexture)
+    gl.deleteTexture(this.atlasTexture)
+    for (const program of [this.pointProgram, this.edgeProgram, this.thumbProgram, this.backdropProgram, this.dustProgram, this.haloProgram, this.ringProgram]) gl.deleteProgram(program)
     /* 浏览器同时能持有的 WebGL 上下文有限（一般 16 个），进出视图几次就可能用光。
        主动丢上下文是唯一可靠的释放方式：canvas 从 DOM 移除后 GC 回收得很慢。 */
     try { gl.getExtension('WEBGL_lose_context')?.loseContext() } catch { /* 有些实现没这个扩展，忽略 */ }

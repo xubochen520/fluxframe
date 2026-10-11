@@ -1,23 +1,23 @@
 package com.fluxframe.app.ui.glass
 
 import android.graphics.Bitmap
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
@@ -26,8 +26,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalConfiguration
@@ -36,31 +39,44 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import com.fluxframe.app.core.prefs.AppThemeStyle
+import com.fluxframe.app.ui.theme.DarkFluxPalette
+import com.fluxframe.app.ui.theme.IndigoInk
 import com.fluxframe.app.ui.theme.LocalDarkTheme
 import com.fluxframe.app.ui.theme.LocalFluidCanvasSize
 import com.fluxframe.app.ui.theme.LocalFluidColors
 import com.fluxframe.app.ui.theme.LocalFluidPhase
 import com.fluxframe.app.ui.theme.LocalGlassTokens
+import com.fluxframe.app.ui.theme.fluxColorScheme
+import com.fluxframe.app.ui.theme.fluxPalette
+import com.fluxframe.app.ui.theme.glassTokensFor
+import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
- * 玻璃拟态容器 —— 三种风格共用一套代码。
+ * 玻璃拟态容器 —— 五种风格共用一套代码。
  *
  * | 风格 | 表现 |
  * |---|---|
- * | 默认 | 接近实色的卡片，只有极细描边，省电、对比度最高 |
- * | 亚克力 | 半透明底 + 背景副本 + 噪点颗粒 + 细描边 |
- * | 液态玻璃 | 更强通透 + 高光沿对角扫过 + 边缘高亮，有厚度 |
+ * | 默认 | 不透明实色卡片，只有极细描边，省电、对比度最高 |
+ * | 亚克力 | 中等通透 + 噪点颗粒 |
+ * | 液态玻璃 | 最通透 + 高光沿对角扫过 |
+ * | 柔雾 | 更厚的染色，文字最稳 |
+ * | 霓虹 | 三色描边与更强的辉光 |
  *
- * ### [backdrop] 的代价模型（这一版重写过）
- * 旧实现让每张"铬"部件都绘制一份**整屏**背景副本并套 `Modifier.blur(32.dp)`：
- * 每个部件一张全屏离屏纹理 + 三遍模糊，顶栏/底栏/胶囊/弹窗同时存在时就是
- * 4~5 次全屏模糊，这是滑动卡顿与耗电的头号原因。
+ * 背景流体是唯一的光源：面板自己不带颜色，只有染色、顶边高光和一圈细描边。
+ * 整张面板在**一个绘制节点**里画完（底色、高光、辉光、噪点、高光扫过），不再为每一层
+ * 单独建一个子节点；渐变画刷按尺寸缓存，绘制阶段不分配对象。
  *
- * 现在改为：先把画布平移 `-本节点的窗口坐标`，再以**窗口尺寸**绘制同一份流体渐变。
- * 因为节点已被 `clip(shape)` 裁掉，实际着色面积只有部件自身，视觉结果与
- * "整屏副本 + 偏移"逐像素一致，但**没有离屏纹理、没有 RenderEffect**，
- * 代价与部件面积成正比。列表里的卡片依旧保持 `backdrop = false`（零成本）。
+ * ### [backdrop] 的代价模型
+ * 浮在内容之上的部件（顶栏、底栏、弹窗、胶囊）需要盖住身后的内容，所以先画一份
+ * 流体副本：把画布平移 `-本节点的窗口坐标`，再以背景画布尺寸绘制同一份流体。节点已被
+ * `clip(shape)` 裁掉，实际着色面积只有部件自身，**没有离屏纹理、没有 RenderEffect**。
+ * 列表里的卡片保持 `backdrop = false`：它们本来就直接叠在真正的背景上。
+ *
+ * [glow] 给面板一团同色的内侧光晕；悬浮件（[backdrop] 为真）还会多一圈彩色投影。
+ * [raised] 用更亮的一档染色（glass-2），表示叠在别的面板之上。
+ * [onClick] 的水波纹会被裁到圆角内，比在外面套 `clickable` 干净。
  */
 @Composable
 fun GlassSurface(
@@ -70,169 +86,225 @@ fun GlassSurface(
     backdrop: Boolean = false,
     borderWidth: Dp = 1.dp,
     contentPadding: PaddingValues = PaddingValues(0.dp),
+    glow: Color? = null,
+    raised: Boolean = false,
+    onClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val tokens = LocalGlassTokens.current
     val dark = LocalDarkTheme.current
+    val palette = fluxPalette(dark)
+    val scheme = MaterialTheme.colorScheme
     val resolvedShape = shape ?: RoundedCornerShape(tokens.cornerRadius)
-    val surfaceColor = tint ?: MaterialTheme.colorScheme.surface
-    val fluidColors = LocalFluidColors.current
+    val painter = LocalFluidPainter.current
     val phaseState = LocalFluidPhase.current
-
-    val useBackdrop = backdrop && tokens.drawsBackdrop
-    // 背景画布的真实尺寸（由 FluidBackgroundHost 实测下发）。
-    // 还在测量阶段时回退到"按屏幕 dp 换算"的估算值，保证第一帧也能画对。
     val fluidCanvasSize = LocalFluidCanvasSize.current
+
+    val flat = tokens.style == AppThemeStyle.DEFAULT
+    val useBackdrop = backdrop && tokens.drawsBackdrop
+    val glowColor = glow?.takeIf { tokens.glowAlpha > 0f }
+
+    // 背景画布还在测量时回退到按屏幕 dp 换算的估算值，保证第一帧也能画对
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
     val fallbackWidthPx = with(density) { configuration.screenWidthDp.dp.toPx() }
     val fallbackHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
 
-    // 只在需要背景副本时记录窗口坐标；并且这个 State 只在绘制阶段被读取，
-    // 因此滚动时只会触发"重绘"而不是重组 —— 这是列表流畅度的关键。
-    var positionInWindow by remember { mutableStateOf(Offset.Zero) }
+    // 窗口坐标只在绘制阶段读取：滚动时只重绘、不重组
+    val positionInWindow = remember { mutableStateOf(Offset.Zero) }
 
-    val positionModifier = if (useBackdrop) {
-        Modifier.onGloballyPositioned { coordinates -> positionInWindow = coordinates.positionInWindow() }
+    val fill = remember(tint, flat, raised, tokens, palette) {
+        val base = tint ?: when {
+            !flat -> palette.glassTint
+            raised -> palette.surfaceRaised
+            else -> palette.surface
+        }
+        val veil = when {
+            flat -> Color.Transparent
+            raised -> palette.glass2
+            else -> palette.glass1
+        }
+        veil.compositeOver(base.copy(alpha = base.alpha * tokens.tintAlpha))
+    }
+    val softVeil = if (useBackdrop && tokens.backdropSoftness > 0f) {
+        Color.White.copy(alpha = tokens.backdropSoftness * (if (dark) 0.05f else 0.10f))
+    } else {
+        Color.Transparent
+    }
+
+    val fadePx = with(density) { 30.dp.toPx() }
+    val stroke: Brush = remember(tokens, dark, glowColor, scheme.primary, scheme.secondary, scheme.tertiary, fadePx) {
+        val neutral = (if (dark) Color.White else IndigoInk).copy(alpha = tokens.borderAlpha)
+        when {
+            tokens.style == AppThemeStyle.NEON -> Brush.linearGradient(
+                listOf(
+                    scheme.primary.copy(alpha = tokens.borderAlpha * 1.6f),
+                    scheme.secondary.copy(alpha = tokens.borderAlpha),
+                    scheme.tertiary.copy(alpha = tokens.borderAlpha * 1.3f),
+                ),
+            )
+
+            tokens.highlightAlpha <= 0f -> SolidColor(neutral)
+
+            else -> {
+                val side = if (glowColor != null) {
+                    lerp(neutral, glowColor.copy(alpha = max(tokens.borderAlpha, tokens.glowAlpha)), 0.45f)
+                } else {
+                    neutral
+                }
+                Brush.verticalGradient(
+                    colors = listOf(Color.White.copy(alpha = tokens.highlightAlpha), side),
+                    startY = 0f,
+                    endY = fadePx,
+                )
+            }
+        }
+    }
+
+    val noise = if (useBackdrop && tokens.drawsNoise) rememberNoiseImage() else null
+    val specularAlpha = if (useBackdrop && tokens.drawsSpecular) tokens.specularAlpha else 0f
+    val sheenAlpha = tokens.highlightAlpha * 0.22f
+    val glowAlpha = tokens.glowAlpha
+
+    // 只有实心的悬浮件才给彩色投影：通透面板底下的阴影会透上来，显得发脏
+    val shadowModifier = if (glowColor != null && useBackdrop) {
+        Modifier.shadow(
+            elevation = 18.dp,
+            shape = resolvedShape,
+            clip = false,
+            ambientColor = glowColor,
+            spotColor = glowColor,
+        )
     } else {
         Modifier
     }
+    val positionModifier = if (useBackdrop) {
+        Modifier.onGloballyPositioned { coordinates -> positionInWindow.value = coordinates.positionInWindow() }
+    } else {
+        Modifier
+    }
+    val clickModifier = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
 
     Box(
         modifier = modifier
+            .then(shadowModifier)
             .then(positionModifier)
-            .clip(resolvedShape),
-    ) {
-        if (useBackdrop) {
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .drawBehind {
+            .clip(resolvedShape)
+            .then(clickModifier)
+            .drawWithCache {
+                val sheen = if (sheenAlpha > 0f) {
+                    Brush.verticalGradient(
+                        colors = listOf(Color.White.copy(alpha = sheenAlpha), Color.Transparent),
+                        startY = 0f,
+                        endY = size.height * 0.46f,
+                    )
+                } else {
+                    null
+                }
+                val glowRadius = max(size.width, size.height) * 0.9f
+                val glowBrush = if (glowColor != null && glowRadius > 0f) {
+                    Brush.radialGradient(
+                        colorStops = arrayOf(
+                            0f to glowColor.copy(alpha = glowAlpha),
+                            0.45f to glowColor.copy(alpha = glowAlpha * 0.36f),
+                            1f to glowColor.copy(alpha = 0f),
+                        ),
+                        center = Offset(size.width * 0.10f, 0f),
+                        radius = glowRadius,
+                    )
+                } else {
+                    null
+                }
+                // 高光带以原点为起点建一次，扫动时只平移画布
+                val span = size.width + size.height
+                val specular = if (specularAlpha > 0f && span > 0f) {
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.White.copy(alpha = specularAlpha * 0.55f),
+                            Color.White.copy(alpha = specularAlpha),
+                            Color.Transparent,
+                        ),
+                        start = Offset.Zero,
+                        end = Offset(span * 0.38f, size.height),
+                    )
+                } else {
+                    null
+                }
+                val noiseSize = IntSize(size.width.roundToInt().coerceAtLeast(1), size.height.roundToInt().coerceAtLeast(1))
+
+                onDrawBehind {
+                    if (useBackdrop) {
                         val measured = fluidCanvasSize.value
                         val window = if (measured.width > 0f && measured.height > 0f) {
                             measured
                         } else {
                             Size(fallbackWidthPx, fallbackHeightPx)
                         }
-                        if (window.width <= 0f || window.height <= 0f) return@drawBehind
-                        translate(left = -positionInWindow.x, top = -positionInWindow.y) {
-                            drawFluidGradient(
-                                colors = fluidColors,
-                                dark = dark,
-                                phase = phaseState.value,
-                                alphaScale = 0.85f,
-                                canvasSize = window,
-                            )
+                        if (window.width > 0f && window.height > 0f) {
+                            val origin = positionInWindow.value
+                            translate(left = -origin.x, top = -origin.y) {
+                                painter.draw(this, phase = phaseState.value, alphaScale = 0.85f, canvasSize = window)
+                            }
                         }
-                    },
-            )
-            // 通透风格下用一层极淡的白纱替代原来的模糊，压住背景对比度
-            if (tokens.backdropSoftness > 0f) {
-                Box(
-                    modifier = Modifier
-                        .matchParentSize()
-                        .background(Color.White.copy(alpha = tokens.backdropSoftness * (if (dark) 0.05f else 0.10f))),
-                )
+                        if (softVeil.alpha > 0f) drawRect(softVeil)
+                    }
+                    drawRect(fill)
+                    if (glowBrush != null) drawRect(glowBrush)
+                    if (sheen != null) drawRect(sheen)
+                    if (noise != null) {
+                        drawImage(
+                            image = noise,
+                            srcOffset = IntOffset.Zero,
+                            srcSize = IntSize(noise.width, noise.height),
+                            dstOffset = IntOffset.Zero,
+                            dstSize = noiseSize,
+                            alpha = tokens.noiseAlpha,
+                            blendMode = BlendMode.Overlay,
+                            filterQuality = FilterQuality.None,
+                        )
+                    }
+                    if (specular != null) {
+                        val head = -span * 0.5f + phaseState.value * span * 1.6f
+                        translate(left = head) {
+                            drawRect(brush = specular, topLeft = Offset(-head, 0f), size = size)
+                        }
+                    }
+                }
             }
-        }
-
-        // 玻璃底色：默认风格近乎不透明，亚克力 / 液态玻璃逐级通透
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .background(surfaceColor.copy(alpha = tokens.tintAlpha)),
-        )
-
-        // 顶部到中部的一点高光渐变，制造"厚度"
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            Color.White.copy(alpha = if (dark) 0.05f else 0.22f),
-                            Color.Transparent,
-                        ),
-                    ),
-                ),
-        )
-
-        // 噪点与高光扫过都只在"铬"部件上绘制：
-        // 网格里的卡片数量以百计，逐卡叠一遍 BlendMode.Overlay 的噪点得不偿失。
-        if (useBackdrop && tokens.drawsNoise) {
-            NoiseOverlay(modifier = Modifier.matchParentSize(), alpha = tokens.noiseAlpha)
-        }
-
-        if (useBackdrop && tokens.drawsSpecular) {
-            SpecularSweep(modifier = Modifier.matchParentSize(), alpha = tokens.specularAlpha)
-        }
-
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .border(
-                    width = borderWidth,
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            Color.White.copy(alpha = tokens.borderAlpha),
-                            Color.White.copy(alpha = tokens.borderAlpha * 0.25f),
-                            Color.White.copy(alpha = tokens.borderAlpha * 0.6f),
-                        ),
-                    ),
-                    shape = resolvedShape,
-                ),
-        )
-
+            .border(width = borderWidth, brush = stroke, shape = resolvedShape),
+    ) {
         Box(modifier = Modifier.padding(contentPadding), content = content)
     }
 }
 
 /**
- * 亚克力颗粒：一张 512×512 的静态噪点图，按卡片尺寸铺开，全应用共享同一份
+ * 恒为深色的舞台（全屏查看器、星系图）。
+ *
+ * 这些画面的底永远是黑的，浅色主题下如果照旧取浅色令牌，就会出现白玻璃压在黑底上、
+ * 深色字压在深空上。这里把主题、玻璃参数和流体画笔一起切到深色那一套。
  */
 @Composable
-fun NoiseOverlay(modifier: Modifier = Modifier, alpha: Float = 0.05f) {
-    if (alpha <= 0f) return
-    val noise = rememberNoiseImage()
-    Canvas(modifier = modifier) {
-        if (size.width <= 0f || size.height <= 0f) return@Canvas
-        drawImage(
-            image = noise,
-            srcOffset = IntOffset.Zero,
-            srcSize = IntSize(noise.width, noise.height),
-            dstOffset = IntOffset.Zero,
-            dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
-            alpha = alpha,
-            blendMode = BlendMode.Overlay,
-            filterQuality = FilterQuality.None,
-        )
+fun DarkStage(content: @Composable () -> Unit) {
+    val tokens = LocalGlassTokens.current
+    val colors = LocalFluidColors.current
+    val darkTokens = remember(tokens.style, tokens.drawsNoise) {
+        glassTokensFor(tokens.style, dark = true, noiseEnabled = tokens.drawsNoise)
     }
-}
-
-/** 液态玻璃的高光扫过：一条沿对角方向的柔光带随全局相位移动 */
-@Composable
-fun SpecularSweep(modifier: Modifier = Modifier, alpha: Float = 0.16f) {
-    if (alpha <= 0f) return
-    val phaseState = LocalFluidPhase.current
-    Canvas(modifier = modifier) {
-        val width = size.width
-        val height = size.height
-        if (width <= 0f || height <= 0f) return@Canvas
-        val phase = phaseState.value
-        val span = width + height
-        val head = -span * 0.5f + phase * span * 1.6f
-        drawRect(
-            brush = Brush.linearGradient(
-                colors = listOf(
-                    Color.Transparent,
-                    Color.White.copy(alpha = alpha * 0.55f),
-                    Color.White.copy(alpha = alpha),
-                    Color.Transparent,
-                ),
-                start = Offset(head, 0f),
-                end = Offset(head + span * 0.38f, height),
-            ),
-        )
+    val darkScheme = remember(colors) { fluxColorScheme(dark = true, accents = colors) }
+    val darkPainter = remember(colors) { FluidPainter(colors, dark = true) }
+    CompositionLocalProvider(
+        LocalGlassTokens provides darkTokens,
+        LocalDarkTheme provides true,
+        LocalFluidPainter provides darkPainter,
+    ) {
+        MaterialTheme(
+            colorScheme = darkScheme,
+            typography = MaterialTheme.typography,
+            shapes = MaterialTheme.shapes,
+        ) {
+            CompositionLocalProvider(LocalContentColor provides DarkFluxPalette.text1, content = content)
+        }
     }
 }
 
@@ -240,6 +312,7 @@ fun SpecularSweep(modifier: Modifier = Modifier, alpha: Float = 0.16f) {
 
 private var cachedNoise: ImageBitmap? = null
 
+/** 亚克力颗粒：一张 512×512 的静态噪点图，按卡片尺寸铺开，全应用共享同一份 */
 @Composable
 private fun rememberNoiseImage(): ImageBitmap = remember {
     cachedNoise ?: buildNoiseImage().also { cachedNoise = it }

@@ -22,10 +22,9 @@ data class GlassTokens(
     /**
      * 背景副本的柔化程度（0 = 不柔化）。
      *
-     * 注意：这里**不再使用 `Modifier.blur`**。全屏 RenderEffect 模糊是整个应用
-     * 最贵的一笔开销（每张"铬"部件都要一张全屏离屏纹理 + 三遍模糊），实测是
-     * 滑动卡顿与耗电的主因。背景本体是平滑渐变，模糊几乎看不出差别，因此改为
-     * "只按卡片自身区域重绘一份流体副本"，代价与卡片面积成正比。
+     * 这里**不使用 `Modifier.blur`**：全屏 RenderEffect 模糊是整个应用最贵的一笔开销，
+     * 实测是滑动卡顿与耗电的主因。背景本体是平滑渐变，模糊几乎看不出差别，因此改为
+     * 「只按卡片自身区域重绘一份流体副本」，代价与卡片面积成正比。
      */
     val backdropSoftness: Float,
     /** 玻璃底色不透明度：越低越通透 */
@@ -36,6 +35,10 @@ data class GlassTokens(
     /** 液态玻璃的高光扫过强度 */
     val specularAlpha: Float,
     val cornerRadius: Dp,
+    /** 顶边高光描边的不透明度（0 = 没有高光） */
+    val highlightAlpha: Float = 0f,
+    /** 辉光强度：面板内侧的径向光晕与悬浮件的彩色投影都按它缩放 */
+    val glowAlpha: Float = 0f,
 ) {
     val drawsBackdrop: Boolean get() = style != AppThemeStyle.DEFAULT
     val drawsSpecular: Boolean get() = style == AppThemeStyle.LIQUID_GLASS || style == AppThemeStyle.NEON
@@ -47,54 +50,69 @@ fun glassTokensFor(
     dark: Boolean,
     noiseEnabled: Boolean = true,
 ): GlassTokens = when (style) {
+    /* 扁平实色：不透明，无高光 */
     AppThemeStyle.DEFAULT -> GlassTokens(
         style = style,
         backdropSoftness = 0f,
-        tintAlpha = if (dark) 0.96f else 1f,
-        borderAlpha = if (dark) 0.07f else 0.05f,
+        tintAlpha = 1f,
+        borderAlpha = if (dark) 0.09f else 0.08f,
         noiseAlpha = 0f,
         specularAlpha = 0f,
-        cornerRadius = 18.dp,
+        cornerRadius = 22.dp,
+        highlightAlpha = 0f,
+        glowAlpha = 0f,
     )
 
+    /* 亚克力：中等透明 + 噪点 */
     AppThemeStyle.ACRYLIC -> GlassTokens(
         style = style,
         backdropSoftness = 0.35f,
-        tintAlpha = if (dark) 0.60f else 0.68f,
-        borderAlpha = if (dark) 0.16f else 0.10f,
+        tintAlpha = if (dark) 0.56f else 0.50f,
+        borderAlpha = if (dark) 0.12f else 0.10f,
         noiseAlpha = if (noiseEnabled) 0.055f else 0f,
         specularAlpha = 0f,
-        cornerRadius = 20.dp,
+        cornerRadius = 22.dp,
+        highlightAlpha = if (dark) 0.16f else 0.70f,
+        glowAlpha = if (dark) 0.10f else 0.06f,
     )
 
+    /* 液态玻璃：更透明 + 高光扫过 */
     AppThemeStyle.LIQUID_GLASS -> GlassTokens(
         style = style,
         backdropSoftness = 0.55f,
-        tintAlpha = if (dark) 0.40f else 0.50f,
-        borderAlpha = if (dark) 0.26f else 0.18f,
-        noiseAlpha = if (noiseEnabled) 0.035f else 0f,
-        specularAlpha = if (dark) 0.16f else 0.22f,
-        cornerRadius = 24.dp,
+        tintAlpha = if (dark) 0.30f else 0.22f,
+        borderAlpha = if (dark) 0.16f else 0.14f,
+        noiseAlpha = if (noiseEnabled) 0.03f else 0f,
+        specularAlpha = if (dark) 0.14f else 0.20f,
+        cornerRadius = 28.dp,
+        highlightAlpha = if (dark) 0.22f else 0.90f,
+        glowAlpha = if (dark) 0.16f else 0.10f,
     )
 
+    /* 柔雾：柔和 tint */
     AppThemeStyle.FROSTED -> GlassTokens(
         style = style,
-        backdropSoftness = 0.42f,
-        tintAlpha = if (dark) 0.70f else 0.78f,
-        borderAlpha = if (dark) 0.18f else 0.12f,
-        noiseAlpha = if (noiseEnabled) 0.025f else 0f,
+        backdropSoftness = 0.50f,
+        tintAlpha = if (dark) 0.68f else 0.62f,
+        borderAlpha = if (dark) 0.10f else 0.08f,
+        noiseAlpha = if (noiseEnabled) 0.02f else 0f,
         specularAlpha = 0f,
-        cornerRadius = 28.dp,
+        cornerRadius = 26.dp,
+        highlightAlpha = if (dark) 0.12f else 0.60f,
+        glowAlpha = if (dark) 0.07f else 0.05f,
     )
 
+    /* 霓虹：描边辉光加强 */
     AppThemeStyle.NEON -> GlassTokens(
         style = style,
         backdropSoftness = 0.25f,
-        tintAlpha = if (dark) 0.46f else 0.62f,
-        borderAlpha = if (dark) 0.48f else 0.30f,
+        tintAlpha = if (dark) 0.46f else 0.40f,
+        borderAlpha = if (dark) 0.36f else 0.26f,
         noiseAlpha = if (noiseEnabled) 0.02f else 0f,
-        specularAlpha = if (dark) 0.24f else 0.16f,
-        cornerRadius = 16.dp,
+        specularAlpha = if (dark) 0.22f else 0.14f,
+        cornerRadius = 20.dp,
+        highlightAlpha = if (dark) 0.26f else 0.80f,
+        glowAlpha = if (dark) 0.34f else 0.20f,
     )
 }
 
@@ -135,10 +153,8 @@ val LocalFluidCanvasSize: ProvidableCompositionLocal<State<Size>> =
 val LocalFluidPhase: ProvidableCompositionLocal<State<Float>> =
     staticCompositionLocalOf<State<Float>> { mutableFloatStateOf(STATIC_FLUID_PHASE) }
 
-/** 当前玻璃卡片内的文字颜色：通透背景下统一提亮一档以保证对比度 */
-fun onGlassColor(dark: Boolean, emphasis: Boolean): Color = when {
-    dark && emphasis -> Color(0xFFF5F5FA)
-    dark -> Color(0xFFC9C9DA)
-    emphasis -> Color(0xFF101018)
-    else -> Color(0xFF4A4A60)
+/** 玻璃卡片内的文字颜色：emphasis 取 text-1，否则取 text-2 */
+fun onGlassColor(dark: Boolean, emphasis: Boolean): Color {
+    val palette = fluxPalette(dark)
+    return if (emphasis) palette.text1 else palette.text2
 }

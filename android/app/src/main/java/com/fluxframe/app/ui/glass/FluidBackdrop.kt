@@ -13,48 +13,48 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.LinearGradientShader
+import androidx.compose.ui.graphics.RadialGradientShader
+import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.toSize
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
-import com.fluxframe.app.ui.theme.DarkBackground
 import com.fluxframe.app.ui.theme.DefaultFluidColors
-import com.fluxframe.app.ui.theme.LightBackground
-import com.fluxframe.app.ui.theme.LocalDarkTheme
 import com.fluxframe.app.ui.theme.LocalFluidCanvasSize
-import com.fluxframe.app.ui.theme.LocalFluidColors
 import com.fluxframe.app.ui.theme.LocalFluidPhase
 import com.fluxframe.app.ui.theme.STATIC_FLUID_PHASE
+import com.fluxframe.app.ui.theme.fluxPalette
 import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.max
-import kotlin.math.sin
 
 /**
  * 全屏流体背景 + 相位分发。
  *
- * 背景是三团缓慢漂移的径向光斑叠在竖向渐变上 —— 纯 Canvas 绘制，
+ * 背景是四团缓慢漂移的椭圆光斑叠在竖向渐变上 —— 纯 Canvas 绘制，
  * 不依赖 WebGL，任何机型都能跑，且与服务器端 `fluidColors` 同色。
  *
- * 性能上有三条硬约束（旧版在这里吃了大亏）：
- *  1. **相位按 ~12fps 量化**。原本用 `rememberInfiniteTransition` 逐帧推进，
- *     30 秒的缓慢漂移却让整屏以 60fps 重绘，纯属浪费；12fps 下人眼看不出差别，
- *     重绘次数直接降到 1/5。
+ * 性能上有四条硬约束：
+ *  1. **相位按 ~12fps 量化**。30 秒的缓慢漂移不需要逐帧重绘，12fps 下人眼看不出差别。
  *  2. **相位通过 [LocalFluidPhase] 以 `State` 形式下发**，各组件只在绘制 lambda 里
  *     读 `.value`。这样相位变化只触发**重绘**，不会让读取者重组。
- *  3. **不在前台时完全不推进**。用 `withFrameNanos` 让推进跟随帧时钟
- *     （界面不可见时 Compose 会暂停帧分发），再用生命周期观察者兜一层，
- *     退到后台后不再有任何唤醒。
+ *  3. **不在前台时完全不推进**。推进跟随帧时钟，再用生命周期观察者兜一层。
+ *  4. **画刷只建一次**。[FluidPainter] 把着色器按调色板缓存起来，绘制阶段不分配对象。
  */
 @Composable
 fun FluidBackgroundHost(
@@ -77,12 +77,12 @@ fun FluidBackgroundHost(
             if (now - lastDrawn < DRIFT_FRAME_NANOS) continue
             lastDrawn = now
             val seconds = (now - startNanos) / 1_000_000_000.0
-            phase.floatValue = trianglePhase(seconds / DRIFT_PERIOD_SECONDS)
+            phase.floatValue = trianglePhase(STATIC_FLUID_PHASE + seconds / DRIFT_PERIOD_SECONDS)
         }
     }
 
-    val base = if (darkTheme) DarkBackground else LightBackground
     val palette = colors.ifEmpty { DefaultFluidColors }
+    val painter = remember(palette, darkTheme) { FluidPainter(palette, darkTheme) }
 
     // 背景画布的真实像素尺寸：下发给玻璃卡片，让它们内部的"背景副本"能精确对齐
     val canvasSize = remember { mutableStateOf(Size.Zero) }
@@ -90,14 +90,15 @@ fun FluidBackgroundHost(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(base)
+            .background(fluxPalette(darkTheme).bg0)
             .onGloballyPositioned { coordinates -> canvasSize.value = coordinates.size.toSize() },
     ) {
         CompositionLocalProvider(
             LocalFluidPhase provides phase,
             LocalFluidCanvasSize provides canvasSize,
+            LocalFluidPainter provides painter,
         ) {
-            FluidBackdrop(colors = palette, modifier = Modifier.matchParentSize())
+            FluidBackdrop(modifier = Modifier.matchParentSize())
             if (!backgroundImageUri.isNullOrBlank()) {
                 AsyncImage(
                     model = backgroundImageUri,
@@ -121,13 +122,13 @@ fun FluidBackgroundHost(
     }
 }
 
-/** 单程 30 秒（0→1→0 共 60 秒），与旧版 `tween(30_000, Reverse)` 完全一致 */
+/** 单程 30 秒（0→1→0 共 60 秒） */
 private const val DRIFT_PERIOD_SECONDS = 30.0
 
 /** 约 12fps：缓慢漂移根本不需要逐帧 */
 private const val DRIFT_FRAME_NANOS = 83_000_000L
 
-/** 0→1→0 的三角波，保证折返处速度连续、没有跳变 */
+/** 0→1→0 的三角波；光斑轨迹在两端速度恰好为零，折返时没有跳变 */
 private fun trianglePhase(input: Double): Float {
     val t = input % 2.0
     val v = if (t <= 1.0) t else 2.0 - t
@@ -156,92 +157,136 @@ private fun rememberAppResumed(): Boolean {
 /**
  * 流体背景本体（全屏）。
  *
- * 只读相位、只重绘。卡片内部会以同一函数绘制"同一相位的副本"，
+ * 只读相位、只重绘。玻璃卡片会用同一个 [FluidPainter] 画出「同一相位的副本」，
  * 从而在没有原生 backdrop blur 的前提下得到一致的折射感。
  */
 @Composable
 fun FluidBackdrop(
-    colors: List<Color> = LocalFluidColors.current,
     modifier: Modifier = Modifier,
     alphaScale: Float = 1f,
 ) {
     val phaseState = LocalFluidPhase.current
-    val dark = LocalDarkTheme.current
+    val painter = LocalFluidPainter.current
     Canvas(modifier = modifier) {
-        drawFluidGradient(
-            colors = colors,
-            dark = dark,
-            phase = phaseState.value,
-            alphaScale = alphaScale,
-            canvasSize = size,
-        )
+        painter.draw(this, phase = phaseState.value, alphaScale = alphaScale)
     }
 }
+
+/** 当前主题的流体画笔；恒为深色的舞台（查看器、星系）会换成深色那一支 */
+val LocalFluidPainter = staticCompositionLocalOf { FluidPainter(DefaultFluidColors, dark = true) }
+
+/** 一团光斑：位置与半径都是画布尺寸的比例，轨迹是两个整数倍频余弦合成的小弧线 */
+private class Blob(
+    val first: Int,
+    val second: Int,
+    val mix: Float,
+    val centerX: Float,
+    val centerY: Float,
+    val driftX: Float,
+    val driftY: Float,
+    val waveX: Int,
+    val waveY: Int,
+    val radius: Float,
+    val stretchX: Float,
+    val stretchY: Float,
+    val darkAlpha: Float,
+    val lightAlpha: Float,
+)
+
+/** 左上主色、右侧次色、左下第三色，再在顶部补一团主次混色当「光源」 */
+private val BLOBS = arrayOf(
+    Blob(0, 0, 0f, 0.14f, 0.08f, 0.10f, 0.05f, 1, 2, 0.60f, 1.28f, 0.84f, 0.50f, 0.34f),
+    Blob(1, 1, 0f, 0.96f, 0.42f, 0.08f, 0.09f, 2, 1, 0.50f, 0.84f, 1.22f, 0.40f, 0.30f),
+    Blob(2, 2, 0f, 0.20f, 0.94f, 0.12f, 0.05f, 1, 3, 0.54f, 1.32f, 0.80f, 0.42f, 0.30f),
+    Blob(0, 1, 0.5f, 0.72f, -0.02f, 0.09f, 0.03f, 3, 2, 0.34f, 1.42f, 0.70f, 0.26f, 0.22f),
+)
 
 /**
  * 流体渐变的唯一实现。
  *
- * [canvasSize] 允许调用方声明"逻辑画布"尺寸：玻璃卡片会先把画布平移
- * `-卡片窗口坐标`，再以窗口尺寸调用本函数，于是卡片里出现的正是它背后
- * 那一块背景 —— 与旧版"整屏副本 + 偏移 + 模糊"的视觉结果一致，
- * 但代价只与卡片面积成正比，且**没有任何离屏纹理与 RenderEffect**。
+ * 着色器在画布尺寸变化时才重建，之后每一帧只做平移与缩放：光斑的径向渐变以原点为圆心，
+ * 靠画布变换移到当前位置并压成椭圆。玻璃卡片会先把画布平移 `-卡片窗口坐标`，再以背景
+ * 画布尺寸调用 [draw]，于是卡片里出现的正是它背后那一块背景，代价只与卡片面积成正比。
  */
-fun DrawScope.drawFluidGradient(
-    colors: List<Color>,
-    dark: Boolean,
-    phase: Float,
-    alphaScale: Float = 1f,
-    canvasSize: Size = size,
-) {
-    val width = canvasSize.width
-    val height = canvasSize.height
-    if (width <= 0f || height <= 0f) return
+class FluidPainter(colors: List<Color>, private val dark: Boolean) {
 
-    val palette = colors.ifEmpty { DefaultFluidColors }
-    val glowAlpha = (if (dark) 0.55f else 0.34f) * alphaScale
-    val top = if (dark) Color(0xFF0B0B14) else Color(0xFFFBFBFE)
-    val bottom = if (dark) Color(0xFF05050A) else Color(0xFFEDEEF8)
+    private val palette = colors.ifEmpty { DefaultFluidColors }
+    private val blobColors = Array(BLOBS.size) { index ->
+        val blob = BLOBS[index]
+        lerp(palette[blob.first % palette.size], palette[blob.second % palette.size], blob.mix)
+    }
+    private var builtFor = Size.Zero
+    private var base: Brush? = null
+    private var vignette: Brush? = null
+    private val blobBrushes = arrayOfNulls<Brush>(BLOBS.size)
+    private val blobRadii = FloatArray(BLOBS.size)
 
-    drawRect(
-        brush = Brush.verticalGradient(
-            colors = listOf(top, bottom),
-            startY = 0f,
-            endY = height,
-        ),
-        size = canvasSize,
-    )
-
-    palette.forEachIndexed { index, color ->
-        val phaseX = wrap(phase + index * 0.29f)
-        val phaseY = wrap(phase * 0.83f + index * 0.41f)
-        val centerX = width * (0.12f + 0.76f * ease(phaseX))
-        val centerY = height * (0.10f + 0.72f * ease(phaseY))
-        val radius = max(width, height) * (0.44f + 0.10f * index)
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(color.copy(alpha = glowAlpha), Color.Transparent),
-                center = Offset(centerX, centerY),
-                radius = radius,
+    private fun ensure(canvas: Size) {
+        if (canvas == builtFor) return
+        builtFor = canvas
+        val neutral = fluxPalette(dark)
+        base = ShaderBrush(
+            LinearGradientShader(
+                from = Offset.Zero,
+                to = Offset(0f, canvas.height),
+                colors = listOf(neutral.bg1, neutral.bg0),
             ),
-            radius = radius,
-            center = Offset(centerX, centerY),
         )
+        vignette = ShaderBrush(
+            LinearGradientShader(
+                from = Offset(0f, canvas.height * 0.58f),
+                to = Offset(0f, canvas.height),
+                colors = listOf(Color.Transparent, if (dark) Color(0x70000000) else Color(0x141E1B4B)),
+            ),
+        )
+        val span = max(canvas.width, canvas.height)
+        for (index in BLOBS.indices) {
+            val blob = BLOBS[index]
+            val color = blobColors[index]
+            val alpha = if (dark) blob.darkAlpha else blob.lightAlpha
+            val radius = span * blob.radius
+            blobRadii[index] = radius
+            blobBrushes[index] = ShaderBrush(
+                RadialGradientShader(
+                    center = Offset.Zero,
+                    radius = radius,
+                    colors = listOf(
+                        color.copy(alpha = alpha),
+                        color.copy(alpha = alpha * 0.52f),
+                        color.copy(alpha = alpha * 0.14f),
+                        color.copy(alpha = 0f),
+                    ),
+                    colorStops = listOf(0f, 0.36f, 0.70f, 1f),
+                ),
+            )
+        }
     }
 
-    // 底部暗角，让内容区与系统栏过渡更自然
-    drawRect(
-        brush = Brush.verticalGradient(
-            0.55f to Color.Transparent,
-            1f to (if (dark) Color(0x66000000) else Color(0x14000000)),
-        ),
-        size = canvasSize,
-    )
-}
+    fun draw(scope: DrawScope, phase: Float, alphaScale: Float = 1f, canvasSize: Size = scope.size) {
+        val width = canvasSize.width
+        val height = canvasSize.height
+        if (width <= 0f || height <= 0f) return
+        ensure(canvasSize)
+        val angle = phase * TWO_PI
+        with(scope) {
+            base?.let { drawRect(brush = it, size = canvasSize) }
+            for (index in BLOBS.indices) {
+                val blob = BLOBS[index]
+                val brush = blobBrushes[index] ?: continue
+                val x = width * (blob.centerX + blob.driftX * cos(angle * blob.waveX))
+                val y = height * (blob.centerY + blob.driftY * cos(angle * blob.waveY))
+                withTransform({
+                    translate(x, y)
+                    scale(blob.stretchX, blob.stretchY, pivot = Offset.Zero)
+                }) {
+                    drawCircle(brush = brush, radius = blobRadii[index], center = Offset.Zero, alpha = alphaScale)
+                }
+            }
+            vignette?.let { drawRect(brush = it, size = canvasSize) }
+        }
+    }
 
-/** 0..1 的平滑往复（正弦），让光斑漂移没有折返的突兀感 */
-private fun ease(t: Float): Float = ((sin(t * 2.0 * PI) + 1.0) / 2.0).toFloat()
-
-private fun wrap(value: Float): Float {
-    val v = value % 1f
-    return if (v < 0f) v + 1f else v
+    private companion object {
+        const val TWO_PI = (2.0 * PI).toFloat()
+    }
 }
