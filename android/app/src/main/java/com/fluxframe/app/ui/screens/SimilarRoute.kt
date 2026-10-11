@@ -1,14 +1,9 @@
 package com.fluxframe.app.ui.screens
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,13 +12,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.fluxframe.app.data.model.EmbedGraphMode
-import com.fluxframe.app.ui.glass.GlassSurface
-import com.fluxframe.app.ui.theme.LocalDarkTheme
-import com.fluxframe.app.ui.theme.onGlassColor
+import com.fluxframe.app.ui.components.PillSelector
+import com.fluxframe.app.ui.glass.DarkStage
 
 /** 星系视图的两种画法：二维总览 / 三维星系空间 */
 enum class GalaxyView(val label: String) {
@@ -55,49 +47,39 @@ fun SimilarRoute(
     var mode by remember { mutableStateOf(EmbedGraphMode.VISUAL) }
     var view by rememberSaveable { mutableStateOf(GalaxyView.FLAT) }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        when (view) {
-            GalaxyView.FLAT -> GalaxyScreen(
-                onOpenImage = onOpenImage,
-                onToast = onToast,
-                mode = mode,
-                onModeChange = { mode = it },
-            )
+    /*
+     * 整页切到深色令牌：两个星系画法都是深空舞台，浅色主题下浮在上面的玻璃与文字
+     * 必须按深色那一套走。切在这里而不是各自的页面里，切换器才不会在换视图时闪一下。
+     */
+    DarkStage {
+        Box(modifier = Modifier.fillMaxSize()) {
+            when (view) {
+                GalaxyView.FLAT -> GalaxyScreen(
+                    onOpenImage = onOpenImage,
+                    onToast = onToast,
+                    mode = mode,
+                    onModeChange = { mode = it },
+                )
 
-            GalaxyView.SPACE -> Galaxy3DScreen(
-                onOpenImage = onOpenImage,
-                onToast = onToast,
-                mode = mode,
-                onModeChange = { mode = it },
-            )
-        }
-
-        /* 视图开关浮在右上角：两个画面都有自己的模式胶囊行（在那下面），别打架 */
-        Row(
-            modifier = Modifier.align(Alignment.TopEnd).padding(14.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            GalaxyView.entries.forEach { candidate ->
-                GlassSurface(
-                    modifier = Modifier.clip(RoundedCornerShape(999.dp)).clickable {
-                        if (view != candidate) view = candidate
-                    },
-                    backdrop = false,
-                    borderWidth = if (view == candidate) 1.4.dp else 0.6.dp,
-                ) {
-                    Text(
-                        text = candidate.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = if (view == candidate) FontWeight.SemiBold else FontWeight.Normal,
-                        color = if (view == candidate) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            onGlassColor(LocalDarkTheme.current, emphasis = false)
-                        },
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    )
-                }
+                GalaxyView.SPACE -> Galaxy3DScreen(
+                    onOpenImage = onOpenImage,
+                    onToast = onToast,
+                    mode = mode,
+                    onModeChange = { mode = it },
+                )
             }
+
+            /*
+             * 视图开关：分段控件，浮在右上角。
+             * 两个画面各自都有自己的「关系依据」胶囊行（在左上角），分居两侧才不会打架。
+             */
+            PillSelector(
+                options = GalaxyView.entries,
+                selected = view,
+                label = { it.label },
+                onSelect = { candidate -> if (view != candidate) view = candidate },
+                modifier = Modifier.align(Alignment.TopEnd).padding(14.dp),
+            )
         }
     }
 }

@@ -11,6 +11,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
@@ -58,6 +60,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -79,6 +83,9 @@ import com.fluxframe.app.ui.components.LoadingBox
 import com.fluxframe.app.ui.components.MediaCard
 import com.fluxframe.app.ui.components.TagChip
 import com.fluxframe.app.ui.components.VideoPosterRequest
+import com.fluxframe.app.ui.glass.GlassSurface
+import com.fluxframe.app.ui.theme.FluxRadius
+import com.fluxframe.app.ui.theme.FluxType
 import com.fluxframe.app.ui.theme.LocalDarkTheme
 import com.fluxframe.app.ui.theme.onGlassColor
 import kotlinx.coroutines.delay
@@ -176,51 +183,93 @@ fun LibraryScreen(
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // ---- 搜索 / 排序 / 操作（上下间距压紧）----
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            /*
+             * 吸顶工具条：搜索、排序、回收站、刷新收在同一条玻璃里。
+             * 网格在它下面独立滚动，所以这条是真的"钉"在顶上 ——
+             * 滑到第 200 张时依然能改搜索词或换排序，不用先滑回顶部。
+             */
+            GlassSurface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                backdrop = true,
+                shape = RoundedCornerShape(FluxRadius.lg),
+                borderWidth = 0.8.dp,
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
             ) {
-                Box(modifier = Modifier.weight(1f)) {
-                    GlassTextField(
-                        value = searchText,
-                        onValueChange = { searchText = it },
-                        placeholder = when (kind) {
-                            MediaKind.TRASH -> "在回收站中搜索"
-                            MediaKind.VIDEO -> "搜索视频名称或标签"
-                            MediaKind.IMAGE -> "搜索图片名称或标签"
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        GlassTextField(
+                            value = searchText,
+                            onValueChange = { searchText = it },
+                            placeholder = when (kind) {
+                                MediaKind.TRASH -> "在回收站中搜索"
+                                MediaKind.VIDEO -> "搜索视频名称或标签"
+                                MediaKind.IMAGE -> "搜索图片名称或标签"
+                            },
+                            leadingIcon = Icons.Filled.Search,
+                            imeAction = androidx.compose.ui.text.input.ImeAction.Search,
+                            onImeAction = { container.mediaStore.setSearch(searchText) },
+                        )
+                    }
+                    if (!isTrash) {
+                        RoundIconAction(
+                            icon = Icons.Filled.Sort,
+                            description = "排序",
+                            onClick = { sortExpanded = true },
+                        )
+                    }
+                    if (kind == MediaKind.VIDEO) {
+                        RoundIconAction(
+                            icon = Icons.Filled.Movie,
+                            description = "从链接提取视频",
+                            onClick = onOpenParse,
+                        )
+                    }
+                    RoundIconAction(
+                        icon = if (isTrash) Icons.Filled.Image else Icons.Filled.DeleteOutline,
+                        description = if (isTrash) "返回" else "回收站",
+                        onClick = onOpenTrash,
+                    )
+                    RoundIconAction(
+                        icon = Icons.Filled.Refresh,
+                        description = "刷新",
+                        onClick = {
+                            if (isTrash) container.mediaStore.refreshTrash() else container.mediaStore.refreshImages()
                         },
-                        leadingIcon = Icons.Filled.Search,
-                        imeAction = androidx.compose.ui.text.input.ImeAction.Search,
-                        onImeAction = { container.mediaStore.setSearch(searchText) },
                     )
                 }
-                if (!isTrash) {
-                    RoundIconAction(
-                        icon = Icons.Filled.Sort,
-                        description = "排序",
-                        onClick = { sortExpanded = true },
-                    )
-                }
-                if (kind == MediaKind.VIDEO) {
-                    RoundIconAction(
-                        icon = Icons.Filled.Movie,
-                        description = "从链接提取视频",
-                        onClick = onOpenParse,
-                    )
-                }
-                RoundIconAction(
-                    icon = if (isTrash) Icons.Filled.Image else Icons.Filled.DeleteOutline,
-                    description = if (isTrash) "返回" else "回收站",
-                    onClick = onOpenTrash,
-                )
-                RoundIconAction(
-                    icon = Icons.Filled.Refresh,
-                    description = "刷新",
-                    onClick = {
-                        if (isTrash) container.mediaStore.refreshTrash() else container.mediaStore.refreshImages()
-                    },
+            }
+
+            /*
+             * 加载进度：一条贴在工具条下面的渐变细条。
+             * 不用转圈也不用 Material 的进度条 —— 静默刷新时页面内容不会消失，
+             * 有这条"正在同步"的细光就够了。
+             */
+            if (loading) {
+                val accent = MaterialTheme.colorScheme.primary
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 22.dp)
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(accent.copy(alpha = 0.12f))
+                        .drawWithCache {
+                            val fill = Brush.horizontalGradient(
+                                listOf(
+                                    Color.Transparent,
+                                    accent.copy(alpha = 0.75f),
+                                    accent,
+                                    Color.Transparent,
+                                ),
+                            )
+                            onDrawBehind { drawRect(fill) }
+                        },
                 )
             }
 
@@ -228,20 +277,25 @@ fun LibraryScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 4.dp)
+                        .padding(horizontal = 14.dp, vertical = 6.dp)
                         .graphicsLayer {
                             translationX = size.width * 0.20f * selectionBackProgress
                             alpha = 1f - selectionBackProgress
                         }
-                        .clip(RoundedCornerShape(16.dp))
+                        .clip(RoundedCornerShape(FluxRadius.md))
                         .background(MaterialTheme.colorScheme.primary.copy(alpha = if (dark) 0.18f else 0.10f))
+                        .border(
+                            width = 0.8.dp,
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = if (dark) 0.34f else 0.22f),
+                            shape = RoundedCornerShape(FluxRadius.md),
+                        )
                         .padding(horizontal = 12.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text(
                         text = "已选择 ${selectedIds.size} 项",
-                        style = MaterialTheme.typography.labelLarge,
+                        style = FluxType.mono,
                         color = onGlassColor(dark, emphasis = true),
                         modifier = Modifier.weight(1f),
                     )
@@ -576,7 +630,7 @@ private fun SortDialog(
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         com.fluxframe.app.ui.glass.GlassSurface(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(FluxRadius.lg),
             backdrop = true,
             contentPadding = PaddingValues(16.dp),
         ) {
@@ -724,7 +778,7 @@ private fun LibrarySkeleton(columns: Int) {
                         modifier = Modifier
                             .weight(1f)
                             .aspectRatio(if ((row + column) % 3 == 0) 0.78f else 1f)
-                            .clip(RoundedCornerShape(12.dp))
+                            .clip(RoundedCornerShape(FluxRadius.sm))
                             .background(cardColor),
                     )
                 }

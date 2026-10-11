@@ -51,9 +51,15 @@ import coil.size.Precision
 import coil.size.Size as CoilSize
 import com.fluxframe.app.data.model.ImageItem
 import com.fluxframe.app.ui.LocalAppContainer
+import com.fluxframe.app.ui.components.EmptyState
 import com.fluxframe.app.ui.components.GlassIconButton
+import com.fluxframe.app.ui.components.LoadingBox
 import com.fluxframe.app.ui.components.HairLine
 import com.fluxframe.app.ui.glass.GlassSurface
+import androidx.compose.material.icons.filled.AutoAwesome
+import com.fluxframe.app.ui.theme.FluxRadius
+import com.fluxframe.app.ui.theme.FluxType
+import com.fluxframe.app.ui.theme.onGlassColor
 
 /**
  * 相似图面板的加载状态。
@@ -113,23 +119,40 @@ fun SimilarPanel(
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .padding(horizontal = 10.dp, vertical = 8.dp),
-            shape = RoundedCornerShape(18.dp),
+            // 底部 sheet 的形：只有上面两个角是圆的，视觉上"从屏幕下沿升起来"
+            shape = RoundedCornerShape(topStart = FluxRadius.xl, topEnd = FluxRadius.xl),
             backdrop = true,
+            borderWidth = 0.8.dp,
             contentPadding = PaddingValues(0.dp),
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
+                // ---- 拖拽指示条：告诉用户"这块可以上滑下拉" ----
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 9.dp, bottom = 2.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(width = 36.dp, height = 4.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(onGlassColor(true, emphasis = false).copy(alpha = 0.34f)),
+                    )
+                }
+
                 // ---- 标题栏 ----
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 14.dp, end = 8.dp, top = 10.dp, bottom = 8.dp),
+                        .padding(start = 14.dp, end = 8.dp, top = 6.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "相似图片",
                             style = MaterialTheme.typography.titleSmall,
-                            color = Color.White,
+                            color = onGlassColor(true, emphasis = true),
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
@@ -141,8 +164,8 @@ fun SimilarPanel(
                                 is SimilarUiState.Message -> state.title
                                 SimilarUiState.Idle -> ""
                             },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White.copy(alpha = 0.62f),
+                            style = FluxType.monoSmall,
+                            color = onGlassColor(true, emphasis = false),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -152,6 +175,39 @@ fun SimilarPanel(
                         contentDescription = "收起相似图",
                         onClick = onClose,
                     )
+                }
+
+                // ---- HUD 玻璃条：张数用大数字，阈值用等宽小字 ----
+                if (state is SimilarUiState.Ready && state.items.isNotEmpty()) {
+                    val accent = MaterialTheme.colorScheme.primary
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp)
+                            .clip(RoundedCornerShape(FluxRadius.sm))
+                            .background(accent.copy(alpha = 0.10f))
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            text = state.items.size.toString(),
+                            style = FluxType.numeral,
+                            color = accent,
+                        )
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text(
+                                text = "张相似图片",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = onGlassColor(true, emphasis = true),
+                            )
+                            Text(
+                                text = "阈值 ≥ ${(state.threshold * 100).toInt()}% · 点击即切换到这张",
+                                style = FluxType.monoSmall,
+                                color = onGlassColor(true, emphasis = false),
+                            )
+                        }
+                    }
                 }
 
                 HairLine(alpha = 0.10f)
@@ -209,7 +265,7 @@ private fun SimilarCard(item: ImageItem, thumbUrl: String, onClick: () -> Unit) 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(FluxRadius.sm))
             .clickable(onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -217,7 +273,7 @@ private fun SimilarCard(item: ImageItem, thumbUrl: String, onClick: () -> Unit) 
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(FluxRadius.sm))
                 .background(Color.White.copy(alpha = 0.06f)),
         ) {
             AsyncImage(
@@ -234,13 +290,13 @@ private fun SimilarCard(item: ImageItem, thumbUrl: String, onClick: () -> Unit) 
             // 相似度角标：直接用分数，比进度条更直观
             Text(
                 text = "${item.similarPercent}%",
-                style = MaterialTheme.typography.labelSmall,
+                style = FluxType.monoSmall,
                 color = Color.White,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(6.dp)
-                    .clip(RoundedCornerShape(6.dp))
+                    .clip(RoundedCornerShape(FluxRadius.xs))
                     .background(Color.Black.copy(alpha = 0.62f))
                     .padding(horizontal = 5.dp, vertical = 1.dp),
             )
@@ -248,15 +304,15 @@ private fun SimilarCard(item: ImageItem, thumbUrl: String, onClick: () -> Unit) 
         Text(
             text = item.name,
             style = MaterialTheme.typography.labelMedium,
-            color = Color.White.copy(alpha = 0.92f),
+            color = onGlassColor(true, emphasis = true),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
         if (item.tags.isNotEmpty()) {
             Text(
                 text = item.tags.take(2).joinToString(" · "),
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.White.copy(alpha = 0.55f),
+                style = FluxType.monoSmall,
+                color = onGlassColor(true, emphasis = false),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -266,49 +322,18 @@ private fun SimilarCard(item: ImageItem, thumbUrl: String, onClick: () -> Unit) 
 
 @Composable
 private fun SimilarLoading() {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 28.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        androidx.compose.material3.CircularProgressIndicator(
-            modifier = Modifier.size(18.dp),
-            strokeWidth = 2.dp,
-            color = Color.White.copy(alpha = 0.8f),
-        )
-        Spacer(Modifier.width(10.dp))
-        Text(
-            text = "正在比对视觉指纹…",
-            style = MaterialTheme.typography.labelMedium,
-            color = Color.White.copy(alpha = 0.7f),
-        )
-    }
+    LoadingBox(text = "正在比对视觉指纹…")
 }
 
 @Composable
 private fun SimilarMessage(title: String, detail: String) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 18.dp, vertical = 22.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            color = Color.White.copy(alpha = 0.94f),
-            fontWeight = FontWeight.Medium,
-        )
-        Text(
-            text = detail,
-            style = MaterialTheme.typography.labelMedium,
-            color = Color.White.copy(alpha = 0.58f),
-            textAlign = TextAlign.Center,
-        )
-    }
+    // 与全应用同一个空状态：线稿插画 + 标题 + 说明，文案一字未改
+    EmptyState(
+        title = title,
+        description = detail,
+        icon = Icons.Filled.AutoAwesome,
+        modifier = Modifier.padding(vertical = 4.dp),
+    )
 }
 
 /** 图片放大后拖动是在看细节，这时不该把上滑解释成「看相似图」 */

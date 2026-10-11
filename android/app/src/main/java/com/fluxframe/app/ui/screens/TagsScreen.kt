@@ -1,6 +1,7 @@
 package com.fluxframe.app.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,6 +26,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Face
@@ -42,6 +45,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -62,6 +68,7 @@ import com.fluxframe.app.ui.components.EmptyState
 import com.fluxframe.app.ui.components.GlassTextField
 import com.fluxframe.app.ui.components.LoadingBox
 import com.fluxframe.app.ui.components.MediaThumb
+import com.fluxframe.app.ui.components.PillSelector
 import com.fluxframe.app.ui.components.MiniBadge
 import com.fluxframe.app.ui.components.PrimaryActionButton
 import com.fluxframe.app.ui.components.SectionTitle
@@ -69,8 +76,13 @@ import com.fluxframe.app.ui.components.SecondaryActionButton
 import com.fluxframe.app.ui.components.StatTile
 import com.fluxframe.app.ui.components.SwitchRow
 import com.fluxframe.app.ui.components.TagChip
+import com.fluxframe.app.ui.components.parseColor
 import com.fluxframe.app.ui.glass.GlassSurface
+import com.fluxframe.app.ui.theme.Danger
+import com.fluxframe.app.ui.theme.FluxRadius
+import com.fluxframe.app.ui.theme.FluxType
 import com.fluxframe.app.ui.theme.LocalDarkTheme
+import com.fluxframe.app.ui.theme.Success
 import com.fluxframe.app.ui.theme.onGlassColor
 import kotlinx.coroutines.launch
 
@@ -101,10 +113,14 @@ fun TagsScreen(
     var personExpanded by rememberSaveable { mutableStateOf(true) }
     var tagsExpanded by rememberSaveable { mutableStateOf(true) }
     var showAllTags by rememberSaveable { mutableStateOf(false) }
+    /** 全部标签的列数（1/2/3）：标签少时单列最好读，标签多时多列一屏看得更多 */
+    var tagColumns by rememberSaveable { mutableStateOf(1) }
 
     val personTags = tags.filter { it.person }
     val normalTags = tags.filter { !it.person }
     val linkedCount = tags.sumOf { it.count }
+    /** 比例条的分母：数量最多的那个标签。没有标签时为 0，调用方自己挡一下 */
+    val maxTagCount = remember(normalTags) { normalTags.maxOfOrNull { it.count } ?: 0 }
     // 默认只渲染前 24 个标签，避免几百个标签时一次性组合出整屏
     val visibleTags = if (showAllTags) normalTags else normalTags.take(TAG_PREVIEW_COUNT)
 
@@ -161,7 +177,7 @@ fun TagsScreen(
                         label = "人物组人名",
                         value = personTags.size.toString(),
                         icon = Icons.Filled.Face,
-                        accent = Color(0xFF22C55E),
+                        accent = Success,
                         modifier = Modifier.weight(1f),
                     )
                     StatTile(
@@ -194,42 +210,75 @@ fun TagsScreen(
                             contentPadding = PaddingValues(end = 4.dp),
                         ) {
                             items(personTags, key = { it.id }) { tag ->
+                                val ringColor = parseColor(tag.color)
                                 GlassSurface(
                                     modifier = Modifier
-                                        .width(104.dp)
+                                        .width(126.dp)
                                         .combinedClickable(
                                             onClick = { onOpenPerson(tag.id) },
                                             onLongClick = { renameTarget = tag },
                                         ),
+                                    borderWidth = 0.8.dp,
+                                    glow = ringColor,
                                     contentPadding = PaddingValues(vertical = 12.dp),
                                 ) {
                                     Column(
-                                        modifier = Modifier.fillMaxWidth(),
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(7.dp),
                                     ) {
-                                        // 用该人物的第一张媒体当封面，替换原来的通用人脸矢量图；
-                                        // 该人物还没有可见媒体时自动退回人脸占位
-                                        MediaThumb(
-                                            item = previewByTag[tag.name],
-                                            size = 44.dp,
-                                            shape = CircleShape,
-                                            alpha = 0.92f,
-                                            placeholderIcon = Icons.Filled.Face,
-                                            placeholderTint = Color(0xFF22C55E),
-                                        )
+                                        /*
+                                         * 色环头像：外圈是这个人物自己的颜色，内圈是它的第一张媒体。
+                                         * 环上再压一层同色光晕 —— 人物卡横向排开时，
+                                         * "谁是谁"靠颜色就能分，不必逐个读名字。
+                                         */
+                                        Box(
+                                            modifier = Modifier
+                                                .size(56.dp)
+                                                .drawWithCache {
+                                                    val halo = Brush.radialGradient(
+                                                        colors = listOf(ringColor.copy(alpha = 0.34f), Color.Transparent),
+                                                        center = Offset(size.width / 2f, size.height / 2f),
+                                                        radius = size.minDimension / 2f,
+                                                    )
+                                                    onDrawBehind { drawRect(halo) }
+                                                }
+                                                .clip(CircleShape)
+                                                .border(2.dp, ringColor.copy(alpha = 0.85f), CircleShape)
+                                                .padding(3.dp),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            MediaThumb(
+                                                item = previewByTag[tag.name],
+                                                size = 44.dp,
+                                                shape = CircleShape,
+                                                alpha = 0.94f,
+                                                placeholderIcon = Icons.Filled.Face,
+                                                placeholderTint = ringColor,
+                                            )
+                                        }
                                         Text(
                                             text = tag.name,
                                             style = MaterialTheme.typography.labelMedium,
                                             color = onGlassColor(dark, emphasis = true),
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.padding(horizontal = 6.dp),
                                         )
                                         Text(
                                             text = "${tag.count} 张",
-                                            style = MaterialTheme.typography.labelSmall,
+                                            style = FluxType.monoSmall,
                                             color = onGlassColor(dark, emphasis = false),
+                                        )
+                                        // 批量加图：直接进批量面板，不用先进人物详情再找入口
+                                        Text(
+                                            text = "批量加图",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = ringColor,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(FluxRadius.xs))
+                                                .background(ringColor.copy(alpha = 0.14f))
+                                                .clickable { batchTarget = tag }
+                                                .padding(horizontal = 9.dp, vertical = 3.dp),
                                         )
                                     }
                                 }
@@ -258,70 +307,46 @@ fun TagsScreen(
                 }
             }
             if (tagsExpanded) {
-                items(visibleTags, key = { it.id }) { tag ->
-                    GlassSurface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .combinedClickable(
+                // 1 / 2 / 3 列切换：标签少时单列最好读，标签多时多列一屏看得更多
+                item {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Spacer(modifier = Modifier.weight(1f))
+                        PillSelector(
+                            options = listOf(1, 2, 3),
+                            selected = tagColumns,
+                            label = { "$it 列" },
+                            onSelect = { tagColumns = it },
+                        )
+                    }
+                }
+                /*
+                 * 按列数把标签切成一行行渲染，而不是改用嵌套的 LazyVerticalGrid：
+                 * LazyColumn 里再嵌一个纵向滚动容器会同时吃掉两份滚动，
+                 * 手势冲突且高度无解。切行之后仍然是懒加载 —— 一行是一个 item。
+                 */
+                items(visibleTags.chunked(tagColumns.coerceAtLeast(1)), key = { row -> row.first().id }) { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        row.forEach { tag ->
+                            TagListCard(
+                                tag = tag,
+                                share = if (maxTagCount > 0) tag.count.toFloat() / maxTagCount else 0f,
+                                dark = dark,
+                                showActions = tagColumns == 1,
                                 onClick = {
                                     container.mediaStore.setTag(tag.name)
                                     onOpenMediaLibrary(container.mediaStore.libraryForTag(tag.name))
                                 },
                                 onLongClick = { renameTarget = tag },
-                            ),
-                        contentPadding = PaddingValues(12.dp),
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Box(
-                                modifier = Modifier
-                                    .size(9.dp)
-                                    .clip(CircleShape)
-                                    .background(com.fluxframe.app.ui.components.parseColor(tag.color)),
+                                onBatch = { batchTarget = tag },
+                                onEdit = { renameTarget = tag },
                             )
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = tag.name,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = onGlassColor(dark, emphasis = true),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    // 顺带说明这个标签的内容落在哪个库（"带视频标签自动转移到视频库"）
-                                    text = buildString {
-                                        val usage = container.mediaStore.usageOf(tag.name)
-                                        append("${tag.count} 个媒体")
-                                        if (usage.videos > 0 && usage.images > 0) {
-                                            append(" · 图 ${usage.images} / 视频 ${usage.videos}")
-                                        } else if (usage.videos > 0) {
-                                            append(" · 仅视频")
-                                        }
-                                    },
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = onGlassColor(dark, emphasis = false),
-                                )
-                            }
-                            if (tag.r18) {
-                                MiniBadge(text = "R18", color = Color(0xFFEF4444))
-                            }
-                            Text(
-                                text = "批量",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier
-                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                                    .clickable { batchTarget = tag }
-                                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                            )
-                            Text(
-                                text = "编辑",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier
-                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                                    .clickable { renameTarget = tag }
-                                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                            )
+                        }
+                        // 补齐空位：最后一行不满时，卡片宽度不会被拉成整行
+                        repeat(tagColumns - row.size) {
+                            Spacer(modifier = Modifier.weight(1f))
                         }
                     }
                 }
@@ -413,6 +438,122 @@ fun TagsScreen(
     }
 }
 
+/**
+ * 「全部标签」里的一张卡。
+ *
+ * 视觉：色点 + 名称（+ R18 角标）、右侧等宽计数、下面一条**渐变比例条**
+ * （该标签的数量占最多标签的比例，从标签色渐隐到透明），
+ * 再下面一行是内容落在哪个库的说明。单列时才显示「批量 / 编辑」两个动作 ——
+ * 两列三列时把它们塞进去只会挤成一团乱码。
+ */
+@Composable
+private fun RowScope.TagListCard(
+    tag: TagItem,
+    share: Float,
+    dark: Boolean,
+    showActions: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onBatch: () -> Unit,
+    onEdit: () -> Unit,
+) {
+    val container = LocalAppContainer.current
+    val tagColor = parseColor(tag.color)
+    GlassSurface(
+        modifier = Modifier
+            .weight(1f)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        borderWidth = 0.6.dp,
+        contentPadding = PaddingValues(12.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(
+                    modifier = Modifier
+                        .size(9.dp)
+                        .clip(CircleShape)
+                        .background(tagColor),
+                )
+                Text(
+                    text = tag.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = onGlassColor(dark, emphasis = true),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (tag.r18) {
+                    MiniBadge(text = "R18", color = Danger)
+                }
+                Text(
+                    text = tag.count.toString(),
+                    style = FluxType.mono,
+                    color = onGlassColor(dark, emphasis = false),
+                )
+            }
+            // 比例条：用标签自己的颜色，从实到透明 —— 一眼看出哪个标签最"重"
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(tagColor.copy(alpha = 0.12f))
+                    .drawWithCache {
+                        val width = size.width * share.coerceIn(0f, 1f)
+                        val bar = Brush.horizontalGradient(listOf(tagColor, tagColor.copy(alpha = 0.25f)))
+                        onDrawBehind {
+                            if (width > 0f) {
+                                drawRoundRect(
+                                    brush = bar,
+                                    size = androidx.compose.ui.geometry.Size(width, size.height),
+                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2f),
+                                )
+                            }
+                        }
+                    },
+            )
+            Text(
+                // 顺带说明这个标签的内容落在哪个库（"带视频标签自动转移到视频库"）
+                text = buildString {
+                    val usage = container.mediaStore.usageOf(tag.name)
+                    append("${tag.count} 个媒体")
+                    if (usage.videos > 0 && usage.images > 0) {
+                        append(" · 图 ${usage.images} / 视频 ${usage.videos}")
+                    } else if (usage.videos > 0) {
+                        append(" · 仅视频")
+                    }
+                },
+                style = FluxType.monoSmall,
+                color = onGlassColor(dark, emphasis = false),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (showActions) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "批量",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(FluxRadius.xs))
+                            .clickable { onBatch() }
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                    Text(
+                        text = "编辑",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(FluxRadius.xs))
+                            .clickable { onEdit() }
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun CreateTagDialog(
     onDismiss: () -> Unit,
@@ -427,7 +568,7 @@ private fun CreateTagDialog(
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         GlassSurface(
             modifier = Modifier.fillMaxWidth(),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(FluxRadius.lg),
             backdrop = true,
             contentPadding = PaddingValues(18.dp),
         ) {
@@ -489,7 +630,7 @@ private fun TextPromptRename(
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         GlassSurface(
             modifier = Modifier.fillMaxWidth(),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(FluxRadius.lg),
             backdrop = true,
             contentPadding = PaddingValues(18.dp),
         ) {
@@ -524,7 +665,7 @@ private fun TextPromptRename(
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier
-                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(FluxRadius.xs))
                             .clickable(onClick = onDelete)
                             .padding(horizontal = 8.dp, vertical = 6.dp),
                     )
@@ -627,7 +768,7 @@ fun PersonDetailScreen(
                                 shape = CircleShape,
                                 alpha = 0.92f,
                                 placeholderIcon = Icons.Filled.Face,
-                                placeholderTint = Color(0xFF22C55E),
+                                placeholderTint = Success,
                             )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
@@ -708,7 +849,7 @@ fun PersonDetailScreen(
                             Box(
                                 modifier = Modifier
                                     .aspectRatio(1f)
-                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp)),
+                                    .clip(RoundedCornerShape(FluxRadius.sm)),
                             ) {
                                 AsyncImage(
                                     model = ImageRequest.Builder(LocalContext.current)

@@ -77,6 +77,7 @@ import com.fluxframe.app.ui.components.ErrorBar
 import com.fluxframe.app.ui.components.GlassTextField
 import com.fluxframe.app.ui.components.LoadingBox
 import com.fluxframe.app.ui.components.MiniBadge
+import com.fluxframe.app.ui.components.TagChip
 import com.fluxframe.app.ui.components.PrimaryActionButton
 import com.fluxframe.app.ui.components.ProgressRow
 import com.fluxframe.app.ui.components.SectionTitle
@@ -85,6 +86,10 @@ import com.fluxframe.app.ui.glass.GlassSurface
 import com.fluxframe.app.ui.theme.LocalDarkTheme
 import com.fluxframe.app.ui.theme.onGlassColor
 import kotlinx.coroutines.launch
+import com.fluxframe.app.ui.theme.Success
+import com.fluxframe.app.ui.theme.BrandCyan
+import com.fluxframe.app.ui.theme.FluxRadius
+import com.fluxframe.app.ui.theme.FluxType
 
 /**
  * 视频提取：粘贴分享链接 → 服务端解析 → 选择保存视频/封面/图文图片。
@@ -114,20 +119,38 @@ fun ParseScreen(onToast: (String?) -> Unit) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            GlassSurface(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(14.dp)) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            GlassSurface(
+                modifier = Modifier.fillMaxWidth(),
+                borderWidth = 0.8.dp,
+                glow = MaterialTheme.colorScheme.tertiary,
+                contentPadding = PaddingValues(16.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Icon(
                             Icons.Filled.Link,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.tertiary,
-                            modifier = Modifier.size(17.dp),
+                            modifier = Modifier.size(18.dp),
                         )
+                        // 大号标题：这一页只有一个入口动作，标题就该抢眼
                         Text(
                             text = "粘贴分享链接或整段口令",
-                            style = MaterialTheme.typography.titleSmall,
+                            style = MaterialTheme.typography.titleMedium,
                             color = onGlassColor(dark, emphasis = true),
                         )
+                    }
+                    // 平台胶囊：支持的三个平台各一枚，比只写在句子里更好扫
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("B站", "抖音", "快手").forEach { platform ->
+                            TagChip(
+                                name = platform,
+                                colorHex = "#A78BFA",
+                                showDot = false,
+                                selected = true,
+                                onClick = null,
+                            )
+                        }
                     }
                     GlassTextField(
                         value = link,
@@ -209,7 +232,7 @@ fun ParseScreen(onToast: (String?) -> Unit) {
                                 },
                                 color = when {
                                     task.isWorking -> MaterialTheme.colorScheme.primary
-                                    task.isDone -> Color(0xFF22C55E)
+                                    task.isDone -> Success
                                     else -> MaterialTheme.colorScheme.error
                                 },
                             )
@@ -232,7 +255,7 @@ fun ParseScreen(onToast: (String?) -> Unit) {
                         ProgressRow(
                             label = task.message,
                             progress = if (task.isWorking) task.progress else if (task.isDone) 1f else 0f,
-                            accent = if (task.isError) MaterialTheme.colorScheme.error else Color(0xFF22D3EE),
+                            accent = if (task.isError) MaterialTheme.colorScheme.error else BrandCyan,
                         )
                     }
                 }
@@ -273,13 +296,19 @@ fun ParseScreen(onToast: (String?) -> Unit) {
                                 onPreview = { previewImageIndex = it },
                                 onSelectAll = { selectedImages = result.images.indices.toSet() },
                                 onClear = { selectedImages = emptySet() },
+                                // 反选：图集动辄几十张，默认全选后常要只留挑中的那几张
+                                onInvert = {
+                                    selectedImages = result.images.indices
+                                        .filter { it !in selectedImages }
+                                        .toSet()
+                                },
                             )
                         } else if (result.cover.isNotBlank()) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .aspectRatio(16f / 9f)
-                                    .clip(RoundedCornerShape(14.dp)),
+                                    .clip(RoundedCornerShape(FluxRadius.md)),
                             ) {
                                 AsyncImage(
                                     model = ImageRequest.Builder(LocalContext.current)
@@ -317,7 +346,7 @@ fun ParseScreen(onToast: (String?) -> Unit) {
                                 MiniBadge(text = formatDuration(result.duration), color = MaterialTheme.colorScheme.primary)
                             }
                             if (result.watermarkFree) {
-                                MiniBadge(text = "无水印", color = Color(0xFF22C55E))
+                                MiniBadge(text = "无水印", color = Success)
                             }
                         }
                         Text(
@@ -329,7 +358,7 @@ fun ParseScreen(onToast: (String?) -> Unit) {
                             Text(
                                 text = "检测到 ${result.high.label} 高清双流，保存时将用 ffmpeg 无损合并。",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF22C55E),
+                                color = Success,
                             )
                         }
 
@@ -482,12 +511,27 @@ private fun ParsedVideoPreview(url: String, ratio: Float) {
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(ratio)
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(FluxRadius.md))
             .background(Color.Black),
     )
 }
 
 /** 原生图片选择网格：点缩略图预览，点右上角复选圆圈选择要保存的图片。 */
+/** 选择工具条上的一个小动作：玻璃胶囊，比裸文字更像"能点的东西" */
+@Composable
+private fun PickerAction(text: String, color: Color, onClick: () -> Unit) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = color,
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(color.copy(alpha = 0.14f))
+            .clickable { onClick() }
+            .padding(horizontal = 9.dp, vertical = 4.dp),
+    )
+}
+
 @Composable
 private fun ParsedImagePicker(
     images: List<ParseImage>,
@@ -496,33 +540,40 @@ private fun ParsedImagePicker(
     onPreview: (Int) -> Unit,
     onSelectAll: () -> Unit,
     onClear: () -> Unit,
+    onInvert: () -> Unit,
 ) {
     val container = LocalAppContainer.current
     val dark = LocalDarkTheme.current
     Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        /*
+         * 选择 HUD：已选数量用大数字，右侧三个动作收成玻璃胶囊。
+         * 「全不选」与「反选」是这一屏最常用的两个动作（图集动辄几十张，
+         * 默认全选后往往要挑掉几张，或只留几张）。
+         */
+        val accent = MaterialTheme.colorScheme.primary
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(FluxRadius.sm))
+                .background(accent.copy(alpha = 0.10f))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text(
-                text = "已选 ${selected.size} / ${images.size} 张",
-                style = MaterialTheme.typography.labelMedium,
-                color = onGlassColor(dark, emphasis = true),
+                text = selected.size.toString(),
+                style = FluxType.numeralSmall,
+                color = accent,
+            )
+            Text(
+                text = "/ ${images.size} 张",
+                style = FluxType.monoSmall,
+                color = onGlassColor(dark, emphasis = false),
                 modifier = Modifier.weight(1f),
             )
-            Text(
-                text = "全选",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable { onSelectAll() }.padding(5.dp),
-            )
-            Text(
-                text = "清空",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.clickable { onClear() }.padding(5.dp),
-            )
+            PickerAction(text = "全选", color = accent, onClick = onSelectAll)
+            PickerAction(text = "全不选", color = MaterialTheme.colorScheme.secondary, onClick = onClear)
+            PickerAction(text = "反选", color = MaterialTheme.colorScheme.tertiary, onClick = onInvert)
         }
         images.indices.chunked(3).forEach { rowIndexes ->
             Row(
@@ -536,11 +587,11 @@ private fun ParsedImagePicker(
                         modifier = Modifier
                             .weight(1f)
                             .aspectRatio(3f / 4f)
-                            .clip(RoundedCornerShape(12.dp))
+                            .clip(RoundedCornerShape(FluxRadius.sm))
                             .border(
                                 width = if (picked) 2.dp else 1.dp,
-                                color = if (picked) Color(0xFF34D399) else Color.White.copy(alpha = 0.12f),
-                                shape = RoundedCornerShape(12.dp),
+                                color = if (picked) Success else Color.White.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(FluxRadius.sm),
                             )
                             .clickable { onPreview(index) },
                     ) {
@@ -559,7 +610,7 @@ private fun ParsedImagePicker(
                                 .padding(7.dp)
                                 .size(28.dp)
                                 .clip(CircleShape)
-                                .background(if (picked) Color(0xFF34D399) else Color.Black.copy(alpha = 0.58f))
+                                .background(if (picked) Success else Color.Black.copy(alpha = 0.58f))
                                 .border(1.dp, Color.White.copy(alpha = 0.8f), CircleShape)
                                 .clickable { onToggle(index) },
                             contentAlignment = Alignment.Center,

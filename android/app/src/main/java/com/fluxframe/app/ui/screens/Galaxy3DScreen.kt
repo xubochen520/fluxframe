@@ -42,8 +42,10 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
@@ -69,17 +71,28 @@ import com.fluxframe.app.data.model.EmbedGraphMode
 import com.fluxframe.app.data.model.ImageItem
 import com.fluxframe.app.ui.components.ErrorBar
 import com.fluxframe.app.ui.components.GlassIconButton
+import com.fluxframe.app.ui.components.PillSelector
 import com.fluxframe.app.ui.galaxy.Galaxy3DMath
 import com.fluxframe.app.ui.galaxy.GalaxyMath
 import com.fluxframe.app.ui.galaxy.GalaxyThumbCache
+import com.fluxframe.app.ui.galaxy.GalaxyBackdrop
+import com.fluxframe.app.ui.galaxy.drawGalaxyGlow
+import com.fluxframe.app.ui.galaxy.galaxyDustPalette
+import com.fluxframe.app.ui.galaxy.galaxyEdgeColor
+import com.fluxframe.app.ui.galaxy.galaxyGlowSprite
+import com.fluxframe.app.ui.galaxy.rememberGalaxyLowEnd
+import com.fluxframe.app.ui.glass.DarkStage
 import com.fluxframe.app.ui.glass.GlassSurface
-import com.fluxframe.app.ui.theme.LocalDarkTheme
+import com.fluxframe.app.ui.theme.FluxRadius
+import com.fluxframe.app.ui.theme.FluxType
+import com.fluxframe.app.ui.theme.LocalFluidColors
 import com.fluxframe.app.ui.theme.onGlassColor
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.random.Random
 
@@ -120,11 +133,42 @@ fun Galaxy3DScreen(
     mode: EmbedGraphMode,
     onModeChange: (EmbedGraphMode) -> Unit,
 ) {
+    /*
+     * 与二维星系同理：舞台底永远是深空，浮在上面的玻璃与文字就必须按深色那一套走，
+     * 否则浅色主题下会出现深色字压在近黑背景上。
+     */
+    DarkStage {
+        Galaxy3DStageContent(
+            onOpenImage = onOpenImage,
+            onToast = onToast,
+            mode = mode,
+            onModeChange = onModeChange,
+        )
+    }
+}
+
+@Composable
+private fun Galaxy3DStageContent(
+    onOpenImage: (String) -> Unit,
+    onToast: (String?) -> Unit,
+    mode: EmbedGraphMode,
+    onModeChange: (EmbedGraphMode) -> Unit,
+) {
     val container = LocalAppContainer.current
     val context = LocalContext.current
-    val dark = LocalDarkTheme.current
     val scope = rememberCoroutineScope()
     val textMeasurer = rememberTextMeasurer()
+
+    /* ------------------------- 深空舞台的绘制件（全部只建一次） ------------------------- */
+    val fluidColors = LocalFluidColors.current
+    /** 低端机或关掉动效：关脉冲与尘埃（自转仍然保留，它是这一页的核心手感） */
+    val lowEnd = rememberGalaxyLowEnd()
+    val backdrop = remember(fluidColors) { GalaxyBackdrop(fluidColors) }
+    val dustPalette = remember(fluidColors) { galaxyDustPalette(fluidColors) }
+    val glowSprite = remember { galaxyGlowSprite() }
+    val chipStyle = remember {
+        TextStyle(fontSize = CHIP3D_FONT_SP.sp, fontWeight = FontWeight.Medium, color = Color.White)
+    }
 
     var graph by remember { mutableStateOf<EmbedGraph?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -155,6 +199,11 @@ fun Galaxy3DScreen(
     val layout = remember(graph) { buildLayout3D(graph) }
     val thumbs = remember { GalaxyThumbCache(context) }
     DisposableEffect(Unit) { onDispose { thumbs.clear() } }
+
+    /** 每个节点的光晕颜色滤镜：在 remember 里建好，绘制阶段一次分配都没有 */
+    val glowFilters = remember(layout) {
+        layout.nodes.map { ColorFilter.tint(it.color, BlendMode.SrcIn) }
+    }
 
     var camera by remember { mutableStateOf(Galaxy3DMath.Camera(0.6f, 0.25f, 3f)) }
     var homeCamera by remember { mutableStateOf(Galaxy3DMath.Camera(0.6f, 0.25f, 3f)) }
@@ -286,9 +335,6 @@ fun Galaxy3DScreen(
     /* ------------------------------ 画面 ------------------------------ */
 
     Box(modifier = Modifier.fillMaxSize()) {
-        val background = remember { Brush.verticalGradient(listOf(Color(0xFF060A15), Color(0xFF0A1020), Color(0xFF04060E))) }
-        Box(modifier = Modifier.fillMaxSize().background(background))
-
         val stars = remember { starField3D() }
         val thumbnailPath = remember { Path() }
 
@@ -328,15 +374,24 @@ fun Galaxy3DScreen(
             val viewWidth = size.width
             val viewHeight = size.height
 
-            /* 背景星点：随视角轻微视差，给画面一点纵深参照 */
-            for (star in stars) {
-                var x = star.x * viewWidth + cameraNow.yaw * 30f * star.depth
-                var y = star.y * viewHeight + cameraNow.pitch * 20f * star.depth
-                x %= viewWidth
-                y %= viewHeight
-                if (x < 0f) x += viewWidth
-                if (y < 0f) y += viewHeight
-                drawCircle(Color.White.copy(alpha = star.alpha), star.radius, Offset(x, y))
+            /* ---- 深空舞台：底色渐变 + 三色雾 + 暗角 ---- */
+            backdrop.draw(this, size)
+
+            /* 背景尘埃：按深度染色 + 随视角视差，给画面一点纵深参照；降级档不画 */
+            if (!lowEnd) {
+                for (star in stars) {
+                    var x = star.x * viewWidth + cameraNow.yaw * 30f * star.depth
+                    var y = star.y * viewHeight + cameraNow.pitch * 20f * star.depth
+                    x %= viewWidth
+                    y %= viewHeight
+                    if (x < 0f) x += viewWidth
+                    if (y < 0f) y += viewHeight
+                    drawCircle(
+                        color = dustPalette[star.variant][dustDepthBucket(star.depth)].copy(alpha = star.alpha),
+                        radius = star.radius,
+                        center = Offset(x, y),
+                    )
+                }
             }
 
             if (layout.nodes.isEmpty()) return@Canvas
@@ -370,18 +425,36 @@ fun Galaxy3DScreen(
                     alpha = if (edge.a == focusIndex || edge.b == focusIndex) alpha * 1.5f else alpha * 0.18f
                 }
                 if (alpha <= 0.02f) continue
+                /*
+                 * 同组同色：两端属于同一个角色/标签时用那一组的颜色，跨组取中间色。
+                 * 颜色是算出来的（lerp 不分配对象），绘制阶段不会产生垃圾。
+                 */
+                val nodeA = layout.nodes[edge.a]
+                val nodeB = layout.nodes[edge.b]
+                val color = galaxyEdgeColor(
+                    colorA = nodeA.color,
+                    colorB = nodeB.color,
+                    sameGroup = nodeA.character.isNotEmpty() && nodeA.character == nodeB.character,
+                )
                 drawLine(
-                    color = Color(0.45f, 0.68f, 1f).copy(alpha = alpha.coerceAtMost(1f)),
+                    color = color.copy(alpha = alpha.coerceAtMost(1f)),
                     start = Offset(screenX[edge.a], screenY[edge.a]),
                     end = Offset(screenX[edge.b], screenY[edge.b]),
                     strokeWidth = 1.1f,
+                    blendMode = BlendMode.Plus,
                 )
             }
 
             /* ---- 缩略图 + 星点 ---- */
             /* 拉近到全景距离的 86% 以内才开始出现缩略图：全景时一两百张糊在一起只是马赛克 */
             val closeness = ((homeDistance * 0.86f - cameraNow.distance) / (homeDistance * 0.5f)).coerceIn(0f, 1f)
+            /*
+             * 选中脉冲的相位：直接复用已有的 frameTick（这一页本来每帧都在重绘），
+             * 不额外引入任何时钟。约 3.5 秒一个来回，像心跳而不是动画表演。
+             */
+            val pulse = if (focusIndex >= 0 && !lowEnd) sin(frameTick * 0.11f) * 0.5f + 0.5f else 0f
             var drawn = 0
+            var chips = 0
             for (index in order) {
                 val node = layout.nodes[index]
                 val d = depth[index]
@@ -394,10 +467,20 @@ fun Galaxy3DScreen(
                 val base = if (node.degree > 0) 0.011f + min(node.degree, 24) * 0.0007f else 0.011f
                 val radius = max(1.2f, base * scale[index])
                 val center = Offset(screenX[index], screenY[index])
-                /* 三层叠加做出星点的发光感（加色混合在 Compose 里没有，用递减透明度近似） */
-                drawCircle(node.color.copy(alpha = alpha * 0.16f), radius * 3.4f, center)
-                drawCircle(node.color.copy(alpha = alpha * 0.30f), radius * 1.9f, center)
+                /*
+                 * 预渲染光晕纹理 + 加色混合：一次 drawImage 代替原来的三层同心圆。
+                 * 纹理全应用共享一张，颜色由 ColorFilter 上色（在 remember 里建好）。
+                 */
+                drawGalaxyGlow(
+                    sprite = glowSprite,
+                    centerX = center.x,
+                    centerY = center.y,
+                    radius = radius * 4.4f,
+                    alpha = alpha * 0.5f,
+                    colorFilter = glowFilters[index],
+                )
                 drawCircle(node.color.copy(alpha = alpha * 0.95f), radius, center)
+                drawCircle(Color.White.copy(alpha = alpha * 0.34f), radius * 0.40f, center)
 
                 if (closeness <= 0.02f || drawn >= MAX_THUMBS_3D) continue
                 val longPx = Galaxy3DMath.thumbLongPx(THUMB3D_WORLD, scale[index], THUMB3D_MAX_PX)
@@ -419,7 +502,7 @@ fun Galaxy3DScreen(
 
                 val left = screenX[index] - box.width / 2f
                 val top = screenY[index] - box.height / 2f
-                val corner = min(10f, min(box.width, box.height) / 2f)
+                val corner = min(THUMB3D_CORNER, min(box.width, box.height) / 2f)
                 thumbnailPath.rewind()
                 thumbnailPath.addRoundRect(
                     RoundRect(
@@ -442,15 +525,81 @@ fun Galaxy3DScreen(
                         alpha = imageAlpha,
                     )
                 }
+                /*
+                 * 玻璃边框三层（外暗描边 / 分组色发丝线 / 内侧白高光），
+                 * 让缩略图在深空里读起来是"一块玻璃片"而不是一张贴纸。
+                 */
+                val roundRect = CornerRadius(corner, corner)
                 drawRoundRect(
-                    color = node.color.copy(alpha = imageAlpha * 0.5f),
-                    topLeft = Offset(left, top),
-                    size = Size(box.width, box.height),
-                    cornerRadius = CornerRadius(corner, corner),
-                    style = Stroke(width = 1.1f),
+                    color = Color.Black.copy(alpha = imageAlpha * 0.5f),
+                    topLeft = Offset(left - 1.5f, top - 1.5f),
+                    size = Size(box.width + 3f, box.height + 3f),
+                    cornerRadius = roundRect,
+                    style = Stroke(width = 2.4f),
                 )
+                drawRoundRect(
+                    color = node.color.copy(alpha = imageAlpha * 0.55f),
+                    topLeft = Offset(left - 1f, top - 1f),
+                    size = Size(box.width + 2f, box.height + 2f),
+                    cornerRadius = roundRect,
+                    style = Stroke(width = 1f),
+                )
+                drawRoundRect(
+                    color = Color.White.copy(alpha = imageAlpha * 0.20f),
+                    topLeft = Offset(left + 0.6f, top + 0.6f),
+                    size = Size((box.width - 1.2f).coerceAtLeast(1f), (box.height - 1.2f).coerceAtLeast(1f)),
+                    cornerRadius = roundRect,
+                    style = Stroke(width = 1f),
+                )
+
+                /* ---- 标签芯片：图够大时才挂，免得缩略图上全是糊字 ---- */
+                val chipText = node.chip
+                if (chipText != null && box.width >= CHIP3D_MIN_PX && chips < MAX_CHIPS_3D) {
+                    chips++
+                    val measured = textMeasurer.measure(text = chipText, style = chipStyle)
+                    val chipWidth = measured.size.width + CHIP3D_PAD * 2f
+                    val chipHeight = measured.size.height + CHIP3D_PAD
+                    val chipLeft = screenX[index] - chipWidth / 2f
+                    val chipTop = top + box.height + 5f
+                    val chipShape = CornerRadius(chipHeight / 2f, chipHeight / 2f)
+                    drawRoundRect(
+                        color = Color(0xE60A0D1C),
+                        topLeft = Offset(chipLeft, chipTop),
+                        size = Size(chipWidth, chipHeight),
+                        cornerRadius = chipShape,
+                    )
+                    drawRoundRect(
+                        color = node.color.copy(alpha = imageAlpha * 0.65f),
+                        topLeft = Offset(chipLeft, chipTop),
+                        size = Size(chipWidth, chipHeight),
+                        cornerRadius = chipShape,
+                        style = Stroke(width = 1f),
+                    )
+                    drawText(
+                        textLayoutResult = measured,
+                        topLeft = Offset(chipLeft + CHIP3D_PAD, chipTop + CHIP3D_PAD / 2f),
+                        alpha = imageAlpha.coerceIn(0f, 1f),
+                    )
+                }
             }
             thumbs.trim()
+
+            /* ---- 选中脉冲：一圈向外扩散的光环 + 一枚常亮的芯 ---- */
+            if (focusIndex in order.indices && pulse > 0f) {
+                val focused = layout.nodes[focusIndex]
+                val cx = screenX[focusIndex]
+                val cy = screenY[focusIndex]
+                val baseRadius = max(
+                    2f,
+                    (if (focused.degree > 0) 0.011f + min(focused.degree, 24) * 0.0007f else 0.011f) * scale[focusIndex],
+                )
+                drawCircle(
+                    color = focused.color.copy(alpha = (1f - pulse) * 0.6f),
+                    radius = baseRadius * (4.2f + pulse * 6f),
+                    center = Offset(cx, cy),
+                    style = Stroke(width = 1.8f),
+                )
+            }
 
             /* ---- 星云名称：按缩放分级显示 ---- */
             val budget = Galaxy3DMath.labelBudget(homeDistance / max(0.001f, cameraNow.distance), layout.labels.size)
@@ -516,34 +665,49 @@ fun Galaxy3DScreen(
             modifier = Modifier.align(Alignment.TopStart).padding(14.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            EmbedGraphMode.entries.forEach { candidate ->
-                ModeChip3D(
-                    label = candidate.label,
-                    active = mode == candidate,
-                    onClick = {
-                        if (mode == candidate) return@ModeChip3D
-                        onModeChange(candidate)
-                        graph = null
-                        load(force = true, target = candidate)
-                    },
-                )
-            }
+            /* 关系的依据：视觉指纹 / 标签 —— 与二维星系同一个分段控件 */
+            PillSelector(
+                options = EmbedGraphMode.entries,
+                selected = mode,
+                label = { it.label },
+                onSelect = { candidate ->
+                    if (candidate == mode) return@PillSelector
+                    onModeChange(candidate)
+                    graph = null
+                    load(force = true, target = candidate)
+                },
+            )
         }
 
-        Column(
+        /* 统计 HUD：一条浮在深空上的玻璃带（与二维星系同一套观感） */
+        GlassSurface(
             modifier = Modifier.align(Alignment.BottomStart).padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
+            backdrop = true,
+            shape = RoundedCornerShape(FluxRadius.md),
+            borderWidth = 0.8.dp,
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp),
         ) {
-            Text(
-                text = if (focusedIndex >= 0) "点「回到全景」退回去" else "拖动旋转 · 双指缩放 · 点一张图推近看",
-                style = MaterialTheme.typography.labelSmall,
-                color = onGlassColor(dark, emphasis = false),
-            )
-            Text(
-                text = if (loading) "正在载入三维布局…" else "${layout.nodes.size} 张图 · ${layout.labels.size} 个标签",
-                style = MaterialTheme.typography.labelSmall,
-                color = onGlassColor(dark, emphasis = false),
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    text = "${layout.nodes.size} 张图 · ${layout.edges.size} 条相似关系",
+                    style = FluxType.mono,
+                    color = onGlassColor(true, emphasis = true),
+                )
+                Text(
+                    text = if (focusedIndex >= 0) {
+                        "点「回到全景」退回去"
+                    } else {
+                        "拖动旋转 · 双指缩放 · 点一张图推近看"
+                    },
+                    style = FluxType.monoSmall,
+                    color = onGlassColor(true, emphasis = false),
+                )
+                Text(
+                    text = if (loading) "正在载入三维布局…" else "${layout.labels.size} 个标签锚点",
+                    style = FluxType.monoSmall,
+                    color = onGlassColor(true, emphasis = false),
+                )
+            }
         }
 
         GlassIconButton(
@@ -610,6 +774,8 @@ private data class Node3D(
     val character: String,
     val degree: Int,
     val aspect: Float = 1f,
+    /** 标签芯片的文本，在布局阶段建好，绘制阶段零分配（见二维星系里的同一处说明） */
+    val chip: AnnotatedString? = null,
 )
 
 private data class Edge3DRef(val a: Int, val b: Int, val score: Float)
@@ -647,6 +813,7 @@ private fun buildLayout3D(graph: EmbedGraph?): Layout3D {
                 character = character,
                 degree = 0,
                 aspect = if (item.width > 0 && item.height > 0) item.width.toFloat() / item.height else 1f,
+                chip = character.takeIf { it.isNotEmpty() }?.let { AnnotatedString(it) },
             ),
         )
     }
@@ -730,24 +897,24 @@ private fun buildLayout3D(graph: EmbedGraph?): Layout3D {
 
 /* ------------------------------ 小部件 ------------------------------ */
 
-@Composable
-private fun ModeChip3D(label: String, active: Boolean, onClick: () -> Unit) {
-    GlassSurface(
-        modifier = Modifier.clip(RoundedCornerShape(999.dp)).clickable { onClick() },
-        backdrop = false,
-        borderWidth = if (active) 1.4.dp else 0.6.dp,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (active) MaterialTheme.colorScheme.primary else onGlassColor(LocalDarkTheme.current, emphasis = false),
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-        )
-    }
-}
+private data class Star3D(
+    val x: Float,
+    val y: Float,
+    val radius: Float,
+    val alpha: Float,
+    /** 视差系数：越大跟镜头跑得越远，制造纵深 */
+    val depth: Float,
+    /** 取三色雾里的哪一档（0..11），由固定种子决定 */
+    val variant: Int,
+)
 
-private data class Star3D(val x: Float, val y: Float, val radius: Float, val alpha: Float, val depth: Float)
+/**
+ * 视差系数 → 明暗档（0..3）。
+ *
+ * 三维星尘的 depth 是连续值（视差要用连续量），而调色板只有四档，
+ * 这里把它量化到档位上 —— 颜色仍然是"远的暗、近的亮"，而且查表零分配。
+ */
+private fun dustDepthBucket(depth: Float): Int = ((depth - 0.3f) * 3f).toInt().coerceIn(0, 3)
 
 /** 背景星点。固定种子：每次进来星空一样，不会闪 */
 private fun starField3D(count: Int = 190): List<Star3D> {
@@ -759,6 +926,14 @@ private fun starField3D(count: Int = 190): List<Star3D> {
             radius = 0.6f + random.nextFloat() * 1.5f,
             alpha = 0.14f + random.nextFloat() * 0.4f,
             depth = 0.3f + random.nextFloat(),
+            variant = random.nextInt(12),
         )
     }
 }
+
+/** 缩略图圆角（px）与标签芯片的尺寸常量（二维星系那边是同一套数值） */
+private const val THUMB3D_CORNER = 10f
+private const val CHIP3D_MIN_PX = 96f
+private const val CHIP3D_FONT_SP = 10.5f
+private const val CHIP3D_PAD = 5f
+private const val MAX_CHIPS_3D = 14

@@ -54,12 +54,15 @@ import com.fluxframe.app.ui.components.MiniBadge
 import com.fluxframe.app.ui.components.PrimaryActionButton
 import com.fluxframe.app.ui.components.SecondaryActionButton
 import com.fluxframe.app.ui.components.SectionTitle
+import com.fluxframe.app.ui.theme.FluxType
 import com.fluxframe.app.ui.components.SwitchRow
 import com.fluxframe.app.ui.glass.GlassSurface
 import com.fluxframe.app.ui.theme.BrandCyan
 import com.fluxframe.app.ui.theme.BrandGreen
 import com.fluxframe.app.ui.theme.LocalDarkTheme
 import com.fluxframe.app.ui.theme.onGlassColor
+import androidx.compose.foundation.shape.RoundedCornerShape
+import com.fluxframe.app.ui.theme.FluxRadius
 
 /** DeepSeek 余额与用量记账 */
 @Composable
@@ -130,20 +133,26 @@ fun DeepseekScreen(onToast: (String?) -> Unit) {
         // ---- 余额总览 ----
         if (data != null && data.configured) {
             item {
-                GlassSurface(modifier = Modifier.fillMaxWidth(), backdrop = true, contentPadding = PaddingValues(16.dp)) {
+                GlassSurface(
+                    modifier = Modifier.fillMaxWidth(),
+                    backdrop = true,
+                    borderWidth = 0.8.dp,
+                    glow = MaterialTheme.colorScheme.primary,
+                    contentPadding = PaddingValues(16.dp),
+                ) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = "总余额",
-                                    style = MaterialTheme.typography.labelMedium,
+                                    style = FluxType.eyebrow,
                                     color = onGlassColor(dark, emphasis = false),
                                 )
+                                // 余额是全页最大的数字：Space Grotesk + 等宽数字，刷新时不左右抖
                                 Text(
                                     text = formatMoney(data.stats.balance, data.stats.currency),
-                                    style = MaterialTheme.typography.headlineMedium,
+                                    style = FluxType.numeralLarge,
                                     color = onGlassColor(dark, emphasis = true),
-                                    fontWeight = FontWeight.Bold,
                                 )
                             }
                             GlassIconButton(
@@ -171,7 +180,7 @@ fun DeepseekScreen(onToast: (String?) -> Unit) {
                         if (data.updatedAt != null) {
                             Text(
                                 text = "上次刷新 ${formatRelative(data.updatedAt)}${if (data.refreshing) "（刷新中…）" else ""}",
-                                style = MaterialTheme.typography.labelSmall,
+                                style = FluxType.monoSmall,
                                 color = onGlassColor(dark, emphasis = false),
                             )
                         }
@@ -451,7 +460,7 @@ private fun AddDeepseekKeyDialog(
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         GlassSurface(
             modifier = Modifier.fillMaxWidth(),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(FluxRadius.lg),
             backdrop = true,
             contentPadding = PaddingValues(18.dp),
         ) {

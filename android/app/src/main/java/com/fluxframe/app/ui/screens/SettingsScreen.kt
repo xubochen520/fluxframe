@@ -4,6 +4,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -48,6 +49,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -59,11 +63,14 @@ import com.fluxframe.app.core.prefs.AppThemeStyle
 import com.fluxframe.app.core.prefs.AppColorPalette
 import com.fluxframe.app.core.util.formatBytes
 import com.fluxframe.app.data.model.AiStatus
+import com.fluxframe.app.data.model.EmbedCalibration
+import com.fluxframe.app.data.model.EmbedStatus
 import com.fluxframe.app.data.model.EngineStatus
 import com.fluxframe.app.ui.LocalAppContainer
 import com.fluxframe.app.ui.components.ClickableRow
 import com.fluxframe.app.ui.components.ConfirmDialog
 import com.fluxframe.app.ui.components.GlassTextField
+import com.fluxframe.app.ui.components.HairLine
 import com.fluxframe.app.ui.components.KeyValueRow
 import com.fluxframe.app.ui.components.MiniBadge
 import com.fluxframe.app.ui.components.PrimaryActionButton
@@ -72,11 +79,20 @@ import com.fluxframe.app.ui.components.SectionTitle
 import com.fluxframe.app.ui.components.SecondaryActionButton
 import com.fluxframe.app.ui.components.SwitchRow
 import com.fluxframe.app.ui.components.TextPromptDialog
+import com.fluxframe.app.ui.components.parseColor
 import com.fluxframe.app.ui.glass.GlassSurface
+import com.fluxframe.app.ui.theme.BrandCyan
+import com.fluxframe.app.ui.theme.FluxRadius
+import com.fluxframe.app.ui.theme.FluxType
 import com.fluxframe.app.ui.theme.LocalDarkTheme
+import com.fluxframe.app.ui.theme.LocalFluidColors
+import com.fluxframe.app.ui.theme.Success
+import com.fluxframe.app.ui.theme.contentOn
+import com.fluxframe.app.ui.theme.fluxPalette
 import com.fluxframe.app.ui.theme.onGlassColor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * 系统设置。
@@ -114,6 +130,57 @@ fun SettingsScreen(
     var platformTokenInput by remember { mutableStateOf("") }
     // 视频缩略帧位置（秒）。用户输入即生效，非法输入不覆盖已保存的值
     var posterSecondsInput by remember { mutableStateOf(uiPrefs.videoPosterSeconds.toString()) }
+
+    /* ------------------------- 相似图索引（CCIP 视觉指纹） -------------------------
+     * 安卓数据层一直有 backfill / calibration / threshold 三个接口，但在此之前 UI 从没调用过，
+     * 手机上根本没有建立索引的入口 —— 这里把它补齐，行为与网页端设置页保持一致：
+     *   · 进页面读一次状态与校准数据；
+     *   · 建索引期间每 2 秒轮询一次，算完自动停（不在后台一直打服务器）；
+     *   · 轮询结束与保存阈值后都作废关系网缓存，下次进星系图重新拉。
+     */
+    var embedStatus by remember { mutableStateOf<EmbedStatus?>(null) }
+    var embedCalibration by remember { mutableStateOf<EmbedCalibration?>(null) }
+    var embedThresholdDraft by remember { mutableStateOf(0.35f) }
+    var embedBackfilling by remember { mutableStateOf(false) }
+    var embedSavingThreshold by remember { mutableStateOf(false) }
+    /** 还有活儿在跑（正在算 / 队列里还有人）—— 为真时开轮询 */
+    val embedBusy = embedStatus?.let { it.working || it.queueLength > 0 } == true
+
+    suspend fun refreshEmbedStatus() {
+        container.embedRepository.status()
+            .onSuccess { status ->
+                embedStatus = status
+                // 正在拖动滑块/保存时不要把用户的值冲掉
+                if (!embedSavingThreshold) embedThresholdDraft = status.threshold.toFloat()
+            }
+            .onFailure { onToast(it.message ?: "读取相似图索引状态失败") }
+    }
+
+    suspend fun refreshEmbedCalibration() {
+        // 校准数据只是参考，取不到就不显示，不打扰用户
+        container.embedRepository.calibration().onSuccess { embedCalibration = it }
+    }
+
+    LaunchedEffect(isAdmin) {
+        if (!isAdmin) return@LaunchedEffect
+        refreshEmbedStatus()
+        refreshEmbedCalibration()
+    }
+
+    // 建索引期间轮询：算完就停，并作废关系网缓存（下次进星系图重新拉）
+    LaunchedEffect(embedBusy) {
+        if (!embedBusy) return@LaunchedEffect
+        while (true) {
+            delay(2000)
+            val next = container.embedRepository.status().getOrNull() ?: break
+            embedStatus = next
+            if (!embedSavingThreshold) embedThresholdDraft = next.threshold.toFloat()
+            if (!next.working && next.queueLength <= 0) {
+                container.embedRepository.invalidateGraph()
+                break
+            }
+        }
+    }
 
     val backgroundPicker = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
@@ -176,43 +243,77 @@ fun SettingsScreen(
         item {
             GlassSurface(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(14.dp)) {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Filled.Palette, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(17.dp))
-                        Text(
-                            text = "外观",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = onGlassColor(dark, emphasis = true),
-                        )
-                    }
+                    SectionTitle(
+                        text = "外观",
+                        trailing = {
+                            Icon(
+                                Icons.Filled.Palette,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        },
+                    )
                     AppThemeStyle.entries.forEach { style ->
+                        val active = uiPrefs.themeStyle == style
+                        val primaryColor = MaterialTheme.colorScheme.primary
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
+                                // 选中项给一层主色薄纱 + 细描边：五种风格的差别在现场就能看出来，
+                                // 不用先切过去再判断
+                                .clip(RoundedCornerShape(FluxRadius.sm))
+                                .background(
+                                    if (active) {
+                                        MaterialTheme.colorScheme.primary.copy(alpha = if (dark) 0.14f else 0.10f)
+                                    } else {
+                                        Color.Transparent
+                                    },
+                                )
+                                .border(
+                                    width = 0.8.dp,
+                                    color = if (active) {
+                                        MaterialTheme.colorScheme.primary.copy(alpha = if (dark) 0.36f else 0.24f)
+                                    } else {
+                                        Color.Transparent
+                                    },
+                                    shape = RoundedCornerShape(FluxRadius.sm),
+                                )
                                 .clickable { container.prefs.updateUi { it.copy(themeStyle = style) } }
-                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                                .padding(vertical = 10.dp, horizontal = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
+                            // 选择圆环：选中时是一枚带同色光晕的主色圆片 + 白芯，
+                            // 未选中只剩一圈极淡的描边
                             Box(
                                 modifier = Modifier
-                                    .size(22.dp)
+                                    .size(20.dp)
+                                    .drawWithCache {
+                                        val accent = if (active) primaryColor else Color.Transparent
+                                        val halo = Brush.radialGradient(
+                                            colors = listOf(accent.copy(alpha = 0.42f), Color.Transparent),
+                                            center = Offset(size.width / 2f, size.height / 2f),
+                                            radius = size.minDimension / 2f,
+                                        )
+                                        onDrawBehind { if (active) drawRect(halo) }
+                                    }
                                     .clip(CircleShape)
                                     .background(
-                                        if (uiPrefs.themeStyle == style) {
-                                            MaterialTheme.colorScheme.primary
+                                        if (active) {
+                                            primaryColor
                                         } else {
-                                            onGlassColor(dark, false).copy(alpha = 0.18f)
+                                            onGlassColor(dark, false).copy(alpha = 0.16f)
                                         },
                                     ),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                if (uiPrefs.themeStyle == style) {
+                                if (active) {
                                     Box(
                                         modifier = Modifier
-                                            .size(8.dp)
+                                            .size(7.dp)
                                             .clip(CircleShape)
-                                            .background(Color.White),
+                                            .background(contentOn(primaryColor)),
                                     )
                                 }
                             }
@@ -231,12 +332,18 @@ fun SettingsScreen(
                             }
                         }
                     }
-                    com.fluxframe.app.ui.components.HairLine(modifier = Modifier.padding(vertical = 4.dp))
+                    HairLine(modifier = Modifier.padding(vertical = 4.dp))
                     Text(
                         text = "配色",
                         style = MaterialTheme.typography.labelMedium,
                         color = onGlassColor(dark, emphasis = true),
                     )
+                    /*
+                     * 每个预设带一块三色迷你预览：只有文字的话用户根本不知道
+                     * 「日落」和「森林」差在哪。跟随服务端的那一项没有自己的色值，
+                     * 就直接显示当前服务端下发的三色，所见即所得。
+                     */
+                    val serverColors = LocalFluidColors.current
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -245,19 +352,49 @@ fun SettingsScreen(
                     ) {
                         AppColorPalette.entries.forEach { palette ->
                             val selected = uiPrefs.colorPalette == palette
-                            Text(
-                                text = palette.label,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (selected) Color.White else onGlassColor(dark, emphasis = true),
+                            val swatches: List<Color> = if (palette.hexColors.isEmpty()) {
+                                serverColors
+                            } else {
+                                palette.hexColors.map { parseColor(it) }
+                            }
+                            Row(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(10.dp))
+                                    .clip(RoundedCornerShape(FluxRadius.xs))
                                     .background(
-                                        if (selected) MaterialTheme.colorScheme.primary
-                                        else onGlassColor(dark, false).copy(alpha = 0.10f),
+                                        if (selected) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            onGlassColor(dark, false).copy(alpha = 0.10f)
+                                        },
+                                    )
+                                    .border(
+                                        width = 0.8.dp,
+                                        color = if (selected) Color.Transparent else fluxPalette(dark).stroke,
+                                        shape = RoundedCornerShape(FluxRadius.xs),
                                     )
                                     .clickable { container.prefs.updateUi { it.copy(colorPalette = palette) } }
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                            )
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                swatches.take(3).forEach { swatch ->
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .clip(CircleShape)
+                                            .background(swatch),
+                                    )
+                                }
+                                Text(
+                                    text = palette.label,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (selected) {
+                                        contentOn(MaterialTheme.colorScheme.primary)
+                                    } else {
+                                        onGlassColor(dark, emphasis = true)
+                                    },
+                                )
+                            }
                         }
                     }
                     Text(
@@ -388,7 +525,7 @@ fun SettingsScreen(
                                     color = if (selected) MaterialTheme.colorScheme.primary else onGlassColor(dark, false),
                                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
+                                        .clip(RoundedCornerShape(FluxRadius.xs))
                                         .background(
                                             if (selected) {
                                                 MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
@@ -444,22 +581,29 @@ fun SettingsScreen(
         item {
             GlassSurface(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(14.dp)) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Filled.Waves, contentDescription = null, tint = Color(0xFF22D3EE), modifier = Modifier.size(17.dp))
-                        Text(
-                            text = "流体云 / 实况通知",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = onGlassColor(dark, emphasis = true),
-                            modifier = Modifier.weight(1f),
-                        )
-                        val capability = container.fluidCloud.capability
-                        MiniBadge(
-                            text = capability.badge,
-                            color = if (capability.oppoBound) Color(0xFF22C55E) else MaterialTheme.colorScheme.primary,
-                        )
-                    }
+                    val capability = container.fluidCloud.capability
+                    SectionTitle(
+                        text = "流体云 / 实况通知",
+                        trailing = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Icon(
+                                    Icons.Filled.Waves,
+                                    contentDescription = null,
+                                    tint = BrandCyan,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                MiniBadge(
+                                    text = capability.badge,
+                                    color = if (capability.oppoBound) Success else MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        },
+                    )
                     Text(
-                        text = container.fluidCloud.capability.description,
+                        text = capability.description,
                         style = MaterialTheme.typography.labelSmall,
                         color = onGlassColor(dark, emphasis = false),
                     )
@@ -584,7 +728,7 @@ fun SettingsScreen(
                         KeyValueRow(
                             label = "B站 Cookie",
                             value = if (settings?.biliSessdataConfigured == true) "已配置" else "未配置",
-                            valueColor = if (settings?.biliSessdataConfigured == true) Color(0xFF22C55E) else null,
+                            valueColor = if (settings?.biliSessdataConfigured == true) Success else null,
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         GlassTextField(
@@ -636,6 +780,246 @@ fun SettingsScreen(
             }
         }
 
+        /* ------------------------- 相似图索引（ADMIN） ------------------------- */
+        /*
+         * 这是方案里点名的缺口：安卓数据层早就有 EmbedRepository 的
+         * backfill / calibration / threshold，但 UI 从来没调用过，
+         * 手机上既看不到索引状态、也调不了阈值。这一块把网页端设置页的对应区块搬过来。
+         */
+        if (isAdmin) {
+            item {
+                val accent = MaterialTheme.colorScheme.primary
+                val status = embedStatus
+                val indexedFraction = status
+                    ?.takeIf { it.imageCount > 0 }
+                    ?.let { it.indexed.toFloat() / it.imageCount }
+                    ?: 0f
+                GlassSurface(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(14.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        SectionTitle(text = "相似图索引")
+                        Text(
+                            text = "用视觉指纹（CCIP）自动找出相似的图片；上传新图会自动建指纹。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = onGlassColor(dark, emphasis = false),
+                        )
+
+                        // ---- 状态：模型是否就绪 + 已建指纹进度 ----
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(12.dp)
+                                    .drawWithCache {
+                                        // 就绪：成功色 + 一圈同色光晕；缺失：中性灰
+                                        val ready = status?.modelReady == true
+                                        val dot = if (ready) Success else onGlassColor(dark, false).copy(alpha = 0.5f)
+                                        val halo = Brush.radialGradient(
+                                            colors = listOf(dot.copy(alpha = 0.36f), Color.Transparent),
+                                            center = Offset(size.width / 2f, size.height / 2f),
+                                            radius = size.minDimension / 2f,
+                                        )
+                                        onDrawBehind {
+                                            drawRect(halo)
+                                            drawCircle(dot, radius = size.minDimension * 0.30f)
+                                        }
+                                    },
+                            )
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = when {
+                                        status == null -> "读取中…"
+                                        status.modelReady -> "指纹模型已就绪"
+                                        else -> "指纹模型缺失"
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = onGlassColor(dark, emphasis = true),
+                                )
+                                Text(
+                                    text = status?.let {
+                                        "已建指纹 ${it.indexed} / ${it.imageCount} 张 · 平均每张 ${it.avgNeighbors} 个相似"
+                                    } ?: "读取中…",
+                                    style = FluxType.monoSmall,
+                                    color = onGlassColor(dark, emphasis = false),
+                                )
+                            }
+                        }
+                        // 进度细条：一眼看出还差多少张，比读数字快
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(accent.copy(alpha = 0.16f))
+                                .drawWithCache {
+                                    val head = Brush.horizontalGradient(
+                                        listOf(accent.copy(alpha = 0.55f), accent),
+                                    )
+                                    val width = size.width * indexedFraction.coerceIn(0f, 1f)
+                                        .let { if (status?.working == true && it <= 0f) 0.14f else it }
+                                    onDrawBehind {
+                                        if (width > 0f) {
+                                            drawRoundRect(
+                                                brush = head,
+                                                size = androidx.compose.ui.geometry.Size(width, size.height),
+                                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2f),
+                                            )
+                                        }
+                                    }
+                                },
+                        )
+
+                        if (status != null && status.failed > 0) {
+                            Text(
+                                text = "有 ${status.failed} 张算失败" +
+                                    (if (status.lastError.isNotBlank()) "（${status.lastError}）" else "") +
+                                    "，可再点一次「建立索引」重试。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        if (status != null && !status.modelReady) {
+                            Text(
+                                text = "模型文件不在服务器上，需要先放好 ccip_feat.onnx 才能建索引。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Box(modifier = Modifier.weight(1f)) {
+                                PrimaryActionButton(
+                                    text = when {
+                                        status?.working == true -> "正在计算 ${status.queueLength} 张…"
+                                        embedBackfilling -> "正在排队…"
+                                        else -> "建立索引"
+                                    },
+                                    icon = Icons.Filled.AutoAwesome,
+                                    enabled = status?.modelReady == true &&
+                                        !embedBackfilling &&
+                                        status?.working != true,
+                                    onClick = {
+                                        scope.launch {
+                                            embedBackfilling = true
+                                            container.embedRepository.backfill(force = false)
+                                                .onSuccess { queued ->
+                                                    onToast(
+                                                        if (queued > 0) {
+                                                            "已排入 $queued 张，后台开始计算指纹"
+                                                        } else {
+                                                            "所有图片都已有指纹"
+                                                        },
+                                                    )
+                                                    refreshEmbedStatus()
+                                                }
+                                                .onFailure { onToast(it.message) }
+                                            embedBackfilling = false
+                                        }
+                                    },
+                                )
+                            }
+                            Box(modifier = Modifier.weight(1f)) {
+                                SecondaryActionButton(
+                                    text = "刷新状态",
+                                    onClick = {
+                                        scope.launch {
+                                            refreshEmbedStatus()
+                                            refreshEmbedCalibration()
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
+                        }
+
+                        HairLine(modifier = Modifier.padding(vertical = 2.dp))
+
+                        // ---- 阈值滑块 ----
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = "相似度阈值",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = onGlassColor(dark, emphasis = true),
+                                )
+                                Text(
+                                    text = "越高越严格（只留很像的），越低越宽松（能捞到更多）。" +
+                                        calibrationHint(embedCalibration),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = onGlassColor(dark, emphasis = false),
+                                )
+                            }
+                            Text(
+                                text = "${(embedThresholdDraft * 100).roundToInt()}%",
+                                style = FluxType.numeralSmall,
+                                color = accent,
+                            )
+                        }
+                        Slider(
+                            value = embedThresholdDraft,
+                            onValueChange = { embedThresholdDraft = it },
+                            valueRange = 0.05f..0.90f,
+                            // 0.05 一档：0.05→0.90 之间共 16 个中间档
+                            steps = 16,
+                        )
+
+                        // ---- 校准数据（同角色 / 异角色的分数分布） ----
+                        val calibration = embedCalibration
+                        if (calibration != null) {
+                            KeyValueRow(
+                                label = "同角色 ${calibration.pairs.same} 对",
+                                value = "中位 ${percentText(calibration.same.p50)}",
+                            )
+                            KeyValueRow(
+                                label = "不同角色 ${calibration.pairs.diff} 对",
+                                value = "中位 ${percentText(calibration.diff.p50)}",
+                            )
+                            KeyValueRow(
+                                label = "当前阈值",
+                                value = percentText(status?.threshold ?: calibration.threshold),
+                                valueColor = accent,
+                            )
+                        } else {
+                            Text(
+                                text = "校准数据读取中…",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = onGlassColor(dark, emphasis = false),
+                            )
+                        }
+
+                        PrimaryActionButton(
+                            text = "保存阈值并重算",
+                            loading = embedSavingThreshold,
+                            enabled = status != null,
+                            onClick = {
+                                scope.launch {
+                                    embedSavingThreshold = true
+                                    container.embedRepository.setThreshold(embedThresholdDraft.toDouble())
+                                        .onSuccess { saved ->
+                                            embedThresholdDraft = saved.toFloat()
+                                            // 阈值变了，关系网与服务端缓存都得作废
+                                            container.embedRepository.invalidateGraph()
+                                            onToast("阈值已保存为 ${(saved * 100).roundToInt()}%，关系网已重算")
+                                            refreshEmbedStatus()
+                                            refreshEmbedCalibration()
+                                        }
+                                        .onFailure { onToast(it.message) }
+                                    embedSavingThreshold = false
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
         /* ---------------------------- 引擎（ADMIN） ---------------------------- */
         if (isAdmin) {
             item {
@@ -650,7 +1034,7 @@ fun SettingsScreen(
                                 status.running -> "运行中（端口 ${status.port}）"
                                 else -> "未运行"
                             },
-                            valueColor = if (status?.running == true) Color(0xFF22C55E) else null,
+                            valueColor = if (status?.running == true) Success else null,
                         )
                         KeyValueRow(
                             label = "文件完整度",
@@ -770,7 +1154,7 @@ fun SettingsScreen(
                         KeyValueRow(
                             label = "状态",
                             value = ffmpeg?.let { if (it.found) "已就绪 ${it.version ?: ""}" else "未找到" } ?: "未知",
-                            valueColor = if (ffmpeg?.found == true) Color(0xFF22C55E) else null,
+                            valueColor = if (ffmpeg?.found == true) Success else null,
                         )
                         ffmpeg?.path?.let {
                             KeyValueRow(label = "路径", value = it)
@@ -978,7 +1362,7 @@ private fun ChangePasswordDialog(onDismiss: () -> Unit, onToast: (String?) -> Un
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         GlassSurface(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(FluxRadius.lg),
             backdrop = true,
             contentPadding = PaddingValues(18.dp),
         ) {
@@ -1086,7 +1470,7 @@ private fun BiliQrDialog(onDismiss: () -> Unit, onToast: (String?) -> Unit) {
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         GlassSurface(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(FluxRadius.lg),
             backdrop = true,
             contentPadding = PaddingValues(18.dp),
         ) {
@@ -1102,7 +1486,7 @@ private fun BiliQrDialog(onDismiss: () -> Unit, onToast: (String?) -> Unit) {
                 Box(
                     modifier = Modifier
                         .size(210.dp)
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(FluxRadius.md))
                         .background(Color.White),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -1146,3 +1530,22 @@ private fun decodeDataUrl(dataUrl: String): Bitmap? = runCatching {
     val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
     android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
 }.getOrNull()
+
+/** 相似度分数 → `xx%`；没有数据时给一个破折号，不要瞎猜 */
+private fun percentText(value: Double?): String =
+    value?.let { "${(it * 100).roundToInt()}%" } ?: "—"
+
+/**
+ * 阈值说明里那句「实测本库同角色图片多在 x% 以下、不同角色多在 y% 以上」。
+ *
+ * 这是**实测校准**，不是理论值：同角色取 p90（九成都在它以下）、异角色取 p10
+ * （只有一成低于它）。两个数之间就是阈值该落的空带。缺数据时这一句整段不出现。
+ */
+private fun calibrationHint(calibration: EmbedCalibration?): String {
+    if (calibration == null) return ""
+    val parts = buildList {
+        calibration.same.p90?.let { add("同角色多在 ${percentText(it)} 以下") }
+        calibration.diff.p10?.let { add("不同角色多在 ${percentText(it)} 以上") }
+    }
+    return if (parts.isEmpty()) "" else "实测本库" + parts.joinToString("、") + "。"
+}

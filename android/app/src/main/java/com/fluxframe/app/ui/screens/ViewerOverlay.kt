@@ -90,10 +90,14 @@ import com.fluxframe.app.core.util.formatDateTime
 import com.fluxframe.app.ui.LocalAppContainer
 import com.fluxframe.app.ui.ZoomMath
 import com.fluxframe.app.ui.components.GlassIconButton
+import com.fluxframe.app.ui.glass.DarkStage
 import com.fluxframe.app.ui.glass.GlassSurface
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.fluxframe.app.ui.theme.FluxRadius
+import com.fluxframe.app.ui.theme.FluxType
+import com.fluxframe.app.ui.theme.onGlassColor
 
 /**
  * 全屏查看器。
@@ -222,6 +226,11 @@ fun ViewerOverlay(
         }
     }
 
+    /*
+     * 全屏查看器的底永远是黑的，所以整页切到深色令牌 ——
+     * 不切的话浅色主题下会出现"浅色玻璃压在黑底上、深色字压在深空上"。
+     */
+    DarkStage {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -294,126 +303,147 @@ fun ViewerOverlay(
             }
         }
 
-        // ---- 顶部信息栏（自动隐藏）----
+        // ---- 顶部玻璃条：关闭 + 名称 + 元信息（自动隐藏）----
         AnimatedVisibility(
             visible = chromeVisible,
             enter = fadeIn() + slideInVertically { -it / 2 },
             exit = fadeOut() + slideOutVertically { -it / 2 },
         ) {
-            Row(
+            GlassSurface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .statusBarsPadding()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                shape = RoundedCornerShape(FluxRadius.lg),
+                backdrop = true,
+                borderWidth = 0.8.dp,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
             ) {
-                GlassIconButton(
-                    icon = Icons.Filled.Close,
-                    contentDescription = "关闭",
-                    onClick = onClose,
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = current?.name.orEmpty(),
-                        style = MaterialTheme.typography.titleSmall,
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        fontWeight = FontWeight.Medium,
-                    )
-                    Text(
-                        text = buildString {
-                            append("${pagerState.currentPage + 1} / ${images.size}")
-                            current?.let {
-                                if (it.width > 0) append(" · ${it.width}×${it.height}")
-                                append(" · ${it.size}")
-                                append(" · ${it.views} 次浏览")
-                            }
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.7f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                GlassIconButton(
-                    icon = Icons.Filled.Download,
-                    contentDescription = "下载",                    onClick = {
-                        current?.let { item ->
-                            onToast("正在准备原文件…")
-                            scope.launch {
-                                container.mediaDownloader.enqueue(item)
-                                    .onSuccess { onToast("已开始下载，完成后自动保存到图库") }
-                                    .onFailure { onToast(it.message) }
-                            }
-                        }
-                    },
-                )
-                GlassIconButton(
-                    icon = Icons.Filled.Share,
-                    contentDescription = "分享原文件",
-                    onClick = {
-                        current?.let { item ->
-                            scope.launch {
-                                container.mediaSharer.share(context, listOf(item))
-                                    .onFailure { onToast(it.message ?: "分享失败") }
-                            }
-                        }
-                    },
-                )
-                // 相似图入口：上滑也能拉出，但手势看不见，留个按钮让人发现这个功能。
-                // 视频没有视觉指纹，直接不给入口，避免点开只看到「不支持」。
-                if (current != null && !current.isVideo) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     GlassIconButton(
-                        icon = Icons.Filled.AutoAwesome,
-                        contentDescription = if (similarState is SimilarUiState.Idle) "查看相似图片" else "收起相似图",
-                        onClick = {
-                            if (similarState is SimilarUiState.Idle) loadSimilar(current)
-                            else closeSimilar()
-                        },
+                        icon = Icons.Filled.Close,
+                        contentDescription = "关闭",
+                        onClick = onClose,
+                        withSurface = false,
                     )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = current?.name.orEmpty(),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = onGlassColor(true, emphasis = true),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            text = buildString {
+                                append("${pagerState.currentPage + 1} / ${images.size}")
+                                current?.let {
+                                    if (it.width > 0) append(" · ${it.width}×${it.height}")
+                                    append(" · ${it.size}")
+                                    append(" · ${it.views} 次浏览")
+                                }
+                            },
+                            style = FluxType.monoSmall,
+                            color = onGlassColor(true, emphasis = false),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-                GlassIconButton(
-                    icon = Icons.Filled.MoreHoriz,
-                    contentDescription = "更多",
-                    onClick = { showActions = true },
-                )
             }
         }
 
-        // ---- 底部标签栏（自动隐藏）----
+        /*
+         * ---- 底部玻璃操作条（自动隐藏）----
+         *
+         * 下载 / 分享 / 相似图 / 更多 都在这里：拇指区在屏幕下方，放在顶部要跨整屏去够。
+         * 标签与上传时间也收在同一条里，做成两行，不额外占一块浮层。
+         */
         current?.let { item ->
-            if (item.tags.isNotEmpty() || item.capturedAt.isNotBlank()) {
-                AnimatedVisibility(
-                    visible = chromeVisible,
-                    enter = fadeIn() + slideInVertically { it / 2 },
-                    exit = fadeOut() + slideOutVertically { it / 2 },
-                    modifier = Modifier.align(Alignment.BottomCenter),
+            AnimatedVisibility(
+                visible = chromeVisible,
+                enter = fadeIn() + slideInVertically { it / 2 },
+                exit = fadeOut() + slideOutVertically { it / 2 },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            ) {
+                GlassSurface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 10.dp, vertical = 10.dp),
+                    shape = RoundedCornerShape(FluxRadius.lg),
+                    backdrop = true,
+                    borderWidth = 0.8.dp,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                 ) {
-                    GlassSurface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .navigationBarsPadding()
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        shape = RoundedCornerShape(16.dp),
-                        backdrop = true,
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            if (item.tags.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (item.tags.isNotEmpty() || item.capturedAt.isNotBlank()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                if (item.tags.isNotEmpty()) {
+                                    Text(
+                                        text = item.tags.joinToString(" · "),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = onGlassColor(true, emphasis = true),
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
                                 Text(
-                                    text = item.tags.joinToString(" · "),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = Color.White.copy(alpha = 0.92f),
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
+                                    text = "上传于 ${formatDateTime(item.uploadedAt)}",
+                                    style = FluxType.monoSmall,
+                                    color = onGlassColor(true, emphasis = false),
                                 )
                             }
-                            Text(
-                                text = "上传于 ${formatDateTime(item.uploadedAt)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.White.copy(alpha = 0.6f),
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            GlassIconButton(
+                                icon = Icons.Filled.Download,
+                                contentDescription = "下载",
+                                onClick = {
+                                    onToast("正在准备原文件…")
+                                    scope.launch {
+                                        container.mediaDownloader.enqueue(item)
+                                            .onSuccess { onToast("已开始下载，完成后自动保存到图库") }
+                                            .onFailure { onToast(it.message) }
+                                    }
+                                },
+                            )
+                            GlassIconButton(
+                                icon = Icons.Filled.Share,
+                                contentDescription = "分享原文件",
+                                onClick = {
+                                    scope.launch {
+                                        container.mediaSharer.share(context, listOf(item))
+                                            .onFailure { onToast(it.message ?: "分享失败") }
+                                    }
+                                },
+                            )
+                            // 相似图入口：上滑也能拉出，但手势看不见，留个按钮让人发现这个功能。
+                            // 视频没有视觉指纹，直接不给入口，避免点开只看到「不支持」。
+                            if (!item.isVideo) {
+                                GlassIconButton(
+                                    icon = Icons.Filled.AutoAwesome,
+                                    contentDescription = if (similarState is SimilarUiState.Idle) "查看相似图片" else "收起相似图",
+                                    onClick = {
+                                        if (similarState is SimilarUiState.Idle) loadSimilar(item)
+                                        else closeSimilar()
+                                    },
+                                    tint = if (similarState is SimilarUiState.Idle) null else MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            GlassIconButton(
+                                icon = Icons.Filled.MoreHoriz,
+                                contentDescription = "更多",
+                                onClick = { showActions = true },
                             )
                         }
                     }
@@ -438,6 +468,7 @@ fun ViewerOverlay(
             },
             modifier = Modifier.align(Alignment.BottomCenter),
         )
+    }
     }
 
     if (showActions && current != null) {

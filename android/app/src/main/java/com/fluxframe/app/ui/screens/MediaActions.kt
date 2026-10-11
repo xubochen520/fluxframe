@@ -52,12 +52,15 @@ import com.fluxframe.app.data.model.TagItem
 import com.fluxframe.app.ui.LocalAppContainer
 import com.fluxframe.app.ui.components.ClickableRow
 import com.fluxframe.app.ui.components.ConfirmDialog
+import com.fluxframe.app.ui.components.HairLine
 import com.fluxframe.app.ui.components.TagChip
 import com.fluxframe.app.ui.components.TextPromptDialog
 import com.fluxframe.app.ui.glass.GlassSurface
 import com.fluxframe.app.ui.theme.LocalDarkTheme
 import com.fluxframe.app.ui.theme.onGlassColor
 import kotlinx.coroutines.launch
+import com.fluxframe.app.ui.theme.FluxRadius
+import com.fluxframe.app.ui.theme.FluxType
 
 /**
  * 媒体操作面板：重命名 / 打标签 / 下载 / 删除（回收站与永久删除分流）。
@@ -86,18 +89,21 @@ fun MediaActionDialog(
     Dialog(onDismissRequest = onDismiss) {
         GlassSurface(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(FluxRadius.lg),
             backdrop = true,
+            borderWidth = 1.dp,
+            glow = MaterialTheme.colorScheme.primary,
             contentPadding = PaddingValues(16.dp),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     text = item.name,
-                    style = MaterialTheme.typography.titleSmall,
+                    style = MaterialTheme.typography.titleMedium,
                     color = onGlassColor(dark, emphasis = true),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                // 尺寸、像素、浏览数都是可核对的数据，统一用等宽小字
                 Text(
                     text = buildString {
                         append(if (item.isVideo) "视频" else "图片")
@@ -105,7 +111,7 @@ fun MediaActionDialog(
                         if (item.width > 0) append(" · ${item.width}×${item.height}")
                         append(" · ${item.views} 次浏览")
                     },
-                    style = MaterialTheme.typography.labelSmall,
+                    style = FluxType.monoSmall,
                     color = onGlassColor(dark, emphasis = false),
                 )
 
@@ -173,6 +179,8 @@ fun MediaActionDialog(
                             onDismiss()
                         },
                     )
+                    // 危险动作前一条细线：与上面的日常操作分开，避免手滑
+                    HairLine(modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
                     if (item.inTrash) {
                         ClickableRow(
                             title = "恢复",
@@ -351,7 +359,7 @@ fun TagPickerDialog(
     Dialog(onDismissRequest = onDismiss) {
         GlassSurface(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(FluxRadius.lg),
             backdrop = true,
             contentPadding = PaddingValues(16.dp),
         ) {
@@ -435,7 +443,7 @@ private fun TagRemovalDialog(
     Dialog(onDismissRequest = onDismiss) {
         GlassSurface(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(FluxRadius.lg),
             backdrop = true,
             contentPadding = PaddingValues(16.dp),
         ) {

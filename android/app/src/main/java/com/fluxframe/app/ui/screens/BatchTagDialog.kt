@@ -55,9 +55,11 @@ import com.fluxframe.app.ui.components.GlassTextField
 import com.fluxframe.app.ui.components.PrimaryActionButton
 import com.fluxframe.app.ui.components.SecondaryActionButton
 import com.fluxframe.app.ui.glass.GlassSurface
+import com.fluxframe.app.ui.theme.FluxType
 import com.fluxframe.app.ui.theme.LocalDarkTheme
 import com.fluxframe.app.ui.theme.onGlassColor
 import kotlinx.coroutines.launch
+import com.fluxframe.app.ui.theme.FluxRadius
 
 /**
  * 批量把多张图片加进同一个标签（对应网页端的「批量添加图片」弹窗）。
@@ -94,8 +96,10 @@ fun BatchTagDialog(
     Dialog(onDismissRequest = onDismiss) {
         GlassSurface(
             modifier = Modifier.fillMaxWidth().heightIn(max = 640.dp),
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(FluxRadius.lg),
             backdrop = true,
+            borderWidth = 1.dp,
+            glow = MaterialTheme.colorScheme.primary,
             contentPadding = PaddingValues(16.dp),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -117,13 +121,36 @@ fun BatchTagDialog(
                     leadingIcon = Icons.Filled.Search,
                 )
 
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                /*
+                 * 选择 HUD：已选张数用大数字，左侧是"全选当前结果 / 清空"两个动作。
+                 * 批量加图时用户最关心的就是"到底选中了几张"，那个数值得占主位。
+                 */
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(FluxRadius.sm))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(
+                        text = picked.size.toString(),
+                        style = FluxType.numeralSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        text = "/ ${candidates.size} 张待选",
+                        style = FluxType.monoSmall,
+                        color = onGlassColor(dark, emphasis = false),
+                        modifier = Modifier.weight(1f),
+                    )
                     Text(
                         text = "全选当前结果",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(FluxRadius.xs))
                             .clickable {
                                 val ids = candidates.map { it.id }
                                 picked.clear()
@@ -136,15 +163,9 @@ fun BatchTagDialog(
                         style = MaterialTheme.typography.labelMedium,
                         color = onGlassColor(dark, emphasis = false),
                         modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(FluxRadius.xs))
                             .clickable { picked.clear() }
                             .padding(horizontal = 8.dp, vertical = 4.dp),
-                    )
-                    Spacer(modifier = Modifier.weight(1f))
-                    Text(
-                        text = "已选 ${picked.size} 张",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = onGlassColor(dark, emphasis = false),
                     )
                 }
 
@@ -225,12 +246,12 @@ private fun BatchPickTile(
     Box(
         modifier = Modifier
             .aspectRatio(1f)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(FluxRadius.sm))
             .background(Color.Black.copy(alpha = 0.2f))
             .border(
                 width = if (picked) 2.dp else 0.6.dp,
                 color = if (picked) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.14f),
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(FluxRadius.sm),
             )
             .clickable { onToggle() },
     ) {

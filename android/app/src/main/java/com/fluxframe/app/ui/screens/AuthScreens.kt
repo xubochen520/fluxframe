@@ -39,6 +39,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -53,10 +55,14 @@ import com.fluxframe.app.ui.components.GlassTextField
 import com.fluxframe.app.ui.components.PrimaryActionButton
 import com.fluxframe.app.ui.components.SecondaryActionButton
 import com.fluxframe.app.ui.glass.GlassSurface
+import com.fluxframe.app.ui.theme.DefaultFluidColors
 import com.fluxframe.app.ui.theme.LocalDarkTheme
+import com.fluxframe.app.ui.theme.LocalFluidColors
 import com.fluxframe.app.ui.theme.onGlassColor
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import com.fluxframe.app.ui.theme.Success
+import com.fluxframe.app.ui.theme.FluxRadius
 
 /**
  * 首次启动 / 更换服务器：自动扫描同网段 + 手动输入。
@@ -120,14 +126,18 @@ fun ServerSetupScreen(onConfigured: () -> Unit) {
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp)
-            .padding(top = 64.dp, bottom = 40.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 与登录页同一层全屏极光：这是冷启动看到的第一屏，品牌感得从这一屏就开始
+        AuroraVeil(modifier = Modifier.matchParentSize())
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(top = 64.dp, bottom = 40.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Box(
                 modifier = Modifier
@@ -204,7 +214,7 @@ fun ServerSetupScreen(onConfigured: () -> Unit) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(FluxRadius.sm))
                                 .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
                                 .clickable(enabled = !connecting) { connect(listOf(endpoint)) }
                                 .padding(horizontal = 12.dp, vertical = 11.dp),
@@ -215,7 +225,7 @@ fun ServerSetupScreen(onConfigured: () -> Unit) {
                                 modifier = Modifier
                                     .size(7.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0xFF22C55E)),
+                                    .background(Success),
                             )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
@@ -284,7 +294,8 @@ fun ServerSetupScreen(onConfigured: () -> Unit) {
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(8.dp))
+        }
     }
 }
 
@@ -332,131 +343,195 @@ fun LoginScreen(onSwitchServer: () -> Unit) {
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 22.dp)
-            .padding(top = 96.dp, bottom = 40.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                text = "fluxframe",
-                style = MaterialTheme.typography.headlineMedium,
-                color = onGlassColor(dark, emphasis = true),
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = "内网图片管理器 · 原生移动端",
-                style = MaterialTheme.typography.bodySmall,
-                color = onGlassColor(dark, emphasis = false),
-            )
-        }
+    Box(modifier = Modifier.fillMaxSize()) {
+        /*
+         * 全屏极光：三团服务端配色的大光斑压在流体背景之上。
+         * 登录页是用户看到的第一屏，"品牌感"几乎全在这层光上 ——
+         * 光斑是纯渐变（无模糊、无额外层），画刷按尺寸缓存，一帧只做三次 drawRect。
+         */
+        AuroraVeil(modifier = Modifier.matchParentSize())
 
-        GlassSurface(modifier = Modifier.fillMaxWidth(), backdrop = true, contentPadding = PaddingValues(18.dp)) {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                GlassTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    placeholder = "用户名",
-                    leadingIcon = Icons.Filled.Person,
-                    imeAction = androidx.compose.ui.text.input.ImeAction.Next,
-                )
-                GlassTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    placeholder = if (registerMode) "密码（至少 8 位）" else "密码",
-                    leadingIcon = Icons.Filled.Lock,
-                    isPassword = true,
-                    imeAction = if (registerMode) {
-                        androidx.compose.ui.text.input.ImeAction.Next
-                    } else {
-                        androidx.compose.ui.text.input.ImeAction.Go
-                    },
-                    onImeAction = { if (!registerMode) submit() },
-                )
-                if (registerMode) {
-                    GlassTextField(
-                        value = confirmPassword,
-                        onValueChange = { confirmPassword = it },
-                        placeholder = "再输一次密码",
-                        leadingIcon = Icons.Filled.Lock,
-                        isPassword = true,
-                        imeAction = androidx.compose.ui.text.input.ImeAction.Go,
-                        onImeAction = { submit() },
-                    )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 22.dp)
+                .padding(top = 40.dp, bottom = 40.dp),
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // 品牌大字：三色渐变裁进字里，是整页唯一的"大色块"
+                val brandPrimary = MaterialTheme.colorScheme.primary
+                val brandSecondary = MaterialTheme.colorScheme.secondary
+                val brandTertiary = MaterialTheme.colorScheme.tertiary
+                val wordmark = remember(brandPrimary, brandSecondary, brandTertiary) {
+                    Brush.linearGradient(listOf(brandPrimary, brandSecondary, brandTertiary))
                 }
-                val shownError = localError ?: session.error
-                if (shownError != null) {
-                    ErrorBar(
-                        message = shownError,
-                        onDismiss = {
-                            localError = null
-                            container.sessionStore.clearError()
-                        },
-                    )
-                }
-                PrimaryActionButton(
-                    text = if (registerMode) "注册并登录" else "登录",
-                    loading = session.loading,
-                    enabled = username.isNotBlank() && password.isNotEmpty(),
-                    onClick = { submit() },
+                Text(
+                    text = "fluxframe",
+                    style = MaterialTheme.typography.displaySmall.copy(brush = wordmark),
                 )
                 Text(
-                    text = if (registerMode) "已有账户？返回登录" else "还没有账户？注册一个",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            registerMode = !registerMode
-                            localError = null
-                            container.sessionStore.clearError()
-                        }
-                        .padding(vertical = 6.dp),
+                    text = "内网图片管理器 · 原生移动端",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = onGlassColor(dark, emphasis = false),
                 )
             }
-        }
 
-        GlassSurface(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Icon(
-                    Icons.Filled.Dns,
-                    contentDescription = null,
-                    tint = onGlassColor(dark, emphasis = false),
-                    modifier = Modifier.size(17.dp),
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "服务器",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = onGlassColor(dark, emphasis = false),
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // 登录卡：居中玻璃，`backdrop = true` 让卡面映出身后的极光
+            GlassSurface(
+                modifier = Modifier.fillMaxWidth(),
+                backdrop = true,
+                borderWidth = 1.dp,
+                glow = MaterialTheme.colorScheme.primary,
+                contentPadding = PaddingValues(18.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    GlassTextField(
+                        value = username,
+                        onValueChange = { username = it },
+                        placeholder = "用户名",
+                        leadingIcon = Icons.Filled.Person,
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Next,
+                    )
+                    GlassTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        placeholder = if (registerMode) "密码（至少 8 位）" else "密码",
+                        leadingIcon = Icons.Filled.Lock,
+                        isPassword = true,
+                        imeAction = if (registerMode) {
+                            androidx.compose.ui.text.input.ImeAction.Next
+                        } else {
+                            androidx.compose.ui.text.input.ImeAction.Go
+                        },
+                        onImeAction = { if (!registerMode) submit() },
+                    )
+                    if (registerMode) {
+                        GlassTextField(
+                            value = confirmPassword,
+                            onValueChange = { confirmPassword = it },
+                            placeholder = "再输一次密码",
+                            leadingIcon = Icons.Filled.Lock,
+                            isPassword = true,
+                            imeAction = androidx.compose.ui.text.input.ImeAction.Go,
+                            onImeAction = { submit() },
+                        )
+                    }
+                    val shownError = localError ?: session.error
+                    if (shownError != null) {
+                        ErrorBar(
+                            message = shownError,
+                            onDismiss = {
+                                localError = null
+                                container.sessionStore.clearError()
+                            },
+                        )
+                    }
+                    PrimaryActionButton(
+                        text = if (registerMode) "注册并登录" else "登录",
+                        loading = session.loading,
+                        enabled = username.isNotBlank() && password.isNotEmpty(),
+                        onClick = { submit() },
                     )
                     Text(
-                        text = server?.authority ?: "未配置",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = onGlassColor(dark, emphasis = true),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                        text = if (registerMode) "已有账户？返回登录" else "还没有账户？注册一个",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                registerMode = !registerMode
+                                localError = null
+                                container.sessionStore.clearError()
+                            }
+                            .padding(vertical = 6.dp),
                     )
                 }
-                Icon(
-                    Icons.Filled.SwapHoriz,
-                    contentDescription = "切换服务器",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(19.dp).clickable { onSwitchServer() },
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            GlassSurface(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(
+                        Icons.Filled.Dns,
+                        contentDescription = null,
+                        tint = onGlassColor(dark, emphasis = false),
+                        modifier = Modifier.size(17.dp),
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "服务器",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = onGlassColor(dark, emphasis = false),
+                        )
+                        Text(
+                            text = server?.authority ?: "未配置",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = onGlassColor(dark, emphasis = true),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Icon(
+                        Icons.Filled.SwapHoriz,
+                        contentDescription = "切换服务器",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(19.dp).clickable { onSwitchServer() },
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(
+                text = "账号由服务端管理。忘记密码请在服务器上重置，或使用管理员账号登录后修改。",
+                style = MaterialTheme.typography.labelSmall,
+                color = onGlassColor(dark, emphasis = false),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+/**
+ * 全屏极光：三团大光斑，取自服务端下发的流体配色。
+ *
+ * 与背景流体的区别是它**不随时间漂移** —— 登录页要的是稳定的第一印象，
+ * 会动的光反而让人分神；而且静止的画刷可以按尺寸缓存，一帧只做三次 drawRect。
+ */
+@Composable
+private fun AuroraVeil(modifier: Modifier = Modifier) {
+    val fluid = LocalFluidColors.current
+    val palette = fluid.ifEmpty { DefaultFluidColors }
+    Box(
+        modifier = modifier.drawWithCache {
+            val span = maxOf(size.width, size.height)
+            // 三团光的位置（画布比例）、半径（长边比例）与强度
+            val spots = arrayOf(
+                floatArrayOf(0.16f, 0.05f, 0.62f, 0.32f),
+                floatArrayOf(0.95f, 0.30f, 0.50f, 0.26f),
+                floatArrayOf(0.24f, 0.97f, 0.56f, 0.28f),
+            )
+            val brushes = Array(spots.size) { index ->
+                val color = palette[index % palette.size]
+                val alpha = spots[index][3]
+                Brush.radialGradient(
+                    colorStops = arrayOf(
+                        0f to color.copy(alpha = alpha),
+                        0.42f to color.copy(alpha = alpha * 0.42f),
+                        1f to Color.Transparent,
+                    ),
+                    center = Offset(size.width * spots[index][0], size.height * spots[index][1]),
+                    radius = span * spots[index][2],
                 )
             }
-        }
-
-        Text(
-            text = "账号由服务端管理。忘记密码请在服务器上重置，或使用管理员账号登录后修改。",
-            style = MaterialTheme.typography.labelSmall,
-            color = onGlassColor(dark, emphasis = false),
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
+            onDrawBehind { brushes.forEach { drawRect(it) } }
+        },
+    )
 }

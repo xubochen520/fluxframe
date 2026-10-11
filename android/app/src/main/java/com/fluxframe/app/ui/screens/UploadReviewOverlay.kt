@@ -59,6 +59,8 @@ import com.fluxframe.app.ui.components.TagChip
 import com.fluxframe.app.ui.glass.GlassSurface
 import com.fluxframe.app.ui.theme.LocalDarkTheme
 import com.fluxframe.app.ui.theme.onGlassColor
+import com.fluxframe.app.ui.theme.FluxRadius
+import com.fluxframe.app.ui.theme.FluxType
 
 /** 上传确认行：名称可改、标签可增删、是否入库可勾选 */
 private class ReviewRow(val source: UploadAnalyzeItem) {
@@ -103,11 +105,19 @@ fun UploadReviewOverlay(
     ) {
         GlassSurface(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
+            shape = RoundedCornerShape(FluxRadius.lg),
             backdrop = true,
+            borderWidth = 1.dp,
+            glow = MaterialTheme.colorScheme.primary,
             contentPadding = PaddingValues(14.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                // 待上传张数用大数字：这是这一屏唯一的"决定"，得一眼看到
+                Text(
+                    text = selected.size.toString(),
+                    style = FluxType.numeral,
+                    color = MaterialTheme.colorScheme.primary,
+                )
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
                         text = "确认上传（${selected.size}/${rows.size}）",
@@ -144,7 +154,7 @@ fun UploadReviewOverlay(
                 val row = rows[index]
                 GlassSurface(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(18.dp),
+                    shape = RoundedCornerShape(FluxRadius.md),
                     contentPadding = PaddingValues(12.dp),
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
