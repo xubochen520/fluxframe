@@ -9,8 +9,8 @@
 ## 一、当前状态一句话
 
 - **网页端（client/）**：方案里的页面迁移、覆盖层拆分、组件重做、星系（2D + 3D）绘制升级 **全部完成**，并且用 Chrome DevTools 协议做过真实走查（截图见 `_shots_aurora/`，60+ 张，控制台无 error）。
-- **安卓端（android/）**：主题/玻璃（第一层）与 `Chrome.kt` / `Common.kt` / `AppShell.kt`（第二层）**已完成并 assembleDebug 通过**；`ui/screens/*` 各页、星系绘制、设置页相似图索引卡片、版本号（第三层）在本轮同步进行，详见 `git log` 与该轮的收尾报告。
-- 所有改动都已分批提交；`origin`（GitHub）与 `backup`（本地裸库）双远端推送。**GitHub 偶发连接重置，push 失败时重试即可**。
+- **安卓端（android/）**：三层**全部完成**——①主题/玻璃令牌与 `GlassSurface`/`FluidBackdrop`；②`Chrome.kt`/`Common.kt`/`AppShell.kt`；③`ui/screens/*` 全部页面 + `ui/galaxy/GalaxyStage.kt` 星系绘制 + 设置页「相似图索引」卡片 + 版本号 2.9.0(54)。`./gradlew clean assembleDebug` 通过（APK 23.5 MB）。**安卓只做了编译级验证，没有真机/模拟器视觉走查**（原因见第五节）。
+- 所有改动都已分批提交；`origin`（GitHub）与 `backup`（本地裸库）双远端推送。**GitHub 偶发连接重置/超时，push 失败时重试即可**。
 
 ## 二、网页端做完了什么
 
@@ -53,7 +53,7 @@ node _shot.mjs tagops extra longpress
 
 ## 五、已知限制与未做（如实记录）
 
-1. **安卓模拟器在本机极不稳定**：AVD `fluxframe-test` 启动后 1~2 分钟常崩（本地磁盘/显卡环境所致），所以安卓只抢到过「总览」等少数实机截图。五种玻璃风格、浅色、空状态插画、各类弹窗、Toast 等**未做完整实机走查**。`assembleDebug` 是可靠的门槛，但视觉仍需真机复核。
+1. **安卓没有真机/模拟器走查（最大的验收缺口）**：AVD `fluxframe-test` 在这台机器上极不稳定——无窗口模式卡在 `offline`，窗口模式启动后 1~2 分钟常崩，还会留下 `multiinstance.lock` 让后续启动直接 FATAL；清理锁之后再启仍长时间停在 `offline`。`assembleDebug`（含 `clean assembleDebug`）是唯一可靠的门槛，**视觉仍需在真机上复核**（真机 `adb install -r android/app/build/outputs/apk/debug/app-debug.apk`，debug 包名 `com.fluxframe.app.debug`）。需要重点看的：五种玻璃风格 × 深浅色、空状态线稿插画、确认/输入弹窗、Toast、`FluidCapsule`、星系降级（低端机）、查看器底部操作条与被相似图面板遮挡的关系。
 2. **`testDebugUnitTest` 在本机跑不通**：中文路径导致 11 个测试类初始化时 `ClassNotFoundException`，`C:\ff-android` 目录联接也绕不过去（联接解析后路径仍含中文）。要在纯 ASCII 路径下复制一份仓库才能跑。**NewUiSmokeTest 依赖的文案已被刻意保留**：「上传中 · 3 个文件」「已上传 42%」「保存到图片库 · 示例视频」「已保存 1 个文件到图片库 ✓」「去图片库查看」。
 3. **本机没有 `ccip_feat.onnx`**（`server/models/embed/`），所以「视觉指纹」索引建不起来：网页端「相似图」页会显示「还没有建立视觉指纹」，设置页的相似图索引卡片会显示「指纹模型缺失」。这是环境缺文件，不是 UI 问题；**标签模式不受影响**（走的是标签相似度），上面的星系截图就是用标签模式拍的。
 4. **`content-visibility: auto` 没有采用**：图片库的瀑布流要靠 `<img onload>` 量卡片高度来排行高，`content-visibility` 会让未渲染卡片报出内在尺寸，容易被量错、错位。方案里这条属于性能建议，权衡后不采纳，改用「常量行高代替 getComputedStyle」的既有优化。
@@ -61,8 +61,20 @@ node _shot.mjs tagops extra longpress
 6. **`FluxTopBar.search` 目前无调用点**：接线全局搜索必须动 `screens/`，作为扩展点保留（参数有默认值，现有调用点零影响）。
 7. 临时产物：`_shot.mjs`、`_android_shot.py`、`_chrome_profile/`、`_shots_aurora/`、`_shots_android/`、`_ck.txt`（**里面有会话 cookie，别再提交/外传**）都在 `.gitignore` 的 `/_*` 下，不入库；不需要时可以整批删掉。
 
+## 五½、安卓端做完的清单（对应方案「安卓端」一节）
+
+- `ui/theme/`：Color/Theme/GlassTokens 换新配色、排版（DM Sans / Space Grotesk / DM Mono）与圆角，五种玻璃风格参数重设（枚举值不变，DataStore 里已存的值不失效）。
+- `ui/glass/`：GlassSurface 顶部高光描边 + 可选辉光；FluidBackdrop 调整光晕分布，性能机制（State 相位只在绘制阶段读、不用 `Modifier.blur`）保留。
+- `ui/components/Chrome.kt`：FluxTopBar（大标题 + 等宽副标题 + 玻璃搜索）、FluxBottomBar（单一弹性滑动指示器）、FluidCapsule、FluxToast、确认/文本输入弹窗、GlassTextField、SwitchRow、ClickableRow。
+- `ui/components/Common.kt`：SectionTitle、StatTile（等宽大数字 + 辉光）、MediaCard（两段渐变遮罩 + 玻璃角标）、TagChip（双层色点）、EmptyState（线稿插画）、按钮与进度。
+- `ui/AppShell.kt`：底栏与非主页面转场（主页面之间仍是 `HorizontalPager` 独占，没加转场动画，见下一节）。
+- `ui/screens/*`：总览 bento、图片库吸顶玻璃工具条、标签页人物色环头像卡与 1/2/3 列切换、日志玻璃行表格、视频提取平台胶囊与全不选/反选、查看器顶/底玻璃条、相似图底部 sheet、登录全屏极光 + 居中玻璃卡、设置页分区卡（**新增相似图索引卡片**）。
+- `ui/galaxy/GalaxyStage.kt`（新）+ `GalaxyScreen`/`Galaxy3DScreen`：深空舞台、尘埃按深度染色、连线同组同色、预渲染光晕纹理、选中脉冲、缩略图三层玻璃边框 + 标签芯片；低端机/关动效时关脉冲与尘埃；`GalaxyMath.kt`/`Galaxy3DMath.kt` 一行未动。
+- 版本：`versionCode 54` / `versionName "2.9.0"`（debug 包带既有的 `-debug` 后缀）。
+- **未做**：设置页的左侧分组导航（安卓是单列手机版式，加侧栏会改变结构，这一条是主动取舍）；相似图页跳设置页阈值区块的入口（需要 `AppShell` 给回调，属禁改范围）。
+
 ## 六、下一轮建议
 
-1. 安卓：真机（或稳定的模拟器）上把五种玻璃风格 × 深浅色 × 主要页面过一遍；模拟器不稳时优先用真机 `adb install`。
+1. 安卓：真机上把五种玻璃风格 × 深浅色 × 主要页面过一遍（模拟器在这台机器上不可靠）。
 2. 需要「视觉指纹」相关功能时：把 `ccip_feat.onnx` 放到 `server/models/embed/`，然后在设置页点一次「建立索引」，再回「相似图」页看 2D/3D 星系的真实观感。
 3. 想继续打磨视觉的话，最值得动的是：星系常量区（`DUST_COUNT / DUST_SPREAD / HALO_SCALE / RING_SCALE / CARD_MARGIN`）与 `drawEdges` 里那条相似度 alpha 曲线；以及安卓 `EmptyState` 插画与 `FluidCapsule` 的实机观感。
