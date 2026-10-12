@@ -31,10 +31,10 @@ val BrandAmber = Warn
 
 val DefaultFluidColors = listOf(BrandIndigo, BrandCyan, BrandPink)
 
-/** 浅色主题里描边与文字用的靛色墨 */
-val IndigoInk = Color(0xFF1E1B4B)
+/** 浅色主题里描边与文字用的墨色（暖中性，与网页端 --text-1 同源） */
+val IndigoInk = Color(0xFF17171A)
 
-/** 一套主题下的全部中性令牌 */
+/** 一套主题下的全部中性令牌（Ink Gallery：深色是中性墨、浅色是暖纸） */
 @Immutable
 class FluxPalette(
     val dark: Boolean,
@@ -63,38 +63,38 @@ class FluxPalette(
 
 val DarkFluxPalette = FluxPalette(
     dark = true,
-    bg0 = Color(0xFF05060D),
-    bg1 = Color(0xFF0A0D1C),
-    glass1 = Color.White.copy(alpha = 0.055f),
-    glass2 = Color.White.copy(alpha = 0.085f),
-    stroke = Color.White.copy(alpha = 0.09f),
-    strokeStrong = Color.White.copy(alpha = 0.16f),
-    highlight = Color.White.copy(alpha = 0.22f),
-    text1 = Color(0xFFF2F4FB),
-    text2 = Color(0xFFA6ACC8),
-    text3 = Color(0xFF6E7596),
-    surface = Color(0xFF0F1326),
-    surfaceRaised = Color(0xFF171C33),
-    glassTint = Color(0xFF0A0D1C),
-    scrim = Color(0xFF05060D).copy(alpha = 0.46f),
+    bg0 = Color(0xFF0C0D10),
+    bg1 = Color(0xFF121317),
+    glass1 = Color.White.copy(alpha = 0.038f),
+    glass2 = Color.White.copy(alpha = 0.065f),
+    stroke = Color.White.copy(alpha = 0.075f),
+    strokeStrong = Color.White.copy(alpha = 0.145f),
+    highlight = Color.White.copy(alpha = 0.20f),
+    text1 = Color(0xFFF0F0EE),
+    text2 = Color(0xFFA4A5A1),
+    text3 = Color(0xFF6D6E6B),
+    surface = Color(0xFF141519),
+    surfaceRaised = Color(0xFF18191D),
+    glassTint = Color(0xFF121317),
+    scrim = Color(0xFF0C0D10).copy(alpha = 0.46f),
 )
 
 val LightFluxPalette = FluxPalette(
     dark = false,
-    bg0 = Color(0xFFEEF1FB),
-    bg1 = Color(0xFFF7F8FE),
-    glass1 = Color.White.copy(alpha = 0.62f),
-    glass2 = Color.White.copy(alpha = 0.80f),
-    stroke = IndigoInk.copy(alpha = 0.08f),
-    strokeStrong = IndigoInk.copy(alpha = 0.14f),
-    highlight = Color.White.copy(alpha = 0.90f),
-    text1 = Color(0xFF111427),
-    text2 = Color(0xFF4B5276),
-    text3 = Color(0xFF7A81A3),
+    bg0 = Color(0xFFF1F1EE),
+    bg1 = Color(0xFFF7F7F4),
+    glass1 = Color.White.copy(alpha = 0.66f),
+    glass2 = Color.White.copy(alpha = 0.88f),
+    stroke = Color(0xFF1C1A14).copy(alpha = 0.10f),
+    strokeStrong = Color(0xFF1C1A14).copy(alpha = 0.18f),
+    highlight = Color.White.copy(alpha = 0.95f),
+    text1 = Color(0xFF17171A),
+    text2 = Color(0xFF55555C),
+    text3 = Color(0xFF8B8B90),
     surface = Color(0xFFFFFFFF),
-    surfaceRaised = Color(0xFFF1F3FC),
+    surfaceRaised = Color(0xFFF4F4F2),
     glassTint = Color.White,
-    scrim = Color(0xFF05060D).copy(alpha = 0.42f),
+    scrim = Color(0xFF0C0D10).copy(alpha = 0.42f),
 )
 
 fun fluxPalette(dark: Boolean): FluxPalette = if (dark) DarkFluxPalette else LightFluxPalette
