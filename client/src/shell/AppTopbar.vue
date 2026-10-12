@@ -1,10 +1,21 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ChevronRight, LogOut, Search, X } from 'lucide-vue-next'
+import ThemeSwitch from './ThemeSwitch.vue'
 import type { CurrentUser } from '../api'
 
-const props = defineProps<{ pageTitle: string; query: string; user: CurrentUser | null }>()
-const emit = defineEmits<{ 'update:query': [value: string]; searchInput: []; submit: []; clear: []; logout: []; openMore: [] }>()
+const props = defineProps<{ pageTitle: string; query: string; user: CurrentUser | null; selectedTheme: string; isDark: boolean }>()
+const emit = defineEmits<{
+  'update:query': [value: string]
+  searchInput: []
+  submit: []
+  clear: []
+  logout: []
+  openMore: []
+  openPalette: []
+  pickTheme: [name: string]
+  toggleThemeMode: []
+}>()
 
 const searchOpen = ref(false)
 const inputEl = ref<HTMLInputElement | null>(null)
@@ -32,7 +43,8 @@ function toggleSearch() {
 function onKey(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'k') {
     event.preventDefault()
-    void focusSearch()
+    /* ⌘K 打开命令面板：导航、操作与搜索一个入口 */
+    emit('openPalette')
   }
 }
 
@@ -58,6 +70,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <kbd>{{ isMac ? '⌘' : 'Ctrl' }} K</kbd>
       </div>
       <button class="icon-button search-toggle" aria-label="搜索" @click.stop="toggleSearch"><Search :size="19" /></button>
+      <ThemeSwitch
+        :selected-theme="props.selectedTheme"
+        :is-dark="props.isDark"
+        @pick="emit('pickTheme', $event)"
+        @toggle-mode="emit('toggleThemeMode')"
+      />
       <button class="user-chip" title="退出登录" @click="emit('logout')">
         <span class="avatar">{{ initial }}</span>
         <span class="user-name">{{ user?.username }}</span>

@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { CheckCircle2, ChevronLeft, Download, Loader2, Palette, Play, Save, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, X, Zap } from 'lucide-vue-next'
 import FluidCanvas from './FluidCanvas.vue'
+import { THEMES } from '../themes'
 import { api, type AiStatusPayload, type EmbedCalibrationPayload, type EmbedStatusPayload, type FfmpegStatusPayload } from '../api'
 
 const props = defineProps<{
@@ -146,17 +147,17 @@ async function beginBiliQr() {
 function refreshBiliQr() { void beginBiliQr() }
 function closeBiliQr() { stopPollQr(); qrActive.value = false }
 
-const themePalettes: Record<string, string[]> = {
-  Aurora: ['#4f46e5', '#06b6d4', '#f472b6'],
-  Ember: ['#e45757', '#f59e0b', '#f97316'],
-  Mono: ['#334155', '#94a3b8', '#e2e8f0'],
-  Nebula: ['#7c3aed', '#ec4899', '#22d3ee'],
-  Forest: ['#166534', '#22c55e', '#a3e635'],
-  Rose: ['#be123c', '#fb7185', '#fda4af'],
-  Ocean: ['#075985', '#0ea5e9', '#67e8f9'],
-  Solar: ['#b45309', '#f59e0b', '#fde047'],
+/* 主题色板：单一真源在 themes.ts（顶栏切换器/令牌/星系引擎共用） */
+const themePalettes: Record<string, string[]> = Object.fromEntries(
+  THEMES.map((theme) => [theme.name, [...theme.accents]]),
+)
+const themeNames = THEMES.map((theme) => theme.name)
+/** 色卡圆点的渐变：直接取该主题前两色，新增主题零成本上架 */
+function themeSwatchStyle(name: string) {
+  const theme = THEMES.find((item) => item.name === name)
+  const [first, second] = theme?.accents || ['#7c6cff', '#22d3ee']
+  return { background: `linear-gradient(135deg, ${first}, ${second})` }
 }
-const themeNames = Object.keys(themePalettes)
 
 watch(() => props.settings, (value) => { siteName.value = value.siteName || 'fluxframe'; port.value = Number(value.port || 4310); storageDir.value = value.storageDir || './storage'; uploadLimitMb.value = Number(value.uploadLimitMb || 50); recycleRetentionDays.value = Number(value.recycleRetentionDays || 30) }, { deep: true, immediate: true })
 watch(() => props.fluidColors, (value) => { localColors.value = [...value] }, { deep: true })
@@ -295,7 +296,7 @@ defineExpose({ save })
     <div class="settings-overlay-body">
       <div class="settings-hero"><div><p class="eyebrow"><Sparkles :size="14" /> CONTROL CENTER</p><h1>配置你的工作区</h1><p>所有配置保存到 PostgreSQL，重启后仍然有效。</p></div><button class="primary-button" @click="save"><Save :size="16" />保存全部设置</button></div>
       <div class="settings-sections">
-        <section class="settings-section panel"><div class="setting-title"><div><h2>组件配色流体预览</h2><p>主题颜色会同时用于全网页背景、导航和内容面板。</p></div><Palette :size="20" /></div><div class="fluid-preview"><FluidCanvas v-if="localWebgl" :palette="localColors" :speed="3" :paused="!localAnimation" :inline="true" /><div v-else class="fluid-disabled">WebGL 预览已关闭</div><div class="fluid-preview-caption">{{ localTheme.toUpperCase() }} / LIVE COLOR PREVIEW</div></div><div class="color-controls"><label v-for="(color, index) in localColors" :key="index" class="color-control"><input v-model="localColors[index]" type="color" /><span>COLOR {{ index + 1 }}<br>{{ color }}</span></label></div><div class="fixed-speed field-label">流体速度 <strong>3.0（固定）</strong><small>用于观察组件颜色在流体中的占比。</small></div><div class="theme-swatches large"><button v-for="theme in themeNames" :key="theme" :class="['theme-swatch', theme.toLowerCase(), { active: localTheme === theme }]" @click="selectTheme(theme)"><i></i><span>{{ theme }}</span></button></div></section>
+        <section class="settings-section panel"><div class="setting-title"><div><h2>组件配色流体预览</h2><p>主题颜色会同时用于全网页背景、导航和内容面板。</p></div><Palette :size="20" /></div><div class="fluid-preview"><FluidCanvas v-if="localWebgl" :palette="localColors" :speed="3" :paused="!localAnimation" :inline="true" /><div v-else class="fluid-disabled">WebGL 预览已关闭</div><div class="fluid-preview-caption">{{ localTheme.toUpperCase() }} / LIVE COLOR PREVIEW</div></div><div class="color-controls"><label v-for="(color, index) in localColors" :key="index" class="color-control"><input v-model="localColors[index]" type="color" /><span>COLOR {{ index + 1 }}<br>{{ color }}</span></label></div><div class="fixed-speed field-label">流体速度 <strong>3.0（固定）</strong><small>用于观察组件颜色在流体中的占比。</small></div><div class="theme-swatches large"><button v-for="theme in themeNames" :key="theme" :class="['theme-swatch', { active: localTheme === theme }]" @click="selectTheme(theme)"><i :style="themeSwatchStyle(theme)"></i><span>{{ theme }}</span></button></div></section>
         <section class="settings-section panel"><div class="setting-title"><div><h2>工作区与显示</h2><p>控制站点名称、主题和动画行为。</p></div><SlidersHorizontal :size="20" /></div><label class="field-label">站点名称<input v-model="siteName" /><small>显示在登录页和浏览器标题中。</small></label><div class="setting-row"><div><strong>显示模式</strong><small>切换深色或浅色工作区。</small></div><div class="segmented"><button :class="{ active: localDark }" @click="localDark = true">深色</button><button :class="{ active: !localDark }" @click="localDark = false">浅色</button></div></div><div class="setting-row"><div><strong>全站流体背景</strong><small>控制 WebGL 星河背景；关闭后自动使用静态主题背景。</small></div><button :class="['switch', { on: localWebgl }]" @click="localWebgl = !localWebgl"><i></i></button></div><div class="setting-row"><div><strong>页面动画</strong><small>关闭后遵循减少动态效果偏好。</small></div><button :class="['switch', { on: localAnimation }]" @click="localAnimation = !localAnimation"><i></i></button></div></section>
         <section class="settings-section panel"><div class="setting-title"><div><h2>服务、上传与存储</h2><p>修改端口后需要重启 Node 服务。</p></div><Zap :size="20" /></div><label class="field-label">服务端口<input v-model.number="port" type="number" min="1024" max="65535" /><small>当前服务地址端口。</small></label><label class="field-label">图片存储目录<input v-model="storageDir" /><small>支持本机目录或已映射的 NAS 盘符。</small></label><label class="field-label">单张上传限制（MB）<input v-model.number="uploadLimitMb" type="number" min="1" max="2048" /></label><label class="field-label">回收站保留天数<input v-model.number="recycleRetentionDays" type="number" min="0" max="3650" /></label></section>
         <section class="settings-section panel"><div class="setting-title"><div><h2>B站高清保存</h2><p>B站 1080P 及以上为音视频分离流，配置本项后「视频提取」保存 B站视频时自动下载最高可用档位并用 ffmpeg 合并入库（预览仍为快速 720P）。</p></div><Download :size="20" /></div><div class="setting-row"><div><strong>B站登录</strong><small>普通账号最高 1080P，大会员可到 1080P+/4K。登录态仅保存在本机数据库，不回显。</small></div><span :class="['ai-badge', biliConfigured ? 'ok' : 'error']">{{ biliConfigured ? '已登录' : '未登录' }}</span></div><div class="setting-row bili-login-row"><div><strong>方式一：扫码登录（推荐）</strong><small>点击后用 B站 App 扫二维码，确认后自动保存登录态，无需手动复制。</small></div><button class="filter-button" @click="qrActive ? refreshBiliQr() : beginBiliQr()">{{ qrActive ? '刷新二维码' : (biliConfigured ? '重新扫码' : '扫码登录') }}</button></div><div v-if="qrActive" class="bili-qr-panel"><img v-if="qrImage" :src="qrImage" alt="B站登录二维码" /><p :class="['bili-qr-text', { ok: qrOk }]"><Loader2 v-if="!qrImage" :size="13" class="spin" />{{ qrText }}</p><button v-if="qrText.includes('过期')" class="text-button" @click="refreshBiliQr">重新生成二维码</button></div><label class="field-label">方式二：手动粘贴 Cookie（备用）<input v-model="biliSessdata" type="password" autocomplete="off" placeholder="粘贴完整 Cookie 或 SESSDATA 值（留空保存 = 不修改）" /><small>参考开源项目 Mineradio 的获取方式：浏览器登录 bilibili.com → F12 → 应用/Application → Cookie，复制整段或其中的 SESSDATA 值粘贴即可，系统会自动提取。</small></label><div class="setting-row"><div><strong>ffmpeg 引擎</strong><small>用于合并 B站高清音视频分离流（无损 -c copy）。未安装时可一键下载到 models\ffmpeg，约 90MB。</small></div><span :class="['ai-badge', ffmpegFound ? 'ok' : 'error']">{{ ffmpegBusy ? '下载中' : (ffmpegFound ? (ffmpegVersion ? '已就绪 v' + ffmpegVersion : '已就绪') : '未安装') }}</span></div><p v-if="ffmpegPath" class="ai-conn-text">ffmpeg 路径：{{ ffmpegPath }}</p><button v-if="!ffmpegFound && !ffmpegBusy" class="primary-button" @click="startFfmpegDownload"><Download :size="15" />一键下载 ffmpeg（约 90MB）</button><div v-if="ffmpegBusy && ffmpegProgress" class="ai-progress-panel"><div class="ai-progress-row"><span>{{ ffmpegProgress.phase === 'extracting' ? '解压安装中…' : (ffmpegProgress.error ? ffmpegProgress.error : '正在下载 ffmpeg…') }}</span><div class="ai-bar"><i :style="{ width: barPct(ffmpegProgress.done, ffmpegProgress.total) }"></i></div><em>{{ ffmpegProgress.total ? barPct(ffmpegProgress.done, ffmpegProgress.total) : '…' }}</em></div></div><p class="bili-tip"><Sparkles :size="12" /> 生效条件：B站已登录（扫码或 Cookie）+ ffmpeg 已就绪。之后解析 B站视频点「保存到图片库」即自动保存高清；若未满足条件会自动回退默认清晰度并说明原因。</p></section>
@@ -345,16 +346,8 @@ defineExpose({ save })
 .theme-swatches { display: flex; flex-wrap: wrap; gap: 9px; }
 .theme-swatch { display: flex; align-items: center; gap: 9px; height: 38px; padding: 0 14px 0 10px; border-radius: var(--r-pill); border: 1px solid var(--stroke); background: var(--field); color: var(--text-2); font-size: 12px; font-weight: 500; transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), transform var(--t-mid) var(--ease); }
 .theme-swatch:hover { transform: translateY(-2px); color: var(--text-1); }
-.theme-swatch i { width: 16px; height: 16px; border-radius: 50%; background: linear-gradient(135deg, var(--sw-1, var(--accent-1)), var(--sw-2, var(--accent-2))); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35); }
+.theme-swatch i { width: 16px; height: 16px; border-radius: 50%; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35); }
 .theme-swatch.active { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-soft); box-shadow: 0 8px 22px -14px var(--glow); }
-.theme-swatch.aurora { --sw-1: #4f46e5; --sw-2: #06b6d4; }
-.theme-swatch.ember { --sw-1: #e45757; --sw-2: #f59e0b; }
-.theme-swatch.mono { --sw-1: #334155; --sw-2: #e2e8f0; }
-.theme-swatch.nebula { --sw-1: #7c3aed; --sw-2: #ec4899; }
-.theme-swatch.forest { --sw-1: #166534; --sw-2: #a3e635; }
-.theme-swatch.rose { --sw-1: #be123c; --sw-2: #fda4af; }
-.theme-swatch.ocean { --sw-1: #075985; --sw-2: #67e8f9; }
-.theme-swatch.solar { --sw-1: #b45309; --sw-2: #fde047; }
 
 .security-action { display: flex; align-items: center; gap: 14px; width: 100%; padding: 14px 16px; border-radius: var(--r-md); border: 1px solid var(--stroke); background: var(--field); color: var(--text-1); text-align: left; transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease), transform var(--t-mid) var(--ease); }
 .security-action:hover { transform: translateY(-2px); border-color: var(--accent-line); background: var(--field-hover); }

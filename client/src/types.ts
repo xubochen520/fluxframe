@@ -13,6 +13,8 @@ export interface ImageItem {
   height: number
   size: string
   views: number
+  /** 收藏（星标）：任何排序下都置顶，图库可单独筛选 */
+  starred?: boolean
   uploadedAt: string
   capturedAt: string
   tags: string[]

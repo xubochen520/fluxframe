@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, Download, Eye, Pencil, Tags, Trash2 } from 'lucide-vue-next'
+import { Check, Download, Eye, Pencil, Star, Tags, Trash2 } from 'lucide-vue-next'
 import type { ImageItem } from '../types'
 
 const props = defineProps<{
@@ -19,6 +19,7 @@ const emit = defineEmits<{
   removeTag: [image: ImageItem]
   remove: [image: ImageItem]
   restore: [image: ImageItem]
+  star: [image: ImageItem]
 }>()
 </script>
 
@@ -29,6 +30,7 @@ const emit = defineEmits<{
     <button @click="emit('download', props.image); emit('close')"><Download :size="16" />{{ props.video ? '下载视频' : '下载图片' }}</button>
     <div class="context-sep"></div>
     <button v-if="!props.trash" @click="emit('rename', props.image)"><Pencil :size="16" />修改名称</button>
+    <button v-if="!props.trash" @click="emit('star', props.image); emit('close')"><Star :size="16" :fill="props.image.starred ? 'currentColor' : 'none'" />{{ props.image.starred ? '取消收藏' : '收藏图片' }}</button>
     <button @click="emit('addTag', props.image)"><Tags :size="16" />添加标签（可多选）</button>
     <button v-if="props.image.tags.length" @click="emit('removeTag', props.image)"><Trash2 :size="16" />移除标签</button>
     <div class="context-sep"></div>

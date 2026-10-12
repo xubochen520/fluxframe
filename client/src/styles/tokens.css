@@ -1,36 +1,51 @@
+/* ============================================================
+   Ink Gallery — 设计令牌
+   风格锚点：专业影像工具的中性工具色 + 画廊图录的细线排版。
+   深色是「墨」不是「蓝黑」；浅色是「暖纸」不是「冷白」。
+   每套主题 = 强调三色 + 中性底色的冷暖倾向（theme tint）。
+   ============================================================ */
+
 :root {
   color-scheme: dark;
   --font-sans: 'DM Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
   --font-display: 'Space Grotesk', 'DM Sans', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
   --font-mono: 'DM Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'PingFang SC', 'Microsoft YaHei', monospace;
 
-  --bg-0: #05060d;
-  --bg-1: #0a0d1c;
-  --glass-1: rgba(255, 255, 255, .055);
-  --glass-2: rgba(255, 255, 255, .085);
-  --stroke: rgba(255, 255, 255, .09);
-  --stroke-strong: rgba(255, 255, 255, .16);
-  --highlight: rgba(255, 255, 255, .22);
-  --text-1: #f2f4fb;
-  --text-2: #a6acc8;
-  --text-3: #6e7596;
-  --danger: #fb7185;
-  --success: #34d399;
+  /* ---- 中性底色（墨） ---- */
+  --bg-0: #0c0d10;
+  --bg-1: #121317;
+  --glass-1: rgba(255, 255, 255, .038);
+  --glass-2: rgba(255, 255, 255, .065);
+  --stroke: rgba(255, 255, 255, .075);
+  --stroke-strong: rgba(255, 255, 255, .145);
+  --highlight: rgba(255, 255, 255, .2);
+  --text-1: #f0f0ee;
+  --text-2: #a4a5a1;
+  --text-3: #6d6e6b;
+  --danger: #ff6b6b;
+  --success: #4ade80;
   --warn: #fbbf24;
-  --person: #22c55e;
+  --person: #34d399;
 
+  /* ---- 强调三色（默认 Aurora，主题覆盖） ---- */
   --accent-1: #7c6cff;
   --accent-2: #22d3ee;
   --accent-3: #f472b6;
   --on-accent: #ffffff;
 
-  --r-xs: 8px;
-  --r-sm: 12px;
-  --r-md: 16px;
-  --r-lg: 22px;
-  --r-xl: 28px;
+  /* ---- 主题对中性底色的冷暖染色（0~8%，主题可覆盖） ---- */
+  --tint-0: transparent;
+  --tint-1: transparent;
+
+  /* ---- 圆角：比旧版收一档，更「工具」更「玩具」 ---- */
+  --r-xs: 7px;
+  --r-sm: 10px;
+  --r-md: 13px;
+  --r-lg: 16px;
+  --r-xl: 20px;
   --r-pill: 999px;
 
+  /* ---- 间距：4/8 节奏 ---- */
   --s-1: 4px;
   --s-2: 8px;
   --s-3: 12px;
@@ -41,70 +56,148 @@
   --s-8: 44px;
 
   --ease: cubic-bezier(.2, .8, .2, 1);
-  --t-fast: 150ms;
-  --t-mid: 240ms;
-  --t-slow: 420ms;
+  --t-fast: 140ms;
+  --t-mid: 220ms;
+  --t-slow: 380ms;
 
-  --surface: rgba(11, 14, 30, .58);
-  --surface-strong: rgba(13, 16, 34, .9);
-  --chrome: rgba(10, 12, 26, .62);
-  --chrome-solid: rgba(10, 12, 26, .96);
-  --scrim: rgba(3, 4, 10, .66);
-  --field: rgba(255, 255, 255, .045);
-  --field-hover: rgba(255, 255, 255, .075);
-  --track: rgba(255, 255, 255, .08);
-  --media-bg: rgba(4, 6, 14, .6);
-  --shadow-1: 0 14px 34px -18px rgba(0, 0, 0, .7);
-  --shadow-2: 0 30px 70px -24px rgba(0, 0, 0, .78);
+  /* ---- 表面 ---- */
+  --surface: rgba(20, 21, 25, .72);
+  --surface-strong: rgba(24, 25, 29, .96);
+  --chrome: rgba(16, 17, 20, .78);
+  --chrome-solid: rgba(16, 17, 20, .97);
+  --scrim: rgba(6, 6, 8, .68);
+  --field: rgba(255, 255, 255, .05);
+  --field-hover: rgba(255, 255, 255, .085);
+  --track: rgba(255, 255, 255, .09);
+  --media-bg: rgba(255, 255, 255, .045);
+  --shadow-1: 0 12px 30px -18px rgba(0, 0, 0, .75);
+  --shadow-2: 0 28px 64px -26px rgba(0, 0, 0, .8);
 
-  --accent-ink: color-mix(in oklab, var(--accent-1) 62%, white);
-  --accent-soft: color-mix(in srgb, var(--accent-1) 16%, transparent);
-  --accent-line: color-mix(in srgb, var(--accent-1) 42%, transparent);
-  --glow: color-mix(in srgb, var(--accent-1) 30%, transparent);
-  --tint: color-mix(in srgb, var(--accent-1) 6%, transparent);
+  /* ---- accent 派生 ---- */
+  --accent-ink: color-mix(in oklab, var(--accent-1) 66%, white);
+  --accent-soft: color-mix(in srgb, var(--accent-1) 15%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent-1) 40%, transparent);
+  --glow: color-mix(in srgb, var(--accent-1) 28%, transparent);
+  --tint: color-mix(in srgb, var(--accent-1) 5%, transparent);
   --accent-grad: linear-gradient(135deg, var(--accent-1), color-mix(in oklab, var(--accent-1) 45%, var(--accent-2)));
   --aurora-grad: linear-gradient(110deg, var(--accent-1), var(--accent-2) 55%, var(--accent-3));
-  --glass-fill: linear-gradient(180deg, var(--glass-2), var(--glass-1) 46%), linear-gradient(var(--tint), var(--tint)), var(--surface);
+  --glass-fill: linear-gradient(180deg, var(--glass-2), var(--glass-1) 48%), var(--surface);
   --edge-hl: inset 0 1px 0 var(--highlight);
+
+  /* ---- 图库密度（多选/密度调节用） ---- */
+  --grid-min: 240px;
 }
 
+/* ============================================================
+   浅色：暖纸。不是把深色反转，是另一套中性系。
+   ============================================================ */
 :root[data-theme='light'] {
   color-scheme: light;
-  --bg-0: #eef1fb;
-  --bg-1: #f7f8fe;
-  --glass-1: rgba(255, 255, 255, .62);
-  --glass-2: rgba(255, 255, 255, .8);
-  --stroke: rgba(55, 48, 163, .08);
-  --stroke-strong: rgba(55, 48, 163, .14);
-  --highlight: rgba(255, 255, 255, .9);
-  --text-1: #111427;
-  --text-2: #4b5276;
-  --text-3: #7a81a3;
-  --surface: rgba(255, 255, 255, .42);
-  --surface-strong: rgba(255, 255, 255, .94);
-  --chrome: rgba(250, 251, 255, .66);
-  --chrome-solid: rgba(250, 251, 255, .97);
-  --scrim: rgba(30, 32, 60, .32);
-  --field: rgba(255, 255, 255, .7);
-  --field-hover: rgba(255, 255, 255, .92);
-  --track: rgba(55, 48, 163, .09);
-  --media-bg: rgba(225, 229, 245, .7);
-  --shadow-1: 0 14px 34px -20px rgba(40, 44, 92, .32);
-  --shadow-2: 0 30px 70px -28px rgba(40, 44, 92, .42);
-  --accent-ink: color-mix(in oklab, var(--accent-1) 74%, black);
-  --accent-soft: color-mix(in srgb, var(--accent-1) 13%, transparent);
-  --glow: color-mix(in srgb, var(--accent-1) 22%, transparent);
+  --bg-0: #f1f1ee;
+  --bg-1: #f7f7f4;
+  --glass-1: rgba(255, 255, 255, .66);
+  --glass-2: rgba(255, 255, 255, .88);
+  --stroke: rgba(28, 26, 20, .1);
+  --stroke-strong: rgba(28, 26, 20, .18);
+  --highlight: rgba(255, 255, 255, .95);
+  --text-1: #17171a;
+  --text-2: #55555c;
+  --text-3: #8b8b90;
+  --surface: rgba(255, 255, 255, .6);
+  --surface-strong: rgba(255, 255, 255, .96);
+  --chrome: rgba(250, 250, 248, .82);
+  --chrome-solid: rgba(252, 252, 250, .98);
+  --scrim: rgba(30, 28, 24, .36);
+  --field: rgba(255, 255, 255, .75);
+  --field-hover: rgba(255, 255, 255, .96);
+  --track: rgba(28, 26, 20, .1);
+  --media-bg: rgba(28, 26, 20, .05);
+  --shadow-1: 0 12px 30px -20px rgba(40, 38, 30, .35);
+  --shadow-2: 0 28px 64px -30px rgba(40, 38, 30, .45);
+  --accent-ink: color-mix(in oklab, var(--accent-1) 78%, black);
+  --accent-soft: color-mix(in srgb, var(--accent-1) 12%, transparent);
+  --glow: color-mix(in srgb, var(--accent-1) 20%, transparent);
   --tint: color-mix(in srgb, var(--accent-1) 4%, transparent);
 }
 
-:root[data-theme-name='aurora'] { --accent-1: #7c6cff; --accent-2: #22d3ee; --accent-3: #f472b6; --on-accent: #ffffff; }
-:root[data-theme-name='ember'] { --accent-1: #ef5a4c; --accent-2: #f59e0b; --accent-3: #fb923c; --on-accent: #ffffff; }
-:root[data-theme-name='mono'] { --accent-1: #c3ccdb; --accent-2: #e2e8f0; --accent-3: #64748b; --on-accent: #0b0f1a; }
-:root[data-theme-name='nebula'] { --accent-1: #8b5cf6; --accent-2: #ec4899; --accent-3: #22d3ee; --on-accent: #ffffff; }
-:root[data-theme-name='forest'] { --accent-1: #22c55e; --accent-2: #a3e635; --accent-3: #14b8a6; --on-accent: #03160b; }
-:root[data-theme-name='rose'] { --accent-1: #f43f5e; --accent-2: #fb7185; --accent-3: #fda4af; --on-accent: #ffffff; }
-:root[data-theme-name='ocean'] { --accent-1: #0b8fd6; --accent-2: #67e8f9; --accent-3: #3b82f6; --on-accent: #ffffff; }
-:root[data-theme-name='solar'] { --accent-1: #f59e0b; --accent-2: #fde047; --accent-3: #f97316; --on-accent: #1f1300; }
-:root[data-theme='light'][data-theme-name='mono'] { --accent-1: #475569; --accent-2: #94a3b8; --accent-3: #1e293b; --on-accent: #ffffff; }
-:root[data-theme='light'][data-theme-name='solar'] { --accent-1: #d97706; --on-accent: #ffffff; }
+/* ============================================================
+   12 套主题。
+   每套 = 强调三色（dark）+ 深浅两档微调 + 中性底冷暖倾向。
+   旧值兼容：data-theme-name 沿用原名，值全部重调。
+   ============================================================ */
+
+/* Aurora — 默认：紫→青→粉，中性底带极轻的冷紫 */
+:root[data-theme-name='aurora'] { --accent-1: #7c6cff; --accent-2: #22d3ee; --accent-3: #f472b6; --on-accent: #ffffff; --tint-0: rgba(124, 108, 255, .05); }
+
+/* Ember — 炽橙：安全灯下的暗房 */
+:root[data-theme-name='ember'] { --accent-1: #f0603c; --accent-2: #f5a524; --accent-3: #ff8a5c; --on-accent: #ffffff; --tint-0: rgba(240, 96, 60, .05); }
+:root[data-theme='light'][data-theme-name='ember'] { --accent-1: #e04a24; --on-accent: #ffffff; }
+
+/* Mono — 银盐：零彩度工具色 */
+:root[data-theme-name='mono'] { --accent-1: #d4d4d0; --accent-2: #f0f0ec; --accent-3: #8a8a86; --on-accent: #131315; --tint-0: transparent; }
+:root[data-theme='light'][data-theme-name='mono'] { --accent-1: #3d3d3a; --accent-2: #6b6b66; --accent-3: #1b1b19; --on-accent: #ffffff; }
+
+/* Nebula — 星云：紫红与电青 */
+:root[data-theme-name='nebula'] { --accent-1: #9b5cf6; --accent-2: #f0509b; --accent-3: #35d6e8; --on-accent: #ffffff; --tint-0: rgba(155, 92, 246, .05); }
+:root[data-theme='light'][data-theme-name='nebula'] { --accent-1: #7c3aed; --on-accent: #ffffff; }
+
+/* Forest — 苔绿：暗房里的植物灯 */
+:root[data-theme-name='forest'] { --accent-1: #3ecf6e; --accent-2: #b3e054; --accent-3: #2dd4bf; --on-accent: #05180c; --tint-0: rgba(62, 207, 110, .045); }
 :root[data-theme='light'][data-theme-name='forest'] { --accent-1: #16a34a; --on-accent: #ffffff; }
+
+/* Rose — 玫红：相纸的暖调 */
+:root[data-theme-name='rose'] { --accent-1: #f04e6a; --accent-2: #ff8aa0; --accent-3: #fda4af; --on-accent: #ffffff; --tint-0: rgba(240, 78, 106, .05); }
+:root[data-theme='light'][data-theme-name='rose'] { --accent-1: #e11d48; --on-accent: #ffffff; }
+
+/* Ocean — 深海：沉静的工作夜 */
+:root[data-theme-name='ocean'] { --accent-1: #2e9be6; --accent-2: #5ce1e6; --accent-3: #60a5fa; --on-accent: #ffffff; --tint-0: rgba(46, 155, 230, .05); }
+:root[data-theme='light'][data-theme-name='ocean'] { --accent-1: #0b78c4; --on-accent: #ffffff; }
+
+/* Solar — 日光：琥珀与柠檬 */
+:root[data-theme-name='solar'] { --accent-1: #f5a623; --accent-2: #fde047; --accent-3: #fb923c; --on-accent: #201300; --tint-0: rgba(245, 166, 35, .05); }
+:root[data-theme='light'][data-theme-name='solar'] { --accent-1: #d97706; --on-accent: #ffffff; }
+
+/* ---- 以下 4 套为新增 ---- */
+
+/* Slate — 石板：冷灰蓝的工程感（浅色尤其好看） */
+:root[data-theme-name='slate'] { --accent-1: #64a2ff; --accent-2: #93c5fd; --accent-3: #818cf8; --on-accent: #ffffff; --tint-0: rgba(100, 162, 255, .05); }
+:root[data-theme='light'][data-theme-name='slate'] { --accent-1: #2563eb; --on-accent: #ffffff; }
+
+/* Matcha — 抹茶：低饱和的黄绿，耐看不刺眼 */
+:root[data-theme-name='matcha'] { --accent-1: #a8c93a; --accent-2: #d6e06a; --accent-3: #6ee7a0; --on-accent: #131a02; --tint-0: rgba(168, 201, 58, .05); }
+:root[data-theme='light'][data-theme-name='matcha'] { --accent-1: #65a30d; --on-accent: #ffffff; }
+
+/* Sakura — 樱：粉紫的柔光 */
+:root[data-theme-name='sakura'] { --accent-1: #f078b8; --accent-2: #c084fc; --accent-3: #fda4af; --on-accent: #ffffff; --tint-0: rgba(240, 120, 184, .05); }
+:root[data-theme='light'][data-theme-name='sakura'] { --accent-1: #db2777; --on-accent: #ffffff; }
+
+/* Copper — 铜版：复古印刷的棕金 */
+:root[data-theme-name='copper'] { --accent-1: #d98e4a; --accent-2: #e8c07a; --accent-3: #c2703d; --on-accent: #1c0f02; --tint-0: rgba(217, 142, 74, .05); }
+:root[data-theme='light'][data-theme-name='copper'] { --accent-1: #b45309; --on-accent: #ffffff; }
+
+/* ---- 浅色下原 8 套里偏亮的强调色补档 ---- */
+:root[data-theme='light'][data-theme-name='aurora'] { --accent-1: #6455e8; --on-accent: #ffffff; }
+
+/* ============================================================
+   主题染色注入底色：让「换主题」= 换情绪，不只是换三个色号。
+   ============================================================ */
+:root:not([data-theme='light']) .app-shell {
+  background:
+    radial-gradient(1100px 680px at 82% -12%, color-mix(in srgb, var(--accent-1) 14%, transparent), transparent 62%),
+    radial-gradient(900px 620px at 4% 108%, color-mix(in srgb, var(--accent-2) 9%, transparent), transparent 64%),
+    linear-gradient(180deg, var(--bg-1), var(--bg-0) 70%);
+}
+:root[data-theme='light'] .app-shell {
+  background:
+    radial-gradient(1100px 680px at 82% -12%, color-mix(in srgb, var(--accent-1) 9%, transparent), transparent 60%),
+    radial-gradient(900px 620px at 4% 108%, color-mix(in srgb, var(--accent-2) 7%, transparent), transparent 62%),
+    linear-gradient(180deg, var(--bg-1), var(--bg-0) 70%);
+}
+
+/* 换主题/换明暗时的平滑过渡（只过渡颜色类属性，避免布局抖动） */
+:root.theme-anim,
+:root.theme-anim *:not(svg):not(svg *) {
+  transition: background-color var(--t-slow) var(--ease), border-color var(--t-slow) var(--ease),
+    color var(--t-mid) var(--ease), fill var(--t-mid) var(--ease), stroke var(--t-mid) var(--ease),
+    box-shadow var(--t-slow) var(--ease) !important;
+}

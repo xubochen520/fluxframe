@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Download, Eye, ImageOff, MoreHorizontal, Play } from 'lucide-vue-next'
+import { Check, Download, Eye, ImageOff, MoreHorizontal, Play, Star } from 'lucide-vue-next'
 import type { ImageItem } from '../../types'
 import { formatTime, hasPoster, isVideoItem, sizeImageCard } from '../shared'
 
-const props = defineProps<{ image: ImageItem; variant?: 'compact' | 'full'; trash?: boolean; progress?: boolean; personNames?: Set<string> }>()
+const props = defineProps<{ image: ImageItem; variant?: 'compact' | 'full'; trash?: boolean; progress?: boolean; personNames?: Set<string>; selectMode?: boolean; selected?: boolean }>()
 const emit = defineEmits<{
   open: [image: ImageItem]
   context: [image: ImageItem, event: MouseEvent]
@@ -13,6 +13,8 @@ const emit = defineEmits<{
   pressEnd: [event: TouchEvent]
   download: [image: ImageItem]
   mediaProgress: [image: ImageItem]
+  toggleSelected: [id: string]
+  star: [image: ImageItem]
 }>()
 
 function onImageLoad(event: Event) {
@@ -26,11 +28,16 @@ function onImageError(event: Event) {
   if (props.progress) emit('mediaProgress', props.image)
 }
 function onVideoReady(event: Event) { sizeImageCard(event); emit('mediaProgress', props.image) }
-function onClick() { if (!props.trash) emit('open', props.image) }
+function onClick() {
+  /* 多选模式下点击 = 加入/移出选择，不打开大图 */
+  if (props.selectMode) { emit('toggleSelected', props.image.id); return }
+  if (!props.trash) emit('open', props.image)
+}
 </script>
 
 <template>
-  <button class="image-card glow-card" :data-image-id="image.id" @click="onClick" @contextmenu.prevent.stop="emit('context', image, $event)" @touchstart.passive="emit('pressStart', image, $event)" @touchmove.passive="emit('pressCancel')" @touchend="emit('pressEnd', $event)" @touchcancel="emit('pressCancel')">
+  <button :class="['image-card', 'glow-card', { 'is-selected': selected, 'in-select': selectMode }]" :data-image-id="image.id" @click="onClick" @contextmenu.prevent.stop="emit('context', image, $event)" @touchstart.passive="emit('pressStart', image, $event)" @touchmove.passive="emit('pressCancel')" @touchend="emit('pressEnd', $event)" @touchcancel="emit('pressCancel')">
+    <span v-if="selectMode" class="select-ring" :class="{ on: selected }"><Check v-if="selected" :size="13" /></span>
     <div class="image-wrap">
       <video v-if="isVideoItem(image) && !hasPoster(image)" :src="image.url + '#t=0.5'" preload="metadata" muted playsinline @loadeddata="onVideoReady" @error="onVideoReady" />
       <span v-else-if="broken" class="media-fallback"><ImageOff :size="22" /><small>无法加载预览</small></span>
@@ -38,11 +45,13 @@ function onClick() { if (!props.trash) emit('open', props.image) }
       <span class="card-shade"></span>
       <span class="card-badges">
         <span class="glass-badge"><Eye :size="12" />{{ image.views }}</span>
+        <span v-if="image.starred" class="glass-badge star" title="已收藏"><Star :size="11" fill="currentColor" /></span>
         <span v-if="image.r18" class="glass-badge r18" title="R18 内容">R18</span>
         <span v-if="isVideoItem(image)" class="glass-badge"><Play :size="11" />视频</span>
       </span>
       <span class="image-more" title="更多操作" @click.stop="emit('context', image, $event)"><MoreHorizontal :size="16" /></span>
       <span class="image-download" :title="'下载' + (isVideoItem(image) ? '视频' : '图片')" @click.stop="emit('download', image)"><Download :size="14" /></span>
+      <span v-if="!trash" class="image-star" :class="{ on: image.starred }" :title="image.starred ? '取消收藏' : '收藏'" @click.stop="emit('star', image)"><Star :size="14" :fill="image.starred ? 'currentColor' : 'none'" /></span>
     </div>
     <div class="image-meta">
       <strong>{{ image.name }}</strong>
@@ -72,11 +81,20 @@ function onClick() { if (!props.trash) emit('open', props.image) }
 .card-badges { position: absolute; top: 9px; left: 9px; right: 46px; display: flex; flex-wrap: wrap; gap: 5px; }
 .glass-badge { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: var(--r-pill); border: 1px solid rgba(255, 255, 255, .16); background: rgba(8, 10, 20, .5); color: #fff; font: 500 10.5px var(--font-mono); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14); }
 .glass-badge.r18 { border-color: rgba(255, 255, 255, .22); background: rgba(225, 29, 72, .82); font-family: var(--font-display); font-weight: 700; letter-spacing: .04em; }
-.image-more, .image-download { position: absolute; right: 8px; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, .18); background: rgba(8, 10, 20, .55); color: #fff; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16); opacity: 0; transform: scale(.86); transition: opacity var(--t-mid) var(--ease), transform var(--t-mid) var(--ease), background var(--t-fast) var(--ease); }
+.image-more, .image-download, .image-star { position: absolute; right: 8px; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, .18); background: rgba(8, 10, 20, .55); color: #fff; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16); opacity: 0; transform: scale(.86); transition: opacity var(--t-mid) var(--ease), transform var(--t-mid) var(--ease), background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
 .image-more { top: 8px; }
 .image-download { bottom: 8px; }
-.image-card:hover .image-more, .image-card:hover .image-download { opacity: 1; transform: none; }
+.image-star { top: 8px; right: 44px; }
+.image-card:hover .image-more, .image-card:hover .image-download, .image-card:hover .image-star { opacity: 1; transform: none; }
 .image-more:hover, .image-download:hover { background: var(--accent-1); color: var(--on-accent); }
+.image-star.on { opacity: 1; transform: none; color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); background: color-mix(in srgb, var(--warn) 22%, rgba(8, 10, 20, .6)); }
+.image-star:hover { background: color-mix(in srgb, var(--warn) 32%, rgba(8, 10, 20, .6)); color: var(--warn); }
+/* ---- 多选态 ---- */
+.select-ring { position: absolute; z-index: 3; top: 9px; left: 9px; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, .7); background: rgba(8, 10, 20, .45); color: transparent; transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease); }
+.select-ring.on { background: var(--accent-grad); border-color: transparent; color: var(--on-accent); transform: scale(1.06); }
+.image-card.in-select .card-badges { left: 40px; }
+.image-card.is-selected { border-color: var(--accent-line); box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow-1); }
+.image-card.is-selected .image-wrap::before { content: ''; position: absolute; inset: 0; z-index: 2; background: color-mix(in srgb, var(--accent-1) 14%, transparent); pointer-events: none; }
 .image-meta { display: flex; flex-direction: column; gap: 3px; padding: 10px 8px 6px; }
 .image-meta strong { color: var(--text-1); font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .image-time { color: var(--text-3); font: 10.5px var(--font-mono); }
@@ -84,7 +102,8 @@ function onClick() { if (!props.trash) emit('open', props.image) }
 .image-tags .chip { height: 20px; padding: 0 7px; font-size: 10.5px; }
 .image-tags-empty { color: var(--text-3); font-size: 11px; }
 @media (hover: none), (max-width: 720px) {
-  .image-more, .image-download { opacity: 1; transform: none; width: 28px; height: 28px; }
+  .image-more, .image-download, .image-star { opacity: 1; transform: none; width: 28px; height: 28px; }
+  .image-star { right: 40px; }
   .image-card:hover { transform: none; }
   .image-card:active .image-wrap img, .image-card:active .image-wrap video { transform: scale(1.02); }
 }

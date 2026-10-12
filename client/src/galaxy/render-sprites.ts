@@ -2,6 +2,7 @@
  * 星系两套引擎（engine.ts / engine3d.ts）共用的绘制素材：舞台配色、预渲染纹理、共用片元着色器。
  * 纹理都只在构造（或主题、像素比变化）时生成一次，帧内只复用。
  */
+import { THEMES } from '../themes'
 
 export interface StageStyle {
   /** 三个强调色（与背景流体同源），sRGB 0~1，依次 rgb rgb rgb */
@@ -10,17 +11,11 @@ export interface StageStyle {
   reducedMotion: boolean
 }
 
-/* 主题预设：页面没有暴露 --accent-1~3 时按 data-theme-name 兜底（与设置页的主题色一致） */
-const THEME_PRESETS: Record<string, string[]> = {
-  aurora: ['#4f46e5', '#06b6d4', '#f472b6'],
-  ember: ['#e45757', '#f59e0b', '#f97316'],
-  mono: ['#334155', '#94a3b8', '#e2e8f0'],
-  nebula: ['#7c3aed', '#ec4899', '#22d3ee'],
-  forest: ['#166534', '#22c55e', '#a3e635'],
-  rose: ['#be123c', '#fb7185', '#fda4af'],
-  ocean: ['#075985', '#0ea5e9', '#67e8f9'],
-  solar: ['#b45309', '#f59e0b', '#fde047'],
-}
+/* 主题预设：页面没有暴露 --accent-1~3 时按 data-theme-name 兜底。
+   值从 themes.ts 派生 —— 主题目录是全站唯一真源，新增主题星系自动跟进 */
+const THEME_PRESETS: Record<string, string[]> = Object.fromEntries(
+  THEMES.map((theme) => [theme.name.toLowerCase(), [...theme.accents]]),
+)
 
 /** 舞台底色（上、下）。浅色主题也保持深空，只略微提亮 */
 const STAGE_DARK = new Float32Array([0.043, 0.055, 0.118, 0.02, 0.024, 0.051])

@@ -26,7 +26,9 @@ import BatchTagModal from './overlays/BatchTagModal.vue'
 import PersonDetailModal from './overlays/PersonDetailModal.vue'
 import ReferencesModal from './overlays/ReferencesModal.vue'
 import ViewerOverlay from './overlays/ViewerOverlay.vue'
+import CommandPalette from './overlays/CommandPalette.vue'
 import { enterPage, installMotion, recentPointer } from './motion'
+import { themeFluidPalette } from './themes'
 import { startDownload } from './downloadTaskStore'
 import { api, type CurrentUser, type DetectBox, type EmbedCalibrationPayload, type EmbedGraphMode,
   type EmbedGraphSpace, type EmbedGraphPayload, type EmbedStatusPayload, type ReferenceItem, type SimilarImageItem } from './api'
@@ -537,6 +539,62 @@ const libraryProgress = computed(() => (libraryTotal.value ? Math.min(100, Math.
 const savedTagColumns = Number(localStorage.getItem('tagColumns'))
 const tagColumns = ref(savedTagColumns === 1 || savedTagColumns === 2 || savedTagColumns === 3 ? savedTagColumns : 2)
 function setTagColumns(n: number) { tagColumns.value = n; try { localStorage.setItem('tagColumns', String(n)) } catch { /* ignore */ } }
+/* ---- 命令面板（⌘K） ---- */
+const paletteOpen = ref(false)
+/* ---- 图库密度：桌面记住上次选择，手机锁两列 ---- */
+const savedDensity = localStorage.getItem('gridDensity')
+const gridDensity = ref(['compact', 'cozy', 'roomy'].includes(savedDensity || '') ? savedDensity! : 'cozy')
+function setGridDensity(value: string) { gridDensity.value = value; try { localStorage.setItem('gridDensity', value) } catch { /* ignore */ } }
+/* ---- 图库多选 ---- */
+const selectMode = ref(false)
+const selectedIds = ref<string[]>([])
+function toggleSelectMode() {
+  selectMode.value = !selectMode.value
+  selectedIds.value = []
+  if (selectMode.value) notify('多选模式：点击卡片加入选择')
+}
+function toggleImageSelected(id: string) {
+  const index = selectedIds.value.indexOf(id)
+  if (index >= 0) selectedIds.value.splice(index, 1)
+  else selectedIds.value.push(id)
+}
+function selectAllVisible() { selectedIds.value = filteredImages.value.map((image) => image.id) }
+function clearSelection() { selectedIds.value = []; selectMode.value = false }
+async function batchDeleteSelected() {
+  const count = selectedIds.value.length
+  if (!count) return
+  if (!window.confirm(`把选中的 ${count} 张移入回收站？`)) return
+  try {
+    for (const id of selectedIds.value) await api.deleteImage(id)
+    notify(`已移入回收站 ${count} 张`)
+    clearSelection()
+    await refreshImages()
+    await refreshDashboard()
+  } catch (error) { notify(errorMessage(error)) }
+}
+async function batchStarSelected(star: boolean) {
+  const ids = [...selectedIds.value]
+  if (!ids.length) return
+  try {
+    for (const id of ids) await api.setStarred(id, star)
+    const live = images.value.filter((image) => ids.includes(image.id))
+    live.forEach((image) => { image.starred = star })
+    notify(star ? `已收藏 ${ids.length} 张` : `已取消收藏 ${ids.length} 张`)
+    clearSelection()
+  } catch (error) { notify(errorMessage(error)) }
+}
+/** 单张切换收藏：卡片星标、右键菜单、命令面板共用 */
+async function toggleStar(image: ImageItem) {
+  const next = !image.starred
+  image.starred = next
+  try {
+    await api.setStarred(image.id, next)
+    notify(next ? '已加入收藏' : '已取消收藏')
+  } catch (error) {
+    image.starred = !next
+    notify(errorMessage(error))
+  }
+}
 let searchTimer: number | undefined
 const currentHour = ref(new Date().getHours())
 let greetingTimer: number | undefined
@@ -568,9 +626,12 @@ const filteredImages = computed(() => {
   const search = query.value.trim().toLowerCase()
   if (search) result = result.filter((image) => image.name.toLowerCase().includes(search) || image.tags.some((tag) => tag.toLowerCase().includes(search)))
   if (selectedTag.value !== '全部标签') result = result.filter((image) => image.tags.includes(selectedTag.value))
-  if (sortBy.value === 'views') result = [...result].sort((a, b) => b.views - a.views)
-  if (sortBy.value === 'newest') result = [...result].sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
-  if (sortBy.value === 'name') result = [...result].sort((a, b) => a.name.localeCompare(b.name))
+  /* 与服务端一致的约定：收藏永远置顶，其余按所选排序 */
+  const starredFirst = (a: ImageItem, b: ImageItem) => Number(b.starred || 0) - Number(a.starred || 0)
+  if (sortBy.value === 'views') result = [...result].sort((a, b) => starredFirst(a, b) || b.views - a.views)
+  if (sortBy.value === 'newest') result = [...result].sort((a, b) => starredFirst(a, b) || b.uploadedAt.localeCompare(a.uploadedAt))
+  if (sortBy.value === 'oldest') result = [...result].sort((a, b) => starredFirst(a, b) || a.uploadedAt.localeCompare(b.uploadedAt))
+  if (sortBy.value === 'name') result = [...result].sort((a, b) => starredFirst(a, b) || a.name.localeCompare(b.name))
   return result
 })
 const topImages = computed(() => [...liveImages.value].sort((a, b) => b.views - a.views).slice(0, 4))
@@ -996,6 +1057,25 @@ function downloadImage(image: ImageItem | null | undefined) {
 /** 视频提取面板内跳转（如保存成功后去图片库） */
 function onPanelGoto(view: 'library' | 'tags') { void go(view) }
 function toggleTheme() { isDark.value = !isDark.value; applyPreferences() }
+/** 顶栏/命令面板快速换主题：先给 420ms 的颜色过渡，再落属性 */
+function withThemeTransition(mutate: () => void) {
+  const root = document.documentElement
+  root.classList.add('theme-anim')
+  mutate()
+  window.setTimeout(() => root.classList.remove('theme-anim'), 460)
+}
+function pickTheme(name: string) {
+  if (selectedTheme.value === name) return
+  /* 换主题 = 换整套情绪：强调色、底色染色、流体背景一起走 */
+  withThemeTransition(() => {
+    selectedTheme.value = name
+    fluidColors.value = themeFluidPalette(name)
+    applyPreferences()
+  })
+}
+function toggleThemeMode() {
+  withThemeTransition(() => { isDark.value = !isDark.value; applyPreferences() })
+}
 
 /** Esc：先收相似图面板，面板没开时才关大图。避免一次 Esc 把整个预览关掉。 */
 function onEscapeKey(event: KeyboardEvent) {
@@ -1038,12 +1118,17 @@ onBeforeUnmount(() => { stopMotion?.(); if (greetingTimer) window.clearInterval(
         :page-title="pageTitle"
         :query="query"
         :user="currentUser"
+        :selected-theme="selectedTheme"
+        :is-dark="isDark"
         @update:query="query = $event"
         @search-input="handleSearchInput"
         @submit="submitGlobalSearch"
         @clear="clearGlobalSearch"
         @logout="logout"
         @open-more="moreOpen = true"
+        @open-palette="paletteOpen = true"
+        @pick-theme="pickTheme"
+        @toggle-theme-mode="toggleThemeMode"
       />
 
       <section class="page-content">
@@ -1079,6 +1164,9 @@ onBeforeUnmount(() => { stopMotion?.(); if (greetingTimer) window.clearInterval(
           :progress="libraryProgress"
           :loaded="libraryLoaded"
           :total="libraryTotal"
+          :density="gridDensity"
+          :select-mode="selectMode"
+          :selected-ids="selectedIds"
           @update:selected-tag="selectedTag = $event"
           @sort="setSort"
           @toggle-r18="toggleR18Mode"
@@ -1090,6 +1178,11 @@ onBeforeUnmount(() => { stopMotion?.(); if (greetingTimer) window.clearInterval(
           @press-end="onImageTouchEnd"
           @download="downloadImage"
           @media-progress="handleImageProgress"
+          @toggle-select-mode="toggleSelectMode"
+          @toggle-selected="toggleImageSelected"
+          @select-all="selectAllVisible"
+          @star="toggleStar"
+          @update:density="setGridDensity"
         />
 
         <SimilarView
@@ -1185,6 +1278,7 @@ onBeforeUnmount(() => { stopMotion?.(); if (greetingTimer) window.clearInterval(
       @rename="beginRename"
       @add-tag="openAddTag"
       @remove-tag="openRemoveTag"
+      @star="toggleStar"
       @remove="activeView === 'trash' ? permanentDelete($event) : softDelete($event)"
       @restore="restore"
     />
@@ -1309,6 +1403,35 @@ onBeforeUnmount(() => { stopMotion?.(); if (greetingTimer) window.clearInterval(
       @open-similar-image="openSimilarImage"
       @media-loaded="previewLoading = false"
     />
+
+    <CommandPalette
+      :open="paletteOpen"
+      :user="currentUser"
+      :views="navItems.map((item) => ({ view: item.id, label: item.label, icon: item.icon }))"
+      :images="liveImages"
+      :tags="tags"
+      :selected-theme="selectedTheme"
+      :is-dark="isDark"
+      @close="paletteOpen = false"
+      @go="go"
+      @open-image="(image) => { paletteOpen = false; openFromCard(image) }"
+      @pick-tag="(name) => { paletteOpen = false; void viewTag(name) }"
+      @toggle-theme-mode="toggleThemeMode"
+      @pick-theme="pickTheme"
+      @upload="paletteOpen = false; showUpload = true"
+      @toggle-select-mode="() => { paletteOpen = false; if (activeView !== 'library') void go('library'); toggleSelectMode() }"
+    />
+
+    <div v-if="selectMode && selectedIds.length" class="selectbar" role="toolbar" aria-label="批量操作">
+      <span class="count-badge">{{ selectedIds.length }}</span>
+      <span class="sep"></span>
+      <button @click="selectAllVisible">全选</button>
+      <button @click="batchStarSelected(true)">收藏</button>
+      <button @click="batchStarSelected(false)">取消收藏</button>
+      <button class="danger" @click="batchDeleteSelected">移入回收站</button>
+      <span class="sep"></span>
+      <button @click="clearSelection">退出</button>
+    </div>
 
     <AppToast :message="toast" />
     <TaskDock :hidden="videoFullscreen" @goto-library="onPanelGoto('library')" />

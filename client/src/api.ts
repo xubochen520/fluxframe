@@ -194,6 +194,8 @@ export const api = {
   cancelUpload: (tempId: string) => request<{ ok: true }>(`/api/images/upload/pending/${tempId}`, { method: 'DELETE' }),
   deleteImage: (id: string) => request<{ ok: true }>(`/api/images/${id}`, { method: 'DELETE' }),
   renameImage: (id: string, name: string) => request<{ ok: true; name: string }>(`/api/images/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  /** 收藏/取消收藏（星标） */
+  setStarred: (id: string, starred: boolean) => request<{ ok: true; starred: boolean }>(`/api/images/${id}`, { method: 'PATCH', body: JSON.stringify({ starred }) }),
   restoreImage: (id: string) => request<{ ok: true }>(`/api/images/${id}/restore`, { method: 'POST', body: '{}' }),
   permanentDelete: (id: string) => request<{ ok: true }>(`/api/images/${id}/permanent`, { method: 'DELETE' }),
   tags: () => request<{ items: TagItem[] }>('/api/tags'),

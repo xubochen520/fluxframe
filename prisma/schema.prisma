@@ -50,6 +50,7 @@ model Image {
   height      Int?
   sha256      String        @unique
   viewCount   Int           @default(0)
+  starred     Boolean       @default(false)
   lastViewed  DateTime?
   capturedAt  DateTime?
   uploadedAt  DateTime      @default(now())

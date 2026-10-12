@@ -380,6 +380,7 @@ function imageDto(image: any) {
     height: image.height || 0,
     size: byteSize(image.size),
     views: image.viewCount,
+    starred: Boolean(image.starred),
     uploadedAt: image.uploadedAt.toISOString(),
     capturedAt: image.capturedAt?.toISOString().slice(0, 10) || image.uploadedAt.toISOString().slice(0, 10),
     tags: image.tags?.map((item: any) => item.tag.name) || [],
@@ -499,14 +500,24 @@ app.get('/api/dashboard', async (request, reply) => {
 app.get('/api/images', async (request, reply) => {
   const user = await requireUser(request as AuthenticatedRequest, reply)
   if (!user) return
-  const query = z.object({ search: z.string().optional(), tag: z.string().optional(), sort: z.enum(['views', 'newest', 'name']).default('views'), trash: z.preprocess((value) => value === true || value === 'true', z.boolean()).default(false) }).parse(request.query)
+  const query = z.object({ search: z.string().optional(), tag: z.string().optional(), sort: z.enum(['views', 'newest', 'name', 'oldest', 'starred']).default('views'), trash: z.preprocess((value) => value === true || value === 'true', z.boolean()).default(false), starred: z.preprocess((value) => value === true || value === 'true', z.boolean()).default(false) }).parse(request.query)
   const where: Prisma.ImageWhereInput = { deletedAt: query.trash ? { not: null } : null }
+  if (query.starred) where.starred = true
   if (query.search) where.OR = [{ name: { contains: query.search, mode: 'insensitive' } }, { tags: { some: { tag: { name: { contains: query.search, mode: 'insensitive' } } } } }]
   const tagsFilter: Prisma.ImageTagListRelationFilter = {}
   if (query.tag && query.tag !== '全部标签') tagsFilter.some = { tag: { name: query.tag } }
   if (!user.r18Mode) tagsFilter.none = { OR: [{ tag: { name: 'R-18' } }, { tag: { r18: true } }] }
   if (Object.keys(tagsFilter).length) where.tags = tagsFilter
-  const orderBy: Prisma.ImageOrderByWithRelationInput = query.sort === 'newest' ? { uploadedAt: 'desc' } : query.sort === 'name' ? { name: 'asc' } : { viewCount: 'desc' }
+  /* 收藏优先是全局约定：任何排序下，星标图都排在前面 */
+  const orderBy: Prisma.ImageOrderByWithRelationInput[] = query.sort === 'newest'
+    ? [{ starred: 'desc' }, { uploadedAt: 'desc' }]
+    : query.sort === 'oldest'
+      ? [{ starred: 'desc' }, { uploadedAt: 'asc' }]
+      : query.sort === 'name'
+        ? [{ starred: 'desc' }, { name: 'asc' }]
+        : query.sort === 'starred'
+          ? [{ starred: 'desc' }, { viewCount: 'desc' }]
+          : [{ starred: 'desc' }, { viewCount: 'desc' }]
   const images = await prisma.image.findMany({ where, orderBy, include: { tags: { include: { tag: true } }, variants: true } })
   return { items: images.map(imageDto) }
 })
@@ -1006,14 +1017,22 @@ app.delete('/api/images/:id/permanent', async (request, reply) => {
 app.patch('/api/images/:id', async (request, reply) => {
   const user = await requireUser(request as AuthenticatedRequest, reply)
   if (!user) return
-  const body = z.object({ name: z.string().trim().min(1).max(200) }).parse(request.body)
+  const body = z.object({ name: z.string().trim().min(1).max(200).optional(), starred: z.boolean().optional() }).parse(request.body)
+  if (body.name === undefined && body.starred === undefined) return reply.code(400).send({ message: '没有要修改的字段' })
   const id = (request.params as { id: string }).id
   const image = await imageWithRelations(id)
   if (!image || image.deletedAt) return reply.code(404).send({ message: '图片不存在' })
   if (!user.r18Mode && isImageR18(image)) return reply.code(404).send({ message: '图片不存在' })
+  /* 收藏切换：独立分支，不牵动文件名校验那套逻辑 */
+  if (body.starred !== undefined) {
+    const updated = await prisma.image.update({ where: { id }, data: { starred: body.starred } }).catch(() => null)
+    if (!updated) return reply.code(404).send({ message: '图片不存在' })
+    await recordAudit(request, body.starred ? '收藏图片' : '取消收藏', user.id, image.name)
+    return { ok: true, starred: updated.starred }
+  }
   const fileExt = path.extname(image.originalKey).toLowerCase()
   const commonExts = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic', '.heif', '.mp4', '.m4v', '.mov', '.webm', '.mkv', '.avi', '.mpg', '.mpeg', '.ts', '.3gp'])
-  let clean = body.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').replace(/^[.\s]+|[.\s]+$/g, '')
+  let clean = body.name!.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').replace(/^[.\s]+|[.\s]+$/g, '')
   const lower = clean.toLowerCase()
   if (fileExt && lower.endsWith(fileExt)) clean = clean.slice(0, -fileExt.length)
   else {
